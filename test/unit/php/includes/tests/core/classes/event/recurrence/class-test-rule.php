@@ -770,6 +770,17 @@ class Test_Rule extends Base {
 			Utility::invoke_hidden_method( $count_over_budget, 'is_valid_end_shape' )
 		);
 
+		// A frequency outside FREQUENCY_* is unreachable through from_array()
+		// -- is_valid()'s own top-level check rejects it before is_valid_end_shape()
+		// ever runs -- but the per-frequency budget lookup still carries a
+		// defensive `?? daily` fallback for it. Exercise that arm directly.
+		$count_with_unmapped_frequency = $this->build_rule_directly(
+			array( 'bogus', 1, array(), '', 0, 0, 0, 'count', null, 5 )
+		);
+		$this->assertTrue(
+			Utility::invoke_hidden_method( $count_with_unmapped_frequency, 'is_valid_end_shape' )
+		);
+
 		$never_valid = $this->build_rule_directly(
 			array( 'daily', 1, array(), '', 0, 0, 0, 'never', null, 0 )
 		);

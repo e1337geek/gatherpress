@@ -120,37 +120,186 @@ final class Rule {
 	 */
 	const MAX_INTERVAL = 52;
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	/**
+	 * RFC 5545 two-letter weekday codes, indexed 0 (Sunday) through 6 (Saturday).
+	 *
+	 * Shared with `Meta`, which uses it to translate the single comma-joined
+	 * `gatherpress_recurrence_byday` mirror to and from the integer weekday
+	 * numbers this class works with internally.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	const WEEKDAY_CODES = array( 'SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA' );
+
+	/**
+	 * Approximate days per occurrence, keyed by frequency, used only for the
+	 * `COUNT` iteration-budget check at the meta boundary.
+	 *
+	 * @since 0.36.0
+	 * @var array<string, int>
+	 */
+	const BUDGET_DAYS_PER_FREQUENCY = array(
+		self::FREQUENCY_DAILY   => 1,
+		self::FREQUENCY_WEEKLY  => 7,
+		self::FREQUENCY_MONTHLY => 31,
+	);
+
+	/**
+	 * Class constructor.
+	 *
+	 * Private: rules are only ever built through `from_array()`, so every
+	 * instance that exists has already passed boundary validation. Constructor
+	 * property promotion is used deliberately here (rather than the usual house
+	 * style of separate property declarations) -- with ten scalar properties
+	 * and no logic of its own, a promoted constructor has no assignment
+	 * statements of its own for a coverage tool to under-report.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string                 $frequency       One of the `FREQUENCY_*` constants.
+	 * @param int                    $interval        Repeat interval.
+	 * @param int[]                  $weekdays        Weekday numbers for a weekly rule.
+	 * @param string                 $monthly_mode    One of the `MONTHLY_MODE_*` constants.
+	 * @param int                    $monthly_day     Day of the month for a day-of-month rule.
+	 * @param int                    $monthly_ordinal Ordinal for an nth-weekday rule.
+	 * @param int                    $monthly_weekday Weekday for an nth-weekday rule.
+	 * @param string                 $end_type        One of the `END_TYPE_*` constants.
+	 * @param DateTimeImmutable|null $until           End date, when `end_type` is `END_TYPE_UNTIL`.
+	 * @param int                    $count           Occurrence count, when `end_type` is `END_TYPE_COUNT`.
+	 */
+	private function __construct(
+		private string $frequency,
+		private int $interval,
+		private array $weekdays,
+		private string $monthly_mode,
+		private int $monthly_day,
+		private int $monthly_ordinal,
+		private int $monthly_weekday,
+		private string $end_type,
+		private ?DateTimeImmutable $until,
+		private int $count
+	) {
+	}
+
 	/**
 	 * Reconstruct a rule from a post's derived recurrence mirrors.
+	 *
+	 * Reads the ten `gatherpress_recurrence_*` mirrors directly, never the
+	 * `gatherpress_recurrence` JSON blob, so the blob stays a pure
+	 * write-boundary artifact. `get_post_meta()` is served from WordPress's
+	 * per-request meta cache, so this never issues a database round trip once
+	 * the post's meta has been primed.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID to read the recurrence mirrors from.
 	 *
 	 * @return Rule|null The rule, or null when the post carries no recurrence.
-	 * @phpstan-ignore-next-line -- T0 skeleton; the non-null return lands with the implementation.
 	 */
 	public static function from_post( int $post_id ): ?Rule {
-		return null;
-	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
+		$frequency = (string) get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true );
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+		if ( '' === $frequency ) {
+			return null;
+		}
+
+		$byday    = (string) get_post_meta( $post_id, 'gatherpress_recurrence_byday', true );
+		$weekdays = array();
+
+		if ( '' !== $byday ) {
+			foreach ( explode( ',', $byday ) as $code ) {
+				$index = array_search( $code, self::WEEKDAY_CODES, true );
+
+				if ( false !== $index ) {
+					$weekdays[] = $index;
+				}
+			}
+		}
+
+		$until = (string) get_post_meta( $post_id, 'gatherpress_recurrence_until', true );
+
+		return self::from_array(
+			array(
+				'frequency'       => $frequency,
+				'interval'        => (int) get_post_meta( $post_id, 'gatherpress_recurrence_interval', true ),
+				'weekdays'        => $weekdays,
+				'monthly_mode'    => (string) get_post_meta( $post_id, 'gatherpress_recurrence_monthly_mode', true ),
+				'monthly_day'     => (int) get_post_meta( $post_id, 'gatherpress_recurrence_monthly_day', true ),
+				'monthly_ordinal' => (int) get_post_meta( $post_id, 'gatherpress_recurrence_monthly_ordinal', true ),
+				'monthly_weekday' => (int) get_post_meta( $post_id, 'gatherpress_recurrence_monthly_weekday', true ),
+				'end_type'        => (string) get_post_meta( $post_id, 'gatherpress_recurrence_end_type', true ),
+				'until'           => $until,
+				'count'           => (int) get_post_meta( $post_id, 'gatherpress_recurrence_count', true ),
+			)
+		);
+	}
+
 	/**
 	 * Build a rule from a decoded value array.
+	 *
+	 * Coerces and clamps values that have a safe, unambiguous coercion (a
+	 * sub-one interval becomes 1) and rejects, by returning null, anything
+	 * that cannot be honestly expanded or that violates RFC 5545 (`UNTIL` and
+	 * `COUNT` both present, `COUNT` or `INTERVAL` above their authoring caps,
+	 * or a `COUNT` rule whose worst-case iteration budget would exceed
+	 * `Expander::MAX_ITERATIONS`).
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param array $values Decoded recurrence values.
 	 *
 	 * @return Rule|null The rule, or null when the values do not describe one.
-	 * @phpstan-ignore-next-line -- T0 skeleton; the non-null return lands with the implementation.
 	 */
 	public static function from_array( array $values ): ?Rule {
-		return null;
+		$frequency = (string) ( $values['frequency'] ?? '' );
+		$interval  = (int) ( $values['interval'] ?? 1 );
+		$interval  = $interval < 1 ? 1 : $interval;
+
+		$weekdays = array_values(
+			array_unique(
+				array_map( 'intval', is_array( $values['weekdays'] ?? null ) ? $values['weekdays'] : array() )
+			)
+		);
+		sort( $weekdays );
+
+		$monthly_mode    = (string) ( $values['monthly_mode'] ?? '' );
+		$monthly_day     = (int) ( $values['monthly_day'] ?? 0 );
+		$monthly_ordinal = (int) ( $values['monthly_ordinal'] ?? 0 );
+		$monthly_weekday = (int) ( $values['monthly_weekday'] ?? 0 );
+		$end_type        = (string) ( $values['end_type'] ?? '' );
+		$count           = (int) ( $values['count'] ?? 0 );
+
+		$raw_until = $values['until'] ?? '';
+		$until     = null;
+
+		if ( is_string( $raw_until ) && '' !== $raw_until ) {
+			$parsed = date_create_immutable( $raw_until );
+			$until  = false !== $parsed ? $parsed : null;
+		}
+
+		// RFC 5545 forbids a rule that carries both an end date and an
+		// occurrence count -- reject at the boundary rather than silently
+		// preferring one.
+		if ( null !== $until && $count > 0 ) {
+			return null;
+		}
+
+		$rule = new self(
+			$frequency,
+			$interval,
+			$weekdays,
+			$monthly_mode,
+			$monthly_day,
+			$monthly_ordinal,
+			$monthly_weekday,
+			$end_type,
+			$until,
+			$count
+		);
+
+		return $rule->is_valid() ? $rule : null;
 	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
 	/**
 	 * Get the repeat frequency.
@@ -160,7 +309,7 @@ final class Rule {
 	 * @return string One of the `FREQUENCY_*` constants.
 	 */
 	public function frequency(): string {
-		return '';
+		return $this->frequency;
 	}
 
 	/**
@@ -171,7 +320,7 @@ final class Rule {
 	 * @return int The interval, never below 1 and never above `MAX_INTERVAL`.
 	 */
 	public function interval(): int {
-		return 0;
+		return $this->interval;
 	}
 
 	/**
@@ -182,7 +331,7 @@ final class Rule {
 	 * @return int[] Weekday numbers, 0 for Sunday through 6 for Saturday.
 	 */
 	public function weekdays(): array {
-		return array();
+		return $this->weekdays;
 	}
 
 	/**
@@ -193,7 +342,7 @@ final class Rule {
 	 * @return string One of the `MONTHLY_MODE_*` constants.
 	 */
 	public function monthly_mode(): string {
-		return '';
+		return $this->monthly_mode;
 	}
 
 	/**
@@ -204,7 +353,7 @@ final class Rule {
 	 * @return int A day number from 1 to 31.
 	 */
 	public function monthly_day(): int {
-		return 0;
+		return $this->monthly_day;
 	}
 
 	/**
@@ -215,7 +364,7 @@ final class Rule {
 	 * @return int An ordinal from 1 to 4, or -1 for "last".
 	 */
 	public function monthly_ordinal(): int {
-		return 0;
+		return $this->monthly_ordinal;
 	}
 
 	/**
@@ -226,7 +375,7 @@ final class Rule {
 	 * @return int A weekday number from 0 for Sunday through 6 for Saturday.
 	 */
 	public function monthly_weekday(): int {
-		return 0;
+		return $this->monthly_weekday;
 	}
 
 	/**
@@ -237,7 +386,7 @@ final class Rule {
 	 * @return string One of the `END_TYPE_*` constants.
 	 */
 	public function end_type(): string {
-		return '';
+		return $this->end_type;
 	}
 
 	/**
@@ -246,10 +395,9 @@ final class Rule {
 	 * @since 0.36.0
 	 *
 	 * @return DateTimeImmutable|null The end date, or null when the rule does not end on a date.
-	 * @phpstan-ignore-next-line -- T0 skeleton; the non-null return lands with the implementation.
 	 */
 	public function until(): ?DateTimeImmutable {
-		return null;
+		return $this->until;
 	}
 
 	/**
@@ -260,18 +408,95 @@ final class Rule {
 	 * @return int The count, never above `MAX_COUNT`, or 0 when the rule is not count-bounded.
 	 */
 	public function count(): int {
-		return 0;
+		return $this->count;
 	}
 
 	/**
 	 * Report whether the rule describes an expandable schedule.
+	 *
+	 * Checked once inside `from_array()` before a `Rule` is ever handed back
+	 * to a caller, so every `Rule` in existence is already valid -- this
+	 * method is what `from_array()` uses to decide, and remains public so a
+	 * caller holding a `Rule` can re-confirm the same contract.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @return bool True when the rule is complete and internally consistent.
 	 */
 	public function is_valid(): bool {
+		$valid_frequencies = array( self::FREQUENCY_DAILY, self::FREQUENCY_WEEKLY, self::FREQUENCY_MONTHLY );
+		$valid_end_types   = array( self::END_TYPE_NEVER, self::END_TYPE_UNTIL, self::END_TYPE_COUNT );
+
+		if ( ! in_array( $this->frequency, $valid_frequencies, true )
+			|| $this->interval < 1
+			|| $this->interval > self::MAX_INTERVAL
+			|| ! in_array( $this->end_type, $valid_end_types, true )
+		) {
+			return false;
+		}
+
+		if ( self::FREQUENCY_WEEKLY === $this->frequency && array() === $this->weekdays ) {
+			return false;
+		}
+
+		if ( self::FREQUENCY_MONTHLY === $this->frequency && ! $this->is_valid_monthly_shape() ) {
+			return false;
+		}
+
+		return $this->is_valid_end_shape();
+	}
+
+	/**
+	 * Report whether the monthly-specific fields are internally consistent.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when the monthly mode and its companion fields agree.
+	 */
+	private function is_valid_monthly_shape(): bool {
+		if ( self::MONTHLY_MODE_DAY_OF_MONTH === $this->monthly_mode ) {
+			return $this->monthly_day >= 1 && $this->monthly_day <= 31;
+		}
+
+		if ( self::MONTHLY_MODE_NTH_WEEKDAY === $this->monthly_mode ) {
+			$valid_ordinals = array( 1, 2, 3, 4, -1 );
+
+			return in_array( $this->monthly_ordinal, $valid_ordinals, true )
+				&& $this->monthly_weekday >= 0
+				&& $this->monthly_weekday <= 6;
+		}
+
 		return false;
+	}
+
+	/**
+	 * Report whether the end-of-series fields are internally consistent,
+	 * including the `COUNT` iteration-budget backstop.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when the end shape is consistent and, for a `COUNT`
+	 *              rule, honestly expandable within `Expander::MAX_ITERATIONS`.
+	 */
+	private function is_valid_end_shape(): bool {
+		if ( self::END_TYPE_UNTIL === $this->end_type ) {
+			return null !== $this->until && 0 === $this->count;
+		}
+
+		if ( self::END_TYPE_COUNT === $this->end_type ) {
+			if ( $this->count < 1 || $this->count > self::MAX_COUNT || null !== $this->until ) {
+				return false;
+			}
+
+			$per_frequency = self::BUDGET_DAYS_PER_FREQUENCY[ $this->frequency ]
+				?? self::BUDGET_DAYS_PER_FREQUENCY[ self::FREQUENCY_DAILY ];
+			$budget        = ( $this->count * $per_frequency * $this->interval ) + 366;
+
+			return $budget <= Expander::MAX_ITERATIONS;
+		}
+
+		// END_TYPE_NEVER: neither an end date nor a count may be set.
+		return null === $this->until && 0 === $this->count;
 	}
 
 	/**
@@ -282,20 +507,58 @@ final class Rule {
 	 * @return array The rule's values, keyed as the `gatherpress_recurrence` blob is.
 	 */
 	public function to_array(): array {
-		return array();
+		return array(
+			'frequency'       => $this->frequency,
+			'interval'        => $this->interval,
+			'weekdays'        => $this->weekdays,
+			'monthly_mode'    => $this->monthly_mode,
+			'monthly_day'     => $this->monthly_day,
+			'monthly_ordinal' => $this->monthly_ordinal,
+			'monthly_weekday' => $this->monthly_weekday,
+			'end_type'        => $this->end_type,
+			'until'           => $this->until?->format( 'Y-m-d' ) ?? '',
+			'count'           => $this->count,
+		);
 	}
 
 	/**
 	 * Serialize the rule as an RFC 5545 `RRULE` string.
 	 *
 	 * The REQ-14 export seam. Unit-tested against a fixture table, with no
-	 * production caller in the POC.
+	 * production caller in the POC. `WKST` is never emitted because
+	 * `WEEK_START` (Monday) is already RFC 5545's default. `UNTIL` is emitted
+	 * as a bare `Ymd` date -- the rule carries no time-of-day of its own, that
+	 * comes from the series anchor at expansion time.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @return string The `RRULE` value, without the property name.
 	 */
 	public function to_rrule_string(): string {
-		return '';
+		$parts = array( 'FREQ=' . strtoupper( $this->frequency ) );
+
+		if ( $this->interval > 1 ) {
+			$parts[] = 'INTERVAL=' . $this->interval;
+		}
+
+		if ( self::FREQUENCY_WEEKLY === $this->frequency ) {
+			$codes   = array_map(
+				fn( int $weekday ) => self::WEEKDAY_CODES[ $weekday ],
+				$this->weekdays
+			);
+			$parts[] = 'BYDAY=' . implode( ',', $codes );
+		} elseif ( self::FREQUENCY_MONTHLY === $this->frequency ) {
+			$parts[] = self::MONTHLY_MODE_DAY_OF_MONTH === $this->monthly_mode
+				? 'BYMONTHDAY=' . $this->monthly_day
+				: 'BYDAY=' . $this->monthly_ordinal . self::WEEKDAY_CODES[ $this->monthly_weekday ];
+		}
+
+		if ( self::END_TYPE_UNTIL === $this->end_type && $this->until instanceof DateTimeImmutable ) {
+			$parts[] = 'UNTIL=' . $this->until->format( 'Ymd' );
+		} elseif ( self::END_TYPE_COUNT === $this->end_type ) {
+			$parts[] = 'COUNT=' . $this->count;
+		}
+
+		return implode( ';', $parts );
 	}
 }
