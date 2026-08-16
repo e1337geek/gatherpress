@@ -1,0 +1,294 @@
+/**
+ * WordPress dependencies
+ */
+import { __ } from '@wordpress/i18n';
+import { PanelRow, ToggleControl } from '@wordpress/components';
+import { useDispatch, useSelect } from '@wordpress/data';
+import { useState } from '@wordpress/element';
+
+/**
+ * Internal dependencies
+ */
+import { usePostTypeSupports } from '../../../helpers/event';
+import FrequencyControl from './frequency';
+import WeekdaysControl from './weekdays';
+import MonthlyControl from './monthly';
+import EndConditionControl from './end-condition';
+
+/**
+ * Default recurrence rule, written to the `gatherpress_recurrence` blob the
+ * moment the "Repeat" toggle is switched on, and used to fill any field
+ * missing from a stored or malformed blob.
+ *
+ * @since 0.36.0
+ * @type {Object}
+ */
+const DEFAULT_RULE = {
+	frequency: 'daily',
+	interval: 1,
+	weekdays: [],
+	monthly_mode: 'day_of_month',
+	monthly_day: 1,
+	monthly_ordinal: 1,
+	monthly_weekday: 1,
+	end_type: 'never',
+	until: '',
+	count: 0,
+};
+
+/**
+ * Clamp an integer to an inclusive range, matching `Rule::from_array()`'s own
+ * clamping (interval below 1 becomes 1; the server additionally rejects
+ * anything above `MAX_INTERVAL` / `MAX_COUNT` outright, so the UI clamps at
+ * both ends rather than letting an over-range value round-trip into a
+ * rejected save). Callers always pass an already-coerced `Number(...)` value
+ * from a `type="number"` control, whose own sanitization keeps a non-numeric
+ * entry from ever reaching here as `NaN` -- there is no separate not-a-number
+ * guard because there is no reachable path that would exercise it.
+ *
+ * @since 0.36.0
+ *
+ * @param {number} value Value to clamp.
+ * @param {number} min   Inclusive lower bound.
+ * @param {number} max   Inclusive upper bound.
+ *
+ * @return {number} The clamped value.
+ */
+function clampInt( value, min, max ) {
+	if ( value < min ) {
+		return min;
+	}
+
+	return value > max ? max : value;
+}
+
+/**
+ * Parse the `gatherpress_recurrence` blob into panel state.
+ *
+ * A missing, empty, or malformed blob is treated as "no recurrence" rather
+ * than surfacing a parse error — the panel falls back to `DEFAULT_RULE` with
+ * the "Repeat" toggle off. A valid blob is merged onto `DEFAULT_RULE` so a
+ * blob written by an older shape (missing a field this panel added later)
+ * still renders every control with a sane value.
+ *
+ * @since 0.36.0
+ *
+ * @param {string|undefined} raw Raw `gatherpress_recurrence` meta value.
+ *
+ * @return {Object} `{ enabled, rule }` panel state.
+ */
+function parseRecurrenceBlob( raw ) {
+	if ( ! raw ) {
+		return { enabled: false, rule: { ...DEFAULT_RULE } };
+	}
+
+	try {
+		const parsed = JSON.parse( raw );
+
+		if ( ! parsed || 'object' !== typeof parsed ) {
+			return { enabled: false, rule: { ...DEFAULT_RULE } };
+		}
+
+		return { enabled: true, rule: { ...DEFAULT_RULE, ...parsed } };
+	} catch {
+		return { enabled: false, rule: { ...DEFAULT_RULE } };
+	}
+}
+
+/**
+ * A settings panel for configuring an event's recurrence rule.
+ *
+ * Reads and writes the single `gatherpress_recurrence` JSON-string blob on
+ * `core/editor` post meta (see `Rule::from_array()` and `Meta::META_KEY` for
+ * the authoritative shape). The ten derived `gatherpress_recurrence_*`
+ * mirrors are server-computed and read-only, so this panel never reads or
+ * writes them — its source of truth is the blob itself, kept in local state
+ * so edits round-trip within a single editing session.
+ *
+ * Recurrence is refused outright on a fixed-offset timezone (e.g.
+ * `UTC+5:30`), detected by the presence of a `:` in the
+ * `gatherpress/datetime` store's timezone value — a named tz-database
+ * identifier such as `America/New_York` never contains one.
+ *
+ * @since 0.36.0
+ *
+ * @return {JSX.Element|null} The recurrence panel, or null when the current
+ *                            post type does not support `gatherpress-event-date`.
+ */
+const RecurrencePanel = () => {
+	const isEventDateSupported = usePostTypeSupports( 'gatherpress-event-date' );
+	const { editPost } = useDispatch( 'core/editor' );
+
+	const { recurrenceMeta, timezone } = useSelect( ( select ) => {
+		return {
+			recurrenceMeta: select( 'core/editor' )
+				?.getEditedPostAttribute( 'meta' )
+				?.gatherpress_recurrence,
+			timezone: select( 'gatherpress/datetime' )?.getTimezone(),
+		};
+	}, [] );
+
+	const [ { enabled, rule }, setState ] = useState( () =>
+		parseRecurrenceBlob( recurrenceMeta ),
+	);
+
+	const isFixedOffsetTimezone = !! timezone?.includes( ':' );
+
+	/**
+	 * Persist panel state to the `gatherpress_recurrence` meta blob.
+	 *
+	 * @param {boolean} nextEnabled Whether recurrence is turned on.
+	 * @param {Object}  nextRule    Rule values to serialize when enabled.
+	 *
+	 * @return {void}
+	 */
+	const persist = ( nextEnabled, nextRule ) => {
+		editPost( {
+			meta: {
+				gatherpress_recurrence: nextEnabled
+					? JSON.stringify( nextRule )
+					: '',
+			},
+		} );
+	};
+
+	/**
+	 * Apply a partial rule update, enforcing the shape constraints
+	 * `Rule::from_array()` requires structurally rather than by convention:
+	 * clamped interval/count, `until`/`count` mutual exclusivity, and no
+	 * stale weekday or monthly state left over from a previous frequency.
+	 *
+	 * @param {Object} partial Partial rule field update.
+	 *
+	 * @return {void}
+	 */
+	const applyRuleChange = ( partial ) => {
+		const merged = { ...rule, ...partial };
+
+		if ( 'frequency' in partial ) {
+			if ( 'weekly' !== merged.frequency ) {
+				merged.weekdays = [];
+			}
+
+			if ( 'monthly' !== merged.frequency ) {
+				merged.monthly_mode = DEFAULT_RULE.monthly_mode;
+				merged.monthly_day = DEFAULT_RULE.monthly_day;
+				merged.monthly_ordinal = DEFAULT_RULE.monthly_ordinal;
+				merged.monthly_weekday = DEFAULT_RULE.monthly_weekday;
+			}
+		}
+
+		if ( 'interval' in partial ) {
+			merged.interval = clampInt( partial.interval, 1, 52 );
+		}
+
+		if ( 'count' in partial ) {
+			merged.count = clampInt( partial.count, 1, 730 );
+		}
+
+		if ( 'end_type' in partial ) {
+			if ( 'until' === merged.end_type ) {
+				merged.count = 0;
+			} else if ( 'count' === merged.end_type ) {
+				merged.until = '';
+			} else {
+				merged.until = '';
+				merged.count = 0;
+			}
+		}
+
+		setState( { enabled: true, rule: merged } );
+		persist( true, merged );
+	};
+
+	/**
+	 * Handle the "Repeat" toggle. Turning recurrence on always starts from
+	 * `DEFAULT_RULE` — there is no separate "save" step, so the default
+	 * blob is written immediately, matching every other control in this
+	 * panel writing straight to `core/editor` meta on change.
+	 *
+	 * @param {boolean} value Next toggle state.
+	 *
+	 * @return {void}
+	 */
+	const handleToggle = ( value ) => {
+		const nextRule = value ? { ...DEFAULT_RULE } : rule;
+
+		setState( { enabled: value, rule: nextRule } );
+		persist( value, nextRule );
+	};
+
+	if ( ! isEventDateSupported ) {
+		return null;
+	}
+
+	return (
+		<PanelRow>
+			<div className="gatherpress-recurrence-panel">
+				{ isFixedOffsetTimezone && (
+					<output>
+						{ __(
+							'Recurring events require a named timezone (e.g. America/New_York) rather than a fixed UTC offset. Change the timezone in the Date & Time panel to enable repeat.',
+							'gatherpress',
+						) }
+					</output>
+				) }
+				<ToggleControl
+					label={ __( 'Repeat', 'gatherpress' ) }
+					checked={ enabled && ! isFixedOffsetTimezone }
+					disabled={ isFixedOffsetTimezone }
+					onChange={ handleToggle }
+				/>
+				{ enabled && ! isFixedOffsetTimezone && (
+					<>
+						<FrequencyControl
+							frequency={ rule.frequency }
+							interval={ rule.interval }
+							onFrequencyChange={ ( value ) =>
+								applyRuleChange( { frequency: value } )
+							}
+							onIntervalChange={ ( value ) =>
+								applyRuleChange( { interval: value } )
+							}
+						/>
+						{ 'weekly' === rule.frequency && (
+							<>
+								<WeekdaysControl
+									weekdays={ rule.weekdays }
+									onChange={ ( value ) =>
+										applyRuleChange( { weekdays: value } )
+									}
+								/>
+								{ 0 === rule.weekdays.length && (
+									<output>
+										{ __(
+											'Select at least one day of the week.',
+											'gatherpress',
+										) }
+									</output>
+								) }
+							</>
+						) }
+						{ 'monthly' === rule.frequency && (
+							<MonthlyControl
+								monthlyMode={ rule.monthly_mode }
+								monthlyDay={ rule.monthly_day }
+								monthlyOrdinal={ rule.monthly_ordinal }
+								monthlyWeekday={ rule.monthly_weekday }
+								onChange={ applyRuleChange }
+							/>
+						) }
+						<EndConditionControl
+							endType={ rule.end_type }
+							until={ rule.until }
+							count={ rule.count }
+							onChange={ applyRuleChange }
+						/>
+					</>
+				) }
+			</div>
+		</PanelRow>
+	);
+};
+
+export default RecurrencePanel;
