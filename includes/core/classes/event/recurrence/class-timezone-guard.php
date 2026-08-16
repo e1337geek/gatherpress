@@ -34,9 +34,18 @@ use InvalidArgumentException;
  */
 final class Timezone_Guard {
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
 	/**
 	 * Report whether a timezone string is a named tz-database identifier.
+	 *
+	 * Positive validation, not merely the colon check: the string must both
+	 * appear in `timezone_identifiers_list()` and contain no colon. The colon
+	 * check alone would admit any malformed string without a colon
+	 * (`'Not/AZone'`, `'12345'`, `''`) straight through to `DateTimeZone`,
+	 * where it becomes a fatal rather than a rejection. Keeping the colon
+	 * check even though `timezone_identifiers_list()` already excludes
+	 * offsets mirrors the same test `rlanvin/php-rrule` applies at
+	 * `RRule.php:585-590` immediately before silently rewriting such a
+	 * `DTSTART` to UTC -- the drift bug this project refuses to ship.
 	 *
 	 * @since 0.36.0
 	 *
@@ -45,9 +54,9 @@ final class Timezone_Guard {
 	 * @return bool True when the string is a named identifier carrying DST rules.
 	 */
 	public static function is_named( string $timezone ): bool {
-		return false;
+		return ! str_contains( $timezone, ':' )
+			&& in_array( $timezone, timezone_identifiers_list(), true );
 	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
 	/**
 	 * Assert that a timezone string is a named tz-database identifier.
@@ -61,5 +70,10 @@ final class Timezone_Guard {
 	 * @throws InvalidArgumentException When the timezone is a fixed offset or otherwise unnamed.
 	 */
 	public static function assert_named( string $timezone ): void {
+		if ( ! self::is_named( $timezone ) ) {
+			throw new InvalidArgumentException(
+				sprintf( '"%s" is not a named tz-database timezone identifier.', esc_html( $timezone ) )
+			);
+		}
 	}
 }
