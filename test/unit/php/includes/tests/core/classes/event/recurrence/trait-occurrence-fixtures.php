@@ -14,7 +14,9 @@
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Event\Setup as Event_Setup;
+use ReflectionClass;
 
 /**
  * Trait Occurrence_Fixtures.
@@ -93,6 +95,34 @@ trait Occurrence_Fixtures {
 		add_post_meta( $post_id, 'gatherpress_recurrence', wp_json_encode( $rule ) );
 
 		return (int) $post_id;
+	}
+
+	/**
+	 * Build a `Rule` directly through its private constructor via reflection.
+	 *
+	 * Used only to exercise `is_valid()` branches -- and the expander's own
+	 * defensive arms downstream of them -- that `from_array()`'s boundary
+	 * guards make unreachable through the public API (e.g. an `end_type` of
+	 * `count` carrying a stray `until`, or an unrecognized frequency, both of
+	 * which `from_array()` already rejects before a `Rule` is ever built).
+	 * Shared between `Test_Rule`, which exercises `is_valid()` itself, and
+	 * `Test_Expander`, which exercises what the expander does when it is
+	 * handed one of these deliberately-invalid shapes directly.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $args Constructor arguments, in declaration order.
+	 *
+	 * @return Rule The directly constructed rule, bypassing `from_array()`.
+	 */
+	public function build_rule_directly( array $args ): Rule {
+		$reflection  = new ReflectionClass( Rule::class );
+		$constructor = $reflection->getConstructor();
+		$constructor->setAccessible( true );
+		$instance = $reflection->newInstanceWithoutConstructor();
+		$constructor->invoke( $instance, ...$args );
+
+		return $instance;
 	}
 
 	/**

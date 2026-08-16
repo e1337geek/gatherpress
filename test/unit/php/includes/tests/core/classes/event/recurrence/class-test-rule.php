@@ -14,7 +14,6 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
-use ReflectionClass;
 
 /**
  * Class Test_Rule.
@@ -24,30 +23,6 @@ use ReflectionClass;
 class Test_Rule extends Base {
 
 	use Occurrence_Fixtures;
-
-	/**
-	 * Build a `Rule` directly through its private constructor via reflection.
-	 *
-	 * Used only to exercise `is_valid()` branches that `from_array()`'s own
-	 * boundary guards make unreachable through the public API (e.g. an
-	 * `end_type` of `count` carrying a stray `until`, which `from_array()`
-	 * already rejects before a `Rule` is ever built).
-	 *
-	 * @since 0.36.0
-	 *
-	 * @param array $args Constructor arguments, in declaration order.
-	 *
-	 * @return Rule The directly constructed rule, bypassing `from_array()`.
-	 */
-	private function build_rule_directly( array $args ): Rule {
-		$reflection  = new ReflectionClass( Rule::class );
-		$constructor = $reflection->getConstructor();
-		$constructor->setAccessible( true );
-		$instance = $reflection->newInstanceWithoutConstructor();
-		$constructor->invoke( $instance, ...$args );
-
-		return $instance;
-	}
 
 	/**
 	 * `from_post()` returns null for a post carrying no recurrence rule.
@@ -321,6 +296,36 @@ class Test_Rule extends Base {
 		);
 
 		$this->assertNull( $rule );
+	}
+
+	/**
+	 * A rule naming an unrecognized frequency is rejected at the boundary.
+	 *
+	 * REQ-11's other side: `Expander`'s defensive `default => null` arms
+	 * (`next_candidate_date()`, `matches()`, `day_scan_limit()`) exist so an
+	 * unknown frequency yields zero occurrences rather than a fatal, in case
+	 * one is ever handed to the expander directly. This asserts the boundary
+	 * this rule is actually supposed to be enforced at: `from_array()` never
+	 * lets an unrecognized frequency reach the expander in the first place.
+	 *
+	 * @covers ::from_array
+	 * @covers ::is_valid
+	 *
+	 * @return void
+	 */
+	public function test_from_array_rejects_unrecognized_frequency(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'yearly',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertNull(
+			$rule,
+			'Failed to assert that an unrecognized frequency is rejected.'
+		);
 	}
 
 	/**

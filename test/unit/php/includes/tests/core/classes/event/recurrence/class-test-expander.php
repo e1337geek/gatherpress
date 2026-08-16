@@ -32,10 +32,14 @@ class Test_Expander extends Base {
 	use Occurrence_Fixtures;
 
 	/**
-	 * Build a rule, skipping the test while `Rule` is still a frozen skeleton.
+	 * Build a rule from valid values via the public boundary.
 	 *
-	 * `class-rule.php` belongs to another lane. Until its implementation lands,
-	 * `Rule::from_array()` returns null and no expander test can run.
+	 * Every caller of this helper passes fixture values that `is_valid()`
+	 * accepts -- tests that need a rule shape `from_array()` itself rejects
+	 * (an unrecognized frequency, an empty weekday list on a weekly rule, an
+	 * unresolvable monthly ordinal) go through `build_rule_directly()` from
+	 * `Occurrence_Fixtures` instead, which bypasses `from_array()`'s boundary
+	 * guards entirely.
 	 *
 	 * @since 0.36.0
 	 *
@@ -46,9 +50,11 @@ class Test_Expander extends Base {
 	protected function make_rule( array $values ): Rule {
 		$rule = Rule::from_array( $values );
 
-		if ( ! $rule instanceof Rule ) {
-			$this->markTestSkipped( 'Rule::from_array() has no implementation yet; it belongs to another lane.' );
-		}
+		$this->assertInstanceOf(
+			Rule::class,
+			$rule,
+			'Failed to assert that the fixture values built a valid Rule.'
+		);
 
 		return $rule;
 	}
@@ -485,15 +491,14 @@ class Test_Expander extends Base {
 	public function test_never_matching_rule_terminates_within_iteration_cap(): void {
 		$timezone = new DateTimeZone( 'America/New_York' );
 
+		// A weekly rule naming no weekday can never match `matches()`, but it
+		// cannot be built through `from_array()` -- `is_valid()` already
+		// rejects an empty weekday list on a weekly rule at the boundary.
+		// `build_rule_directly()` bypasses that guard so `expand()`'s own
+		// iteration-cap termination can be exercised directly.
 		$occurrences = ( new Expander() )->expand(
-			$this->make_rule(
-				array(
-					'frequency' => Rule::FREQUENCY_WEEKLY,
-					'interval'  => 1,
-					'weekdays'  => array(),
-					'end_type'  => Rule::END_TYPE_COUNT,
-					'count'     => 5,
-				)
+			$this->build_rule_directly(
+				array( Rule::FREQUENCY_WEEKLY, 1, array(), '', 0, 0, 0, Rule::END_TYPE_COUNT, null, 5 )
 			),
 			$this->reference_anchor(),
 			$timezone,
@@ -777,12 +782,13 @@ class Test_Expander extends Base {
 	 */
 	public function test_next_candidate_date_returns_null_for_unknown_frequency(): void {
 		$anchor = new DateTimeImmutable( '2026-09-03', new DateTimeZone( 'UTC' ) );
-		$rule   = $this->make_rule(
-			array(
-				'frequency' => 'yearly',
-				'interval'  => 1,
-				'end_type'  => Rule::END_TYPE_NEVER,
-			)
+
+		// 'yearly' is not a recognized frequency -- `is_valid()` rejects it at
+		// the `from_array()` boundary (REQ-11's other side; see
+		// `Test_Rule::test_from_array_rejects_unrecognized_frequency()`), so
+		// this deliberately-invalid shape can only be built directly.
+		$rule = $this->build_rule_directly(
+			array( 'yearly', 1, array(), '', 0, 0, 0, Rule::END_TYPE_NEVER, null, 0 )
 		);
 
 		$expander = new Expander();
@@ -812,13 +818,12 @@ class Test_Expander extends Base {
 	 */
 	public function test_next_scanned_date_returns_null_when_window_is_exhausted(): void {
 		$anchor = new DateTimeImmutable( '2026-09-03', new DateTimeZone( 'UTC' ) );
-		$rule   = $this->make_rule(
-			array(
-				'frequency' => Rule::FREQUENCY_WEEKLY,
-				'interval'  => 1,
-				'weekdays'  => array(),
-				'end_type'  => Rule::END_TYPE_NEVER,
-			)
+
+		// A weekly rule naming no weekday cannot pass `is_valid()`'s
+		// non-empty-weekday check, so it is built directly to exercise the
+		// scan window exhausting without a match.
+		$rule = $this->build_rule_directly(
+			array( Rule::FREQUENCY_WEEKLY, 1, array(), '', 0, 0, 0, Rule::END_TYPE_NEVER, null, 0 )
 		);
 
 		$this->assertNull(
@@ -901,14 +906,21 @@ class Test_Expander extends Base {
 	 */
 	public function test_next_monthly_date_returns_null_when_no_month_resolves(): void {
 		$anchor = new DateTimeImmutable( '2026-01-15', new DateTimeZone( 'UTC' ) );
-		$rule   = $this->make_rule(
+
+		// Ordinal 6 is outside `is_valid_monthly_shape()`'s `[1, 2, 3, 4, -1]`
+		// range, so this shape can only be built directly.
+		$rule = $this->build_rule_directly(
 			array(
-				'frequency'       => Rule::FREQUENCY_MONTHLY,
-				'interval'        => 1,
-				'monthly_mode'    => Rule::MONTHLY_MODE_NTH_WEEKDAY,
-				'monthly_ordinal' => 6,
-				'monthly_weekday' => 4,
-				'end_type'        => Rule::END_TYPE_NEVER,
+				Rule::FREQUENCY_MONTHLY,
+				1,
+				array(),
+				Rule::MONTHLY_MODE_NTH_WEEKDAY,
+				0,
+				6,
+				4,
+				Rule::END_TYPE_NEVER,
+				null,
+				0,
 			)
 		);
 
