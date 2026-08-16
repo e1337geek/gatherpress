@@ -23,6 +23,7 @@ namespace GatherPress\Core\Event\Recurrence;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Traits\Singleton;
+use WP_Post;
 use WP_Query;
 
 /**
@@ -51,6 +52,20 @@ final class Query {
 	const HAS_RECURRING_OPTION = 'gatherpress_has_recurring_events';
 
 	/**
+	 * Read-only derived mirror meta key holding a rule's frequency.
+	 *
+	 * `refresh_has_recurring_events()` reads this key rather than the canonical
+	 * `Meta::META_KEY` blob, because it is the key another lane's rule-meta
+	 * derivation writes last, after the canonical blob and every other mirror.
+	 * The lifecycle hooks below watch both keys for exactly this reason: a
+	 * write to the canonical key alone can fire before this mirror exists.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const FREQUENCY_META_KEY = 'gatherpress_recurrence_frequency';
+
+	/**
 	 * Class constructor.
 	 *
 	 * This method initializes the object and sets up necessary hooks.
@@ -66,30 +81,81 @@ final class Query {
 	 *
 	 * Every lifecycle path that can change whether any post carries a
 	 * recurrence rule recomputes the `HAS_RECURRING_OPTION` flag from storage.
-	 * `transition_post_status` alone covers publish, trash, untrash and draft
-	 * transitions; the three meta hooks are filtered to the canonical
-	 * `gatherpress_recurrence` key so unrelated meta writes do not trigger a
-	 * query.
+	 * `transition_post_status` and `deleted_post` are scoped to posts whose
+	 * post type declares `gatherpress-event-date` support, so a WXR import or
+	 * an editor save does not pay a `wp_postmeta` query for every attachment,
+	 * revision, and unrelated post type it touches — `import_end` already
+	 * sweeps once per import for the bulk case. The three meta hooks watch
+	 * both `Meta::META_KEY` and `FREQUENCY_META_KEY`, because the two are
+	 * written by separate statements in another lane's rule-meta derivation
+	 * and either can be the one whose write completes a not-yet-recurring or
+	 * no-longer-recurring transition.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
 	 */
 	protected function setup_hooks(): void {
-		add_action( 'transition_post_status', array( $this, 'refresh_has_recurring_events' ) );
-		add_action( 'deleted_post', array( $this, 'refresh_has_recurring_events' ) );
-		add_action( 'added_post_meta', array( $this, 'maybe_refresh_has_recurring_events' ), 10, 3 );
-		add_action( 'updated_post_meta', array( $this, 'maybe_refresh_has_recurring_events' ), 10, 3 );
-		add_action( 'deleted_post_meta', array( $this, 'maybe_refresh_has_recurring_events' ), 10, 3 );
+		add_action(
+			'transition_post_status',
+			array( $this, 'maybe_refresh_has_recurring_events_for_transition' ),
+			10,
+			3
+		);
+		add_action( 'deleted_post', array( $this, 'maybe_refresh_has_recurring_events_for_deleted_post' ), 10, 2 );
+		add_action( 'added_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
+		add_action( 'updated_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
+		add_action( 'deleted_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
 		add_action( 'import_end', array( $this, 'refresh_has_recurring_events' ) );
+	}
+
+	/**
+	 * Refresh the has-recurring-events flag when a supported post's status changes.
+	 *
+	 * Covers publish, trash, untrash and draft transitions in one hook. Scoped
+	 * to post types declaring `gatherpress-event-date` support, so attachments,
+	 * revisions, and unrelated post types never trigger the recompute query.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string  $new_status New post status.
+	 * @param string  $old_status Old post status.
+	 * @param WP_Post $post       Post whose status changed.
+	 *
+	 * @return void
+	 */
+	public function maybe_refresh_has_recurring_events_for_transition( $new_status, $old_status, WP_Post $post ): void {
+		if ( post_type_supports( $post->post_type, 'gatherpress-event-date' ) ) {
+			self::refresh_has_recurring_events();
+		}
+	}
+
+	/**
+	 * Refresh the has-recurring-events flag when a supported post is hard-deleted.
+	 *
+	 * Scoped the same way as `maybe_refresh_has_recurring_events_for_transition()`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int     $post_id Post ID that was deleted.
+	 * @param WP_Post $post    The deleted post.
+	 *
+	 * @return void
+	 */
+	public function maybe_refresh_has_recurring_events_for_deleted_post( $post_id, WP_Post $post ): void {
+		if ( post_type_supports( $post->post_type, 'gatherpress-event-date' ) ) {
+			self::refresh_has_recurring_events();
+		}
 	}
 
 	/**
 	 * Refresh the has-recurring-events flag when the recurrence rule meta changes.
 	 *
 	 * Filters `added_post_meta`, `updated_post_meta` and `deleted_post_meta` down
-	 * to the canonical `gatherpress_recurrence` key, so writes to unrelated meta
-	 * never trigger the recompute query.
+	 * to the canonical `Meta::META_KEY` blob and the `FREQUENCY_META_KEY` mirror,
+	 * so writes to unrelated meta never trigger the recompute query, and a write
+	 * to either half of the pair still catches a transition the other half's
+	 * write alone could miss.
 	 *
 	 * @since 0.36.0
 	 *
@@ -99,8 +165,8 @@ final class Query {
 	 *
 	 * @return void
 	 */
-	public function maybe_refresh_has_recurring_events( $meta_id, $post_id, $meta_key = '' ): void {
-		if ( Meta::META_KEY === $meta_key ) {
+	public function maybe_refresh_has_recurring_events_for_meta( $meta_id, $post_id, $meta_key = '' ): void {
+		if ( in_array( $meta_key, array( Meta::META_KEY, self::FREQUENCY_META_KEY ), true ) ) {
 			self::refresh_has_recurring_events();
 		}
 	}
@@ -180,8 +246,9 @@ final class Query {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$has = (bool) $wpdb->get_var(
 			$wpdb->prepare(
-				"SELECT 1 FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value != '' LIMIT 1",
-				'gatherpress_recurrence_frequency'
+				"SELECT 1 FROM %i WHERE meta_key = %s AND meta_value != '' LIMIT 1",
+				$wpdb->postmeta,
+				self::FREQUENCY_META_KEY
 			)
 		);
 
