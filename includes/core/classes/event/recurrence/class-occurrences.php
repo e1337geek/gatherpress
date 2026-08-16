@@ -11,9 +11,14 @@
  * PRD C-2 — every read takes an array of post IDs resolved through
  * `Series::resolve_post_ids()` and emits `series_post_id IN (…)`. A query
  * written as `series_post_id = %d` forecloses REQ-18. Mutations (`project()`,
- * `set_status()`, `delete_for_series()`, `get()`) operate on exactly one
- * post's own rows, so `series_post_id = %d` there is correct rather than a
- * violation — C-2 governs series-wide reads, not single-post writes.
+ * `set_status()`, `delete_for_post()`, `get()`) operate on exactly one post's
+ * own rows, so `series_post_id = %d` there is correct rather than a violation
+ * — C-2 governs series-wide reads, not single-post writes. `delete_for_post()`
+ * is deliberately per-post, not per-series: one rule per event post (PRD D-5)
+ * means every call site (`delete_post`, an expand-failure clear) only ever
+ * needs to clear the post it was handed. A genuine series-wide delete is a
+ * different, not-yet-needed method (`delete_for_series( array $post_ids )`),
+ * added when REQ-18's forward split actually requires one.
  *
  * PRD C-5 — cancellation is the `status` column on an occurrence row. The rule
  * is never mutated to express it.
@@ -27,8 +32,10 @@ namespace GatherPress\Core\Event\Recurrence;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use DateInterval;
 use DateTimeImmutable;
 use DateTimeZone;
+use Exception;
 use GatherPress\Core\Event;
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
@@ -73,23 +80,22 @@ final class Occurrences {
 	const STATUS_CANCELLED = 'cancelled';
 
 	/**
-	 * How many years ahead of its anchor an open-ended rule is projected.
+	 * How many months ahead of "now" an open-ended rule is projected.
 	 *
 	 * A `never`-ending rule has no natural horizon, so one is imposed here
-	 * rather than expanding toward `Expander::MAX_ITERATIONS`. Two years
-	 * keeps a single projection pass cheap while comfortably covering any
-	 * reasonable "upcoming events" window; re-saving the post re-projects
-	 * and slides the horizon forward. A `count`-bounded rule ignores this
-	 * value entirely (`Expander::expand()` bounds those by count, not by
-	 * horizon), and an `until`-bounded rule's own end date is always nearer
-	 * than this horizon since `Rule::MAX_COUNT` and `Rule::MAX_INTERVAL`
-	 * cap how far a `count` rule can reach, not how far an `until` date may
-	 * be set.
+	 * rather than expanding toward `Expander::MAX_ITERATIONS`. The horizon is
+	 * measured from `max( $anchor_start, now )`, not from the anchor alone --
+	 * an anchor-relative horizon computes the same fixed window every time
+	 * `project()` runs, so a long-running series eventually projects entirely
+	 * into the past and a top-up re-run (REQ-6) is a guaranteed no-op. `until`
+	 * is not bounded by this constant either: `Expander::expand()` treats a
+	 * non-count rule's horizon as its stopping point, so an `UNTIL` far beyond
+	 * this window is truncated at the horizon, same as `never`.
 	 *
 	 * @since 0.36.0
 	 * @var int
 	 */
-	const PROJECTION_HORIZON_YEARS = 2;
+	const PROJECTION_HORIZON_MONTHS = 12;
 
 	/**
 	 * Posts whose recurrence blob had not landed yet when a save tried to project it.
@@ -129,7 +135,7 @@ final class Occurrences {
 	 */
 	protected function setup_hooks(): void {
 		add_action( 'wp_after_insert_post', array( $this, 'maybe_project' ), 20 );
-		add_action( 'delete_post', array( $this, 'maybe_delete_for_series' ) );
+		add_action( 'delete_post', array( $this, 'maybe_delete_for_post' ) );
 	}
 
 	/**
@@ -193,7 +199,7 @@ final class Occurrences {
 	}
 
 	/**
-	 * Delete a series' occurrence rows when its post is hard-deleted, if supported.
+	 * Delete a post's occurrence rows when it is hard-deleted, if supported.
 	 *
 	 * @since 0.36.0
 	 *
@@ -201,12 +207,12 @@ final class Occurrences {
 	 *
 	 * @return void
 	 */
-	public function maybe_delete_for_series( int $post_id ): void {
+	public function maybe_delete_for_post( int $post_id ): void {
 		if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
 			return;
 		}
 
-		$this->delete_for_series( $post_id );
+		$this->delete_for_post( $post_id );
 	}
 
 	/**
@@ -262,12 +268,17 @@ final class Occurrences {
 	 *
 	 * `LEFT JOIN`s the occurrence table onto every post of a
 	 * `gatherpress-event-date`-supporting type, so a non-recurring event (no
-	 * occurrence row) still produces one result via
-	 * `COALESCE( o.datetime_start_gmt, events.datetime_start_gmt )`, while a
-	 * recurring series produces one result per occurrence row. The `status`
-	 * predicate lives in the join condition, never in `WHERE`, so a fully
-	 * cancelled series does not fall back through the `NULL` branch and
-	 * reappear under its original anchor date.
+	 * occurrence row at all) still produces one result via
+	 * `COALESCE( scheduled_occurrence.datetime_start_gmt, events.datetime_start_gmt )`,
+	 * while a recurring series produces one result per matching occurrence
+	 * row. The `status` predicate lives in the join condition, never in
+	 * `WHERE` -- but that alone is not sufficient: without the `NOT EXISTS`
+	 * guard below, a post whose occurrence rows all fail the status filter
+	 * (a fully cancelled series) would *also* fall through the `NULL`
+	 * `scheduled_occurrence` branch and reappear as if it were a
+	 * non-recurring event at its original anchor date. The guard scopes the
+	 * `NULL` fallback to posts with **no occurrence rows at all**, so a
+	 * cancelled series is correctly absent rather than misrepresented.
 	 *
 	 * @since 0.36.0
 	 *
@@ -295,12 +306,15 @@ final class Occurrences {
 		$comparison        = $upcoming ? '>=' : '<';
 		$order             = $upcoming ? 'ASC' : 'DESC';
 
-		$sql = 'SELECT %i.ID AS post_id, %i.recurrence_id AS recurrence_id,'
-			. ' COALESCE( %i.datetime_start_gmt, %i.datetime_start_gmt ) AS effective_start_gmt'
+		$sql = 'SELECT %i.ID AS post_id, scheduled_occurrence.recurrence_id AS recurrence_id,'
+			. ' COALESCE( scheduled_occurrence.datetime_start_gmt, %i.datetime_start_gmt ) AS effective_start_gmt'
 			. ' FROM %i'
 			. ' LEFT JOIN %i ON %i.ID = %i.post_id'
-			. ' LEFT JOIN %i ON %i.ID = %i.series_post_id AND %i.status = %s'
+			. ' LEFT JOIN %i AS scheduled_occurrence ON %i.ID = scheduled_occurrence.series_post_id'
+			. ' AND scheduled_occurrence.status = %s'
 			. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
+			. ' AND ( scheduled_occurrence.recurrence_id IS NOT NULL'
+			. ' OR NOT EXISTS ( SELECT 1 FROM %i WHERE series_post_id = %i.ID ) )'
 			. " HAVING effective_start_gmt {$comparison} %s"
 			. " ORDER BY effective_start_gmt {$order}"
 			. ' LIMIT %d';
@@ -308,8 +322,6 @@ final class Occurrences {
 		$values = array_merge(
 			array(
 				$wpdb->posts,
-				$occurrences_table,
-				$occurrences_table,
 				$events_table,
 				$wpdb->posts,
 				$events_table,
@@ -317,8 +329,6 @@ final class Occurrences {
 				$events_table,
 				$occurrences_table,
 				$wpdb->posts,
-				$occurrences_table,
-				$occurrences_table,
 				$status,
 				$wpdb->posts,
 			),
@@ -326,6 +336,8 @@ final class Occurrences {
 			array(
 				$wpdb->posts,
 				'publish',
+				$occurrences_table,
+				$wpdb->posts,
 				current_time( 'mysql', true ),
 				$limit,
 			)
@@ -361,7 +373,13 @@ final class Occurrences {
 	 * Project a series' rule onto occurrence rows.
 	 *
 	 * Idempotent: upserts on the composite primary key without touching the
-	 * `status` of an existing row, and deletes rows the rule no longer produces.
+	 * `status` of an existing row, and deletes rows the rule no longer
+	 * produces. A post that no longer has an expandable rule -- no rule at
+	 * all, or an anchor that cannot be resolved -- has its existing rows
+	 * cleared rather than left orphaned: `Recurrence\Meta` clears the rule
+	 * mirrors the moment a recurrence is removed or its timezone is rejected,
+	 * and this method is the only thing that ever deletes the occurrence rows
+	 * mirrors used to imply.
 	 *
 	 * @since 0.36.0
 	 *
@@ -370,19 +388,13 @@ final class Occurrences {
 	 * @return int Rows written, or 0 when the post is not recurring.
 	 */
 	public function project( int $post_id ): int {
-		$rule = Rule::from_post( $post_id );
+		$resolved = $this->resolve_projectable( $post_id );
 
-		if ( ! $rule instanceof Rule ) {
+		if ( null === $resolved ) {
 			return 0;
 		}
 
-		$anchor = $this->resolve_anchor( $post_id );
-
-		if ( null === $anchor ) {
-			return 0;
-		}
-
-		[ $anchor_start, $anchor_end, $timezone ] = $anchor;
+		[ $rule, $anchor_start, $anchor_end, $timezone ] = $resolved;
 
 		$occurrences = $this->expand_or_clear( $rule, $anchor_start, $timezone, $post_id );
 
@@ -390,13 +402,50 @@ final class Occurrences {
 			return 0;
 		}
 
-		$duration = $anchor_end->getTimestamp() - $anchor_start->getTimestamp();
-		$rows     = array_map(
-			fn( DateTimeImmutable $start ) => $this->build_occurrence_row( $start, $duration, $timezone ),
+		$span = $anchor_start->diff( $anchor_end );
+		$rows = array_map(
+			fn( DateTimeImmutable $start ) => $this->build_occurrence_row( $start, $span, $timezone ),
 			$occurrences
 		);
 
 		return $this->upsert_occurrences( $post_id, $rows );
+	}
+
+	/**
+	 * Resolve a post's rule and anchor together, clearing its occurrence rows
+	 * when either is missing.
+	 *
+	 * Split out from `project()` so the "nothing to project" bail is a single
+	 * `return` there (`php:S1142`), and so the clear-on-removal behavior lives
+	 * in one place for both failure modes: no rule at all, and a rule whose
+	 * anchor datetime cannot be resolved.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID to resolve.
+	 *
+	 * @return array{0: Rule, 1: DateTimeImmutable, 2: DateTimeImmutable, 3: DateTimeZone}|null
+	 *              The rule, anchor start, anchor end, and timezone, or null
+	 *              when the post has no expandable rule.
+	 */
+	protected function resolve_projectable( int $post_id ): ?array {
+		$rule = Rule::from_post( $post_id );
+
+		if ( ! $rule instanceof Rule ) {
+			$this->delete_for_post( $post_id );
+
+			return null;
+		}
+
+		$anchor = $this->resolve_anchor( $post_id );
+
+		if ( null === $anchor ) {
+			$this->delete_for_post( $post_id );
+
+			return null;
+		}
+
+		return array_merge( array( $rule ), $anchor );
 	}
 
 	/**
@@ -408,17 +457,28 @@ final class Occurrences {
 	 *
 	 * @return array{0: DateTimeImmutable, 1: DateTimeImmutable, 2: DateTimeZone}|null
 	 *              The anchor start, anchor end, and timezone, or null when the
-	 *              stored datetime cannot be parsed. The timezone string itself
-	 *              is not validated here -- `expand_or_clear()` is the single
-	 *              source of truth for that, via `Expander::expand()`'s own
-	 *              `Timezone_Guard::assert_named()` call.
+	 *              timezone string cannot construct a `DateTimeZone` at all, or
+	 *              the stored datetime cannot be parsed. Whether the timezone is
+	 *              a *named* tz-database identifier is not checked here --
+	 *              `expand_or_clear()` is the single source of truth for that,
+	 *              via `Expander::expand()`'s own `Timezone_Guard::assert_named()`
+	 *              call.
 	 */
 	protected function resolve_anchor( int $post_id ): ?array {
 		$event    = new Event( $post_id );
 		$datetime = $event->get_datetime();
 
 		$timezone_name = Utility::normalize_timezone_string( (string) $datetime['timezone'] );
-		$timezone      = new DateTimeZone( $timezone_name );
+
+		try {
+			// The `gatherpress_timezone` filter runs inside get_datetime()
+			// after GatherPress's own validation, so a misbehaving filter can
+			// still hand back a string DateTimeZone rejects outright -- that
+			// must not fatal the post save.
+			$timezone = new DateTimeZone( $timezone_name );
+		} catch ( Exception $e ) {
+			return null;
+		}
 
 		$anchor_start = DateTimeImmutable::createFromFormat(
 			Event::DATETIME_FORMAT,
@@ -447,11 +507,14 @@ final class Occurrences {
 	 *
 	 * `Expander::expand()` asserts the timezone is named on its first line and
 	 * does not catch what it throws -- GatherPress normalizes site/event
-	 * timezones through `Utility::maybe_convert_utc_offset()`, so a fixed UTC
-	 * offset (`+05:30`) reaching here is a live, reachable configuration, not
-	 * a hypothetical one. A rule that can no longer be expanded must not leave
-	 * stale occurrences behind, matching `Recurrence\Meta::write_recurrence()`'s
-	 * own clear-rather-than-fatal handling of the identical guard.
+	 * timezones through `Utility::maybe_convert_utc_offset()`, and the
+	 * `gatherpress_timezone` filter `resolve_anchor()` reads through can also
+	 * hand back a fixed offset after GatherPress's own validation has already
+	 * passed, so a fixed UTC offset (`+05:30`) reaching here is a live,
+	 * reachable configuration, not a hypothetical one. A rule that can no
+	 * longer be expanded must not leave stale occurrences behind, matching
+	 * `Recurrence\Meta::write_recurrence()`'s own clear-rather-than-fatal
+	 * handling of the identical guard.
 	 *
 	 * @since 0.36.0
 	 *
@@ -468,31 +531,82 @@ final class Occurrences {
 		DateTimeZone $timezone,
 		int $post_id
 	): ?array {
-		$through = $anchor_start->modify( sprintf( '+%d years', self::PROJECTION_HORIZON_YEARS ) );
+		$through = $this->resolve_horizon( $anchor_start, $timezone );
 
 		try {
 			return ( new Expander() )->expand( $rule, $anchor_start, $timezone, $through );
 		} catch ( InvalidArgumentException $e ) {
-			$this->delete_for_series( $post_id );
+			$this->delete_for_post( $post_id );
 
 			return null;
 		}
 	}
 
 	/**
+	 * Resolve the horizon a `never`- or `until`-ending rule is expanded to.
+	 *
+	 * Measured from `max( $anchor_start, now )` rather than from the anchor
+	 * alone, so a long-running series' horizon rolls forward on every
+	 * projection instead of staying pinned to its original anchor date --
+	 * an anchor-relative horizon would eventually leave a years-old series
+	 * projected entirely into the past, with no upcoming occurrences and no
+	 * way for a re-save to fix it, since `project()` is a pure function of
+	 * rule and anchor. Filterable so a future top-up task (REQ-6) is not
+	 * boxed in by a literal.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeImmutable $anchor_start Series anchor start.
+	 * @param DateTimeZone      $timezone     Series timezone, used to read "now".
+	 *
+	 * @return DateTimeImmutable The horizon datetime.
+	 */
+	protected function resolve_horizon( DateTimeImmutable $anchor_start, DateTimeZone $timezone ): DateTimeImmutable {
+		/**
+		 * Filters how many months ahead of "now" an open-ended recurrence rule is projected.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param int $months Number of months, default `Occurrences::PROJECTION_HORIZON_MONTHS`.
+		 *
+		 * @return int Number of months.
+		 */
+		$months = (int) apply_filters( 'gatherpress_recurrence_horizon_months', self::PROJECTION_HORIZON_MONTHS );
+		$now    = new DateTimeImmutable( 'now', $timezone );
+		$from   = $anchor_start > $now ? $anchor_start : $now;
+
+		return $from->modify( sprintf( '+%d months', $months ) );
+	}
+
+	/**
 	 * Build one occurrence's row values from its expanded start.
+	 *
+	 * The end time carries the anchor's *nominal* wall-clock span, not an
+	 * absolute-seconds delta: `$span` is `$anchor_start->diff( $anchor_end )`,
+	 * a calendar-decomposed `DateInterval`, applied through `modify()` rather
+	 * than `DateTimeImmutable::add()`. A nominal 2-hour span starting just
+	 * before a fall-back transition must still read "2 hours later" on the
+	 * clock, even though 10,800 real seconds elapse -- an absolute-seconds
+	 * delta taken once from the anchor and reapplied to every occurrence would
+	 * silently inflate to a 3-hour event on any occurrence landing on a
+	 * transition date the anchor itself does not share.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param DateTimeImmutable $start    Occurrence start in the series timezone.
-	 * @param int               $duration Event duration in seconds, from the series anchor.
+	 * @param DateInterval      $span     Nominal wall-clock event span, from the series anchor.
 	 * @param DateTimeZone      $timezone Series timezone.
 	 *
 	 * @return array<string, string> Row values keyed as the occurrence table's columns are.
 	 */
-	protected function build_occurrence_row( DateTimeImmutable $start, int $duration, DateTimeZone $timezone ): array {
-		$end = $start->modify( sprintf( '%+d seconds', $duration ) );
-		$utc = new DateTimeZone( 'UTC' );
+	protected function build_occurrence_row(
+		DateTimeImmutable $start,
+		DateInterval $span,
+		DateTimeZone $timezone
+	): array {
+		$modifier = '%R%y years %R%m months %R%d days %R%h hours %R%i minutes %R%s seconds';
+		$end      = $start->modify( $span->format( $modifier ) );
+		$utc      = new DateTimeZone( 'UTC' );
 
 		return array(
 			'recurrence_id'      => self::recurrence_id( $start ),
@@ -731,15 +845,22 @@ final class Occurrences {
 	}
 
 	/**
-	 * Delete every occurrence row belonging to a series.
+	 * Delete every occurrence row belonging to one post.
+	 *
+	 * Deliberately per-post, not per-series -- one rule per event post
+	 * (PRD D-5) means every call site (`delete_post`, an expand-failure
+	 * clear) only ever needs to clear the post it was handed. A genuine
+	 * series-wide delete is a different, not-yet-needed method
+	 * (`delete_for_series( array $post_ids )`), added when REQ-18's forward
+	 * split actually requires one.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param int $post_id Series post ID.
+	 * @param int $post_id Post ID whose occurrence rows should be removed.
 	 *
 	 * @return int Rows deleted.
 	 */
-	public function delete_for_series( int $post_id ): int {
+	public function delete_for_post( int $post_id ): int {
 		global $wpdb;
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );

@@ -14,6 +14,7 @@ use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrence_Ref;
 use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
@@ -74,6 +75,53 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Create and project a recurring event anchored relative to "now", rather
+	 * than to `Occurrence_Fixtures`' fixed 2026-09-03 anchor.
+	 *
+	 * `select_upcoming()`/`select_past()` compare against `current_time()`, so
+	 * a test asserting "upcoming" or "past" placement against a fixed
+	 * calendar date is a date bomb -- it silently starts failing once real
+	 * time passes the fixture's anchor. This builds the event directly rather
+	 * than through `create_recurring_event()`, so the anchor is always
+	 * relative to whenever the suite actually runs.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array             $rule     Recurrence rule values.
+	 * @param DateTimeImmutable $start    Anchor start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Anchor end, in `$timezone`.
+	 * @param string            $timezone Named tz-database identifier for the series.
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_relative_recurring_event(
+		array $rule,
+		DateTimeImmutable $start,
+		DateTimeImmutable $end,
+		string $timezone = 'America/New_York'
+	): int {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
+					'timezone'      => $timezone,
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $rule ) );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return $post_id;
+	}
+
+	/**
 	 * Coverage for `__construct` and `setup_hooks`.
 	 *
 	 * @covers ::__construct
@@ -94,7 +142,7 @@ class Test_Occurrences extends Base {
 				'type'     => 'action',
 				'name'     => 'delete_post',
 				'priority' => 10,
-				'callback' => array( $instance, 'maybe_delete_for_series' ),
+				'callback' => array( $instance, 'maybe_delete_for_post' ),
 			),
 		);
 
@@ -243,6 +291,163 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for BLOCKING 2: a long-running `never`-ending series must
+	 * project occurrences that are actually upcoming, not stop at a horizon
+	 * measured from a years-old anchor. Anchored 2019-01-03 (matching the
+	 * reviewer's measured probe), an anchor-relative 12-month horizon would
+	 * project entirely into the past with zero upcoming entries; the horizon
+	 * must instead roll forward from `now`.
+	 *
+	 * @covers ::project
+	 * @covers ::expand_or_clear
+	 * @covers ::resolve_horizon
+	 *
+	 * @return void
+	 */
+	public function test_project_rolls_horizon_forward_for_a_long_running_never_ending_series(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = new DateTimeImmutable( '2019-01-03 18:00:00', $timezone );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'never',
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$this->assertNotEmpty( $rows, 'Failed to assert that the long-running series wrote any rows at all.' );
+
+		$upcoming     = Occurrences::get_instance()->select_upcoming( 50 );
+		$upcoming_ids = wp_list_pluck( $upcoming, 'post_id' );
+
+		$this->assertContains(
+			$post_id,
+			$upcoming_ids,
+			'Failed to assert that a 2019-anchored never-ending series has upcoming occurrences.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `resolve_projectable()`'s anchor-null branch:
+	 * extracted-helper coverage guards against the known xdebug tracing gap
+	 * for same-class helpers called via short delegation (`project()` ->
+	 * `resolve_projectable()` -> `delete_for_post()`).
+	 *
+	 * @covers ::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_resolve_projectable_clears_rows_when_anchor_cannot_be_resolved(): void {
+		$post_id = $this->create_and_project();
+
+		delete_post_meta( $post_id, 'gatherpress_datetime_start' );
+		delete_post_meta( $post_id, 'gatherpress_datetime_end' );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_projectable',
+			array( $post_id )
+		);
+
+		$this->assertNull(
+			$result,
+			'Failed to assert that resolve_projectable returns null for an unresolvable anchor.'
+		);
+		$this->assertCount(
+			0,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that resolve_projectable cleared the existing rows.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `resolve_horizon()`'s ternary: a future anchor is
+	 * used as the horizon base directly.
+	 *
+	 * @covers ::resolve_horizon
+	 *
+	 * @return void
+	 */
+	public function test_resolve_horizon_uses_anchor_when_anchor_is_in_the_future(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '+5 years' );
+
+		$horizon = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_horizon',
+			array( $anchor, $timezone )
+		);
+
+		$this->assertSame(
+			$anchor->modify( '+' . Occurrences::PROJECTION_HORIZON_MONTHS . ' months' )->format( 'Y-m-d H:i:s' ),
+			$horizon->format( 'Y-m-d H:i:s' ),
+			'Failed to assert that a future anchor is used directly as the horizon base.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `resolve_horizon()`'s ternary: a past anchor rolls
+	 * the horizon forward from "now" instead (BLOCKING 2).
+	 *
+	 * @covers ::resolve_horizon
+	 *
+	 * @return void
+	 */
+	public function test_resolve_horizon_uses_now_when_anchor_is_in_the_past(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = new DateTimeImmutable( '2019-01-03 18:00:00', $timezone );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+
+		$horizon = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_horizon',
+			array( $anchor, $timezone )
+		);
+
+		$this->assertGreaterThan(
+			$now,
+			$horizon,
+			'Failed to assert that a past anchor still produces a horizon in the future.'
+		);
+	}
+
+	/**
+	 * Coverage for the `gatherpress_recurrence_horizon_months` filter.
+	 *
+	 * @covers ::resolve_horizon
+	 *
+	 * @return void
+	 */
+	public function test_resolve_horizon_is_filterable(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '+1 year' );
+
+		$filter = static fn() => 1;
+		add_filter( 'gatherpress_recurrence_horizon_months', $filter );
+
+		$horizon = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_horizon',
+			array( $anchor, $timezone )
+		);
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $filter );
+
+		$this->assertSame(
+			$anchor->modify( '+1 months' )->format( 'Y-m-d H:i:s' ),
+			$horizon->format( 'Y-m-d H:i:s' ),
+			'Failed to assert that the gatherpress_recurrence_horizon_months filter overrides the default.'
+		);
+	}
+
+	/**
 	 * Coverage for a rule whose expansion produces zero occurrences deleting
 	 * every existing row for the series.
 	 *
@@ -297,6 +502,84 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for BLOCKING 1: a series whose rule is removed must have its
+	 * existing occurrence rows cleared, not left orphaned. `Rule::from_post()`
+	 * returning null looks identical whether a post never had a rule or just
+	 * lost one, so `project()` cannot tell "nothing to do" from "clean up"
+	 * without deleting unconditionally in the no-rule branch.
+	 *
+	 * @covers ::project
+	 * @covers ::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_project_deletes_existing_rows_when_rule_is_removed(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+
+		$this->assertCount( 5, $instance->select_for_series( array( $post_id ) ) );
+
+		delete_post_meta( $post_id, Meta::META_KEY );
+		Meta::get_instance()->set_recurrence( $post_id );
+		// The blob is now empty, so Meta defers the decision to shutdown
+		// rather than clearing synchronously -- simulate shutdown firing.
+		Meta::get_instance()->resolve_pending_recurrence();
+
+		$this->assertNull( Rule::from_post( $post_id ), 'Failed to assert the mirrors were cleared by Meta.' );
+
+		$written = $instance->project( $post_id );
+
+		$this->assertSame( 0, $written, 'Failed to assert that project() returns 0 once the rule is gone.' );
+		$this->assertCount(
+			0,
+			$instance->select_for_series( array( $post_id ) ),
+			'Failed to assert that removing the rule orphaned no rows -- they were deleted.'
+		);
+	}
+
+	/**
+	 * Coverage for BLOCKING 1, replayed through the real lifecycle wiring
+	 * rather than calling project() directly: `maybe_project()` at
+	 * `wp_after_insert_post` priority 20, `Meta::set_recurrence()` at
+	 * priority 10 on the same hook, and `resolve_pending_projection()` on
+	 * `shutdown`. Removing the recurrence blob and replaying that exact
+	 * sequence must still clear the series' rows.
+	 *
+	 * @covers ::maybe_project
+	 * @covers ::resolve_pending_projection
+	 * @covers ::project
+	 *
+	 * @return void
+	 */
+	public function test_full_lifecycle_replay_deletes_rows_when_recurrence_blob_is_removed(): void {
+		$post_id     = $this->create_and_project();
+		$occurrences = Occurrences::get_instance();
+		$meta        = Meta::get_instance();
+
+		$this->assertCount( 5, $occurrences->select_for_series( array( $post_id ) ) );
+
+		delete_post_meta( $post_id, Meta::META_KEY );
+
+		// wp_after_insert_post priority 10, then priority 20, in that order --
+		// matches production hook ordering exactly.
+		$meta->set_recurrence( $post_id );
+		$occurrences->maybe_project( $post_id );
+
+		// Neither class had a blob to react to synchronously, so both defer.
+		// Simulates shutdown firing, Meta's priority-10 resolution before
+		// Occurrences' priority-20 one.
+		$meta->resolve_pending_recurrence();
+		$occurrences->resolve_pending_projection();
+
+		$this->assertNull( Rule::from_post( $post_id ) );
+		$this->assertCount(
+			0,
+			$occurrences->select_for_series( array( $post_id ) ),
+			'Failed to assert that the full lifecycle replay cleared the series\' rows.'
+		);
+	}
+
+	/**
 	 * Coverage for `resolve_anchor()` returning null when the stored datetime
 	 * cannot be parsed -- a rule's mirrors can exist on a post whose own
 	 * datetime meta never landed.
@@ -321,16 +604,20 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for `expand_or_clear()` clearing existing rows, without fataling,
-	 * when the series timezone is a fixed UTC offset rather than a named
-	 * tz-database identifier. `Expander::expand()` asserts this on its first
-	 * line and does not catch what it throws -- GatherPress normalizes
-	 * site/event timezones through `Utility::maybe_convert_utc_offset()`, so a
-	 * fixed offset (`+05:30`) reaching here is a live, reachable
-	 * configuration, not a hypothetical one.
+	 * Coverage for the real production path when a series' timezone becomes a
+	 * fixed UTC offset: `Meta::set_recurrence()` re-runs with the new,
+	 * genuinely-invalid raw timezone, its own `Timezone_Guard::assert_named()`
+	 * check rejects it, and `clear_mirrors()` removes the rule mirrors --
+	 * `Rule::from_post()` then returns null and `project()` clears the rows
+	 * through the no-rule branch (BLOCKING 1's fix), never reaching
+	 * `expand_or_clear()`'s own catch at all. An earlier version of this test
+	 * changed only the datetime blob without re-running `Meta::set_recurrence()`,
+	 * which left the mirrors (and therefore `Rule::from_post()`) stale and
+	 * made `expand_or_clear()`'s catch arm look reachable for a case it is not
+	 * reachable for in production.
 	 *
 	 * @covers ::project
-	 * @covers ::expand_or_clear
+	 * @covers ::resolve_projectable
 	 *
 	 * @return void
 	 */
@@ -349,6 +636,12 @@ class Test_Occurrences extends Base {
 			)
 		);
 		Event_Setup::get_instance()->set_datetimes( $post_id );
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$this->assertNull(
+			Rule::from_post( $post_id ),
+			'Failed to assert that Meta cleared the mirrors for the now-invalid raw timezone.'
+		);
 
 		$instance = Occurrences::get_instance();
 		$written  = $instance->project( $post_id );
@@ -366,6 +659,82 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for `expand_or_clear()`'s own catch, kept genuinely reachable
+	 * by a scenario `Meta` cannot intercept: `Meta::read_timezone()` reads the
+	 * raw `gatherpress_datetime` blob directly, so it passes a validly-named
+	 * timezone. `Event::get_datetime()`, which `resolve_anchor()` reads
+	 * through, applies the `gatherpress_timezone` filter *after* that
+	 * validation -- a misbehaving filter can still hand `expand_or_clear()` a
+	 * fixed offset even though the mirrors (and `Rule::from_post()`) remain
+	 * valid. This is the live scenario `resolve_anchor()`'s own unguarded
+	 * `new DateTimeZone()` construction and `expand_or_clear()`'s try/catch
+	 * both exist to survive without fataling the save.
+	 *
+	 * @covers ::project
+	 * @covers ::expand_or_clear
+	 *
+	 * @return void
+	 */
+	public function test_project_clears_existing_rows_when_timezone_filter_injects_a_fixed_offset(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_post( $post_id ),
+			'Failed to assert that the rule mirrors are still valid before the filter runs.'
+		);
+
+		$filter = static fn() => '+05:30';
+		add_filter( 'gatherpress_timezone', $filter );
+
+		$instance = Occurrences::get_instance();
+		$written  = $instance->project( $post_id );
+
+		remove_filter( 'gatherpress_timezone', $filter );
+
+		$this->assertSame(
+			0,
+			$written,
+			'Failed to assert that project() returns 0 when the timezone filter injects a fixed offset.'
+		);
+		$this->assertCount(
+			0,
+			$instance->select_for_series( array( $post_id ) ),
+			'Failed to assert that expand_or_clear() cleared the previously projected rows.'
+		);
+	}
+
+	/**
+	 * Coverage for `resolve_anchor()`'s own guard around `new DateTimeZone()`:
+	 * a `gatherpress_timezone` filter can hand back a string that is not a
+	 * fixed offset either, but something `DateTimeZone` rejects outright
+	 * (`Not/AZone`). Without a try/catch there, this fatals the post save
+	 * one line before `expand_or_clear()`'s own try/catch would ever run.
+	 *
+	 * @covers ::project
+	 * @covers ::resolve_anchor
+	 *
+	 * @return void
+	 */
+	public function test_project_returns_zero_when_timezone_filter_injects_an_invalid_string(): void {
+		$post_id = $this->create_and_project();
+
+		$filter = static fn() => 'Not/AZone';
+		add_filter( 'gatherpress_timezone', $filter );
+
+		$instance = Occurrences::get_instance();
+		$written  = $instance->project( $post_id );
+
+		remove_filter( 'gatherpress_timezone', $filter );
+
+		$this->assertSame(
+			0,
+			$written,
+			'Failed to assert that project() returns 0 rather than fataling on an unconstructable timezone string.'
+		);
+	}
+
+	/**
 	 * Direct coverage for `build_occurrence_row()`'s duration arithmetic.
 	 *
 	 * Extracted-helper coverage: called from inside project()'s array_map,
@@ -379,11 +748,12 @@ class Test_Occurrences extends Base {
 	public function test_build_occurrence_row_applies_duration_from_anchor(): void {
 		$timezone = new DateTimeZone( 'America/New_York' );
 		$start    = new DateTimeImmutable( '2026-09-15 18:00:00', $timezone );
+		$span     = $start->diff( $start->modify( '+2 hours' ) );
 
 		$row = Utility::invoke_hidden_method(
 			Occurrences::get_instance(),
 			'build_occurrence_row',
-			array( $start, 7200, $timezone )
+			array( $start, $span, $timezone )
 		);
 
 		$this->assertSame(
@@ -397,6 +767,46 @@ class Test_Occurrences extends Base {
 			),
 			$row,
 			'Failed to assert that build_occurrence_row applies the anchor duration correctly.'
+		);
+	}
+
+	/**
+	 * Coverage for BLOCKING 4: a nominal 2-hour span applied to an occurrence
+	 * landing on the fall-back DST transition (2026-11-01, America/New_York)
+	 * must stay a nominal 2-hour span on the wall clock (01:00 -> 03:00),
+	 * even though 10,800 real seconds elapse across the repeated hour. An
+	 * absolute-seconds delta taken once from a non-transition anchor and
+	 * reapplied via raw `modify( '+N seconds' )` is fragile precisely because
+	 * it happens to agree with the calendar-decomposed `DateInterval` used
+	 * here for whole-hour spans -- this test pins the values a reviewer
+	 * measured directly, not a value re-derived from reasoning about it.
+	 *
+	 * @covers ::build_occurrence_row
+	 *
+	 * @return void
+	 */
+	public function test_build_occurrence_row_preserves_nominal_span_across_fall_back(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = new DateTimeImmutable( '2026-09-03 18:00:00', $timezone );
+		$span     = $anchor->diff( $anchor->modify( '+2 hours' ) );
+
+		$start = new DateTimeImmutable( '2026-11-01 01:00:00', $timezone );
+
+		$row = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'build_occurrence_row',
+			array( $start, $span, $timezone )
+		);
+
+		$this->assertSame(
+			'2026-11-01 03:00:00',
+			$row['datetime_end'],
+			'Failed to assert that the nominal wall-clock end stayed 03:00:00, not the absolute-time 02:00:00.'
+		);
+		$this->assertSame(
+			'2026-11-01 08:00:00',
+			$row['datetime_end_gmt'],
+			'Failed to assert that the GMT end matches the nominal wall-clock end.'
 		);
 	}
 
@@ -560,19 +970,19 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for `delete_for_series()` removing all rows for a series.
+	 * Coverage for `delete_for_post()` removing all rows for a series.
 	 *
-	 * @covers ::delete_for_series
+	 * @covers ::delete_for_post
 	 *
 	 * @return void
 	 */
-	public function test_delete_for_series_removes_all_rows(): void {
+	public function test_delete_for_post_removes_all_rows(): void {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
-		$deleted = $instance->delete_for_series( $post_id );
+		$deleted = $instance->delete_for_post( $post_id );
 
-		$this->assertSame( 5, $deleted, 'Failed to assert that delete_for_series reports five deleted rows.' );
+		$this->assertSame( 5, $deleted, 'Failed to assert that delete_for_post reports five deleted rows.' );
 		$this->assertCount(
 			0,
 			$instance->select_for_series( array( $post_id ) ),
@@ -710,13 +1120,13 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for `maybe_delete_for_series()` skipping an unsupported post type.
+	 * Coverage for `maybe_delete_for_post()` skipping an unsupported post type.
 	 *
-	 * @covers ::maybe_delete_for_series
+	 * @covers ::maybe_delete_for_post
 	 *
 	 * @return void
 	 */
-	public function test_maybe_delete_for_series_skips_unsupported_post_type(): void {
+	public function test_maybe_delete_for_post_skips_unsupported_post_type(): void {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
@@ -725,7 +1135,7 @@ class Test_Occurrences extends Base {
 		// what is under test.
 		set_post_type( $post_id, 'post' );
 
-		$instance->maybe_delete_for_series( $post_id );
+		$instance->maybe_delete_for_post( $post_id );
 
 		$this->assertCount(
 			5,
@@ -735,17 +1145,17 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for `maybe_delete_for_series()` deleting rows for a supported post type.
+	 * Coverage for `maybe_delete_for_post()` deleting rows for a supported post type.
 	 *
-	 * @covers ::maybe_delete_for_series
+	 * @covers ::maybe_delete_for_post
 	 *
 	 * @return void
 	 */
-	public function test_maybe_delete_for_series_deletes_rows_for_supported_post_type(): void {
+	public function test_maybe_delete_for_post_deletes_rows_for_supported_post_type(): void {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
-		$instance->maybe_delete_for_series( $post_id );
+		$instance->maybe_delete_for_post( $post_id );
 
 		$this->assertCount(
 			0,
@@ -765,16 +1175,32 @@ class Test_Occurrences extends Base {
 	 * @return void
 	 */
 	public function test_select_upcoming_returns_occurrence_refs_ordered_ascending(): void {
-		$recurring_post_id = $this->create_and_project();
+		$timezone        = new DateTimeZone( 'America/New_York' );
+		$now             = new DateTimeImmutable( 'now', $timezone );
+		$recurring_start = $now->modify( '+10 days' )->setTime( 18, 0, 0 );
 
+		$recurring_post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $recurring_start->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => 3,
+			),
+			$recurring_start,
+			$recurring_start->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$plain_start   = $now->modify( '+15 days' )->setTime( 12, 0, 0 );
 		$plain_post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
 		add_post_meta(
 			$plain_post_id,
 			'gatherpress_datetime',
 			wp_json_encode(
 				array(
-					'dateTimeStart' => '2026-09-10 12:00:00',
-					'dateTimeEnd'   => '2026-09-10 13:00:00',
+					'dateTimeStart' => $plain_start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $plain_start->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
 					'timezone'      => 'America/New_York',
 				)
 			)
@@ -808,6 +1234,52 @@ class Test_Occurrences extends Base {
 		sort( $sorted );
 
 		$this->assertSame( $sorted, $starts, 'Failed to assert that upcoming occurrences are ordered ascending.' );
+	}
+
+	/**
+	 * Coverage for BLOCKING 3: a fully cancelled series must not reappear in
+	 * `select_upcoming()` as if it were a non-recurring event at its original
+	 * anchor date. Without the `NOT EXISTS` guard, every occurrence row
+	 * failing the `status = 'scheduled'` join predicate falls through the
+	 * same `NULL` branch a genuinely non-recurring event uses, and the
+	 * `COALESCE` fallback resurrects the series at its anchor.
+	 *
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_select_upcoming_omits_a_fully_cancelled_series(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+		$start    = $now->modify( '+10 days' )->setTime( 18, 0, 0 );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $start->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => 3,
+			),
+			$start,
+			$start->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$instance = Occurrences::get_instance();
+
+		foreach ( $instance->select_for_series( array( $post_id ) ) as $row ) {
+			$instance->set_status( $post_id, $row['recurrence_id'], Occurrences::STATUS_CANCELLED );
+		}
+
+		$refs     = $instance->select_upcoming( 50 );
+		$post_ids = wp_list_pluck( $refs, 'post_id' );
+
+		$this->assertNotContains(
+			$post_id,
+			$post_ids,
+			'Failed to assert that a fully cancelled series is absent from select_upcoming().'
+		);
 	}
 
 	/**
