@@ -4,7 +4,7 @@
 import { __ } from '@wordpress/i18n';
 import { PanelRow, ToggleControl } from '@wordpress/components';
 import { useDispatch, useSelect } from '@wordpress/data';
-import { useState } from '@wordpress/element';
+import { useEffect, useRef, useState } from '@wordpress/element';
 
 /**
  * Internal dependencies
@@ -63,13 +63,41 @@ function clampInt( value, min, max ) {
 }
 
 /**
+ * Coerce a decoded `weekdays` value to an array of in-range weekday numbers.
+ *
+ * A REST write or import can carry a non-array (or an array with
+ * out-of-range values) for `weekdays` -- `weekdays.includes()` downstream
+ * would throw on anything that is not an array at all, and an out-of-range
+ * number would corrupt the rule server-side (`Rule::is_valid()` requires
+ * every weekday within 0 through 6).
+ *
+ * @since 0.36.0
+ *
+ * @param {*} weekdays Decoded `weekdays` value of unknown shape.
+ *
+ * @return {number[]} Weekday numbers, 0 through 6, with anything else dropped.
+ */
+function sanitizeWeekdays( weekdays ) {
+	if ( ! Array.isArray( weekdays ) ) {
+		return [];
+	}
+
+	return weekdays.filter(
+		( day ) => Number.isInteger( day ) && 0 <= day && 6 >= day,
+	);
+}
+
+/**
  * Parse the `gatherpress_recurrence` blob into panel state.
  *
  * A missing, empty, or malformed blob is treated as "no recurrence" rather
  * than surfacing a parse error — the panel falls back to `DEFAULT_RULE` with
  * the "Repeat" toggle off. A valid blob is merged onto `DEFAULT_RULE` so a
  * blob written by an older shape (missing a field this panel added later)
- * still renders every control with a sane value.
+ * still renders every control with a sane value. `weekdays` is coerced field
+ * by field rather than trusted wholesale — a REST write or import can carry
+ * a non-array (or an array with out-of-range values), and `weekdays.includes()`
+ * downstream would throw on anything that is not an array at all.
  *
  * @since 0.36.0
  *
@@ -89,10 +117,43 @@ function parseRecurrenceBlob( raw ) {
 			return { enabled: false, rule: { ...DEFAULT_RULE } };
 		}
 
-		return { enabled: true, rule: { ...DEFAULT_RULE, ...parsed } };
+		const rule = { ...DEFAULT_RULE, ...parsed };
+		rule.weekdays = sanitizeWeekdays( rule.weekdays );
+
+		return { enabled: true, rule };
 	} catch {
 		return { enabled: false, rule: { ...DEFAULT_RULE } };
 	}
+}
+
+/**
+ * Report whether a candidate rule is complete enough to persist.
+ *
+ * Scoped to the fields this panel's controls can leave momentarily
+ * incomplete mid-edit: a weekly rule with no weekday selected yet, or an end
+ * condition whose companion field (`until`/`count`) has not been filled in
+ * yet. `applyRuleChange()` withholds the write while this is `false` rather
+ * than persisting a blob the server would reject and silently discard --
+ * `Meta::write_recurrence()` clears all ten mirrors when `Rule::from_array()`
+ * rejects the decoded blob, and that rejection surfaces nowhere in the
+ * editor, so the last known-good blob is left in place instead.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} rule Candidate rule values.
+ *
+ * @return {boolean} True when the rule matches `Rule::is_valid()`'s shape requirements.
+ */
+function isPersistable( rule ) {
+	if ( 'weekly' === rule.frequency && 0 === rule.weekdays.length ) {
+		return false;
+	}
+
+	if ( 'until' === rule.end_type && ! rule.until ) {
+		return false;
+	}
+
+	return ! ( 'count' === rule.end_type && ! ( 1 <= rule.count ) );
 }
 
 /**
@@ -132,6 +193,23 @@ const RecurrencePanel = () => {
 		parseRecurrenceBlob( recurrenceMeta ),
 	);
 
+	// Tracks the blob this component itself last wrote, so the effect below
+	// can tell "the store caught up with our own write" apart from "the
+	// entity resolved, or was changed, out from under us" -- see BLOCKING 3
+	// in the review: without this, a panel that mounts before `core/editor`
+	// resolves the post entity renders "Repeat: off" for a saved recurring
+	// event and never corrects itself.
+	const lastWrittenBlobRef = useRef( recurrenceMeta );
+
+	useEffect( () => {
+		if ( recurrenceMeta === lastWrittenBlobRef.current ) {
+			return;
+		}
+
+		lastWrittenBlobRef.current = recurrenceMeta;
+		setState( parseRecurrenceBlob( recurrenceMeta ) );
+	}, [ recurrenceMeta ] );
+
 	const isFixedOffsetTimezone = !! timezone?.includes( ':' );
 
 	/**
@@ -143,11 +221,13 @@ const RecurrencePanel = () => {
 	 * @return {void}
 	 */
 	const persist = ( nextEnabled, nextRule ) => {
+		const blob = nextEnabled ? JSON.stringify( nextRule ) : '';
+
+		lastWrittenBlobRef.current = blob;
+
 		editPost( {
 			meta: {
-				gatherpress_recurrence: nextEnabled
-					? JSON.stringify( nextRule )
-					: '',
+				gatherpress_recurrence: blob,
 			},
 		} );
 	};
@@ -155,8 +235,12 @@ const RecurrencePanel = () => {
 	/**
 	 * Apply a partial rule update, enforcing the shape constraints
 	 * `Rule::from_array()` requires structurally rather than by convention:
-	 * clamped interval/count, `until`/`count` mutual exclusivity, and no
-	 * stale weekday or monthly state left over from a previous frequency.
+	 * clamped interval/count, `until`/`count` mutual exclusivity, no stale
+	 * weekday or monthly state left over from a previous frequency, and no
+	 * write at all while the edit leaves the rule momentarily incomplete
+	 * (see `isPersistable()`) -- local state still updates so the control
+	 * reflects the choice and the validation message it earns, but the last
+	 * known-good blob stays on the post until the rule is complete again.
 	 *
 	 * @param {Object} partial Partial rule field update.
 	 *
@@ -198,7 +282,10 @@ const RecurrencePanel = () => {
 		}
 
 		setState( { enabled: true, rule: merged } );
-		persist( true, merged );
+
+		if ( isPersistable( merged ) ) {
+			persist( true, merged );
+		}
 	};
 
 	/**
@@ -284,6 +371,23 @@ const RecurrencePanel = () => {
 							count={ rule.count }
 							onChange={ applyRuleChange }
 						/>
+						{ 'until' === rule.end_type && ! rule.until && (
+							<output>
+								{ __(
+									'Choose an end date to save this recurrence.',
+									'gatherpress',
+								) }
+							</output>
+						) }
+						{ 'count' === rule.end_type &&
+							! ( 1 <= rule.count ) && (
+							<output>
+								{ __(
+									'Enter how many times this event repeats.',
+									'gatherpress',
+								) }
+							</output>
+						) }
 					</>
 				) }
 			</div>

@@ -321,7 +321,7 @@ final class Meta {
 				continue;
 			}
 
-			$this->write_recurrence( $post_id, (string) $data );
+			$this->write_recurrence( $post_id, (string) $data, true );
 		}
 	}
 
@@ -335,14 +335,27 @@ final class Meta {
 	 * timezone must reject the rule, not fatal the post save. A REST write
 	 * can carry one just as easily as the editor can.
 	 *
+	 * An empty timezone read is ambiguous on a non-final pass: it can mean
+	 * "fixed offset" just as easily as "the `gatherpress_datetime` blob has
+	 * not been written yet this request" -- `wp_insert_post()` with
+	 * `meta_input`, a WXR import, or a duplication plugin can all write the
+	 * recurrence blob before the datetime blob lands. Treating an empty read
+	 * as unnamed on the first pass would drop the rule on exactly the same
+	 * race `set_recurrence()` already defends against in the other
+	 * direction, so it is deferred to `shutdown` instead, and only clears the
+	 * mirrors if the timezone is still unknown once every write this request
+	 * is going to make has already happened.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param int    $post_id Post the blob belongs to.
-	 * @param string $data    Raw `gatherpress_recurrence` JSON blob.
+	 * @param int    $post_id  Post the blob belongs to.
+	 * @param string $data     Raw `gatherpress_recurrence` JSON blob.
+	 * @param bool   $is_final Whether this is the final, `shutdown` pass -- an empty
+	 *                         timezone read is cleared rather than deferred again.
 	 *
 	 * @return void
 	 */
-	protected function write_recurrence( int $post_id, string $data ): void {
+	protected function write_recurrence( int $post_id, string $data, bool $is_final = false ): void {
 		$values = json_decode( $data, true );
 		$rule   = is_array( $values ) ? Rule::from_array( $values ) : null;
 
@@ -352,15 +365,25 @@ final class Meta {
 			return;
 		}
 
+		// Read from the same `gatherpress_datetime` blob `Event\Setup::set_datetimes()`
+		// reads, rather than the `gatherpress_timezone` mirror it derives --
+		// depending on that mirror would make this depend on that class
+		// having already run on this pass.
+		$timezone = $this->read_timezone( $post_id );
+
+		if ( '' === $timezone && ! $is_final ) {
+			$this->pending_recurrence[ $post_id ] = true;
+
+			add_action( 'shutdown', array( $this, 'resolve_pending_recurrence' ) );
+
+			return;
+		}
+
 		try {
 			// A named tz-database identifier is asserted before any recurrence
 			// value could reach the expander. A fixed UTC offset carries no
-			// DST rules and would silently drift a recurring series. Read from
-			// the same `gatherpress_datetime` blob `Event\Setup::set_datetimes()`
-			// reads, rather than the `gatherpress_timezone` mirror it derives.
-			// Depending on that mirror would make this depend on that class
-			// having already run on this pass.
-			Timezone_Guard::assert_named( $this->read_timezone( $post_id ) );
+			// DST rules and would silently drift a recurring series.
+			Timezone_Guard::assert_named( $timezone );
 		} catch ( InvalidArgumentException $e ) {
 			// A fixed-offset timezone (`UTC+5:30`) rejects the rule rather
 			// than fataling the save: a REST write can carry one just as

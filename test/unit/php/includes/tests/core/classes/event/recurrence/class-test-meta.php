@@ -606,6 +606,129 @@ class Test_Meta extends Base {
 	}
 
 	/**
+	 * `set_recurrence()` clears the mirrors, rather than writing them, when
+	 * the series carries a fixed UTC-offset timezone rather than a named
+	 * tz-database identifier -- `Timezone_Guard::assert_named()` throws, and
+	 * `write_recurrence()`'s catch clears the mirrors instead of letting a
+	 * DST-unsafe rule reach the expander. GatherPress normalizes WordPress's
+	 * manual-offset option (e.g. `UTC+5.5`) into `+05:30`, and a site left on
+	 * a manual UTC offset is a common configuration -- this is the live path
+	 * REQ-3 exists to close, not a synthetic one.
+	 *
+	 * @covers ::set_recurrence
+	 * @covers ::write_recurrence
+	 *
+	 * @return void
+	 */
+	public function test_set_recurrence_clears_mirrors_for_fixed_offset_timezone(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			),
+			'+05:30'
+		);
+
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be cleared for a fixed-offset timezone."
+			);
+		}
+		$this->assertNull( Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * `write_recurrence()` defers to `shutdown` rather than clearing the
+	 * mirrors when the recurrence blob is present but the
+	 * `gatherpress_datetime` blob has not been written yet on this pass --
+	 * the same race `set_recurrence()` already defends against for a missing
+	 * recurrence blob, mirrored for a missing timezone. `meta_input` on
+	 * `wp_insert_post()`, a WXR import, or a duplication plugin can all write
+	 * the recurrence blob before the datetime blob lands.
+	 *
+	 * @covers ::set_recurrence
+	 * @covers ::write_recurrence
+	 *
+	 * @return void
+	 */
+	public function test_write_recurrence_defers_when_timezone_not_yet_known(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$instance = $this->create_recurring_event_without_datetime( $post_id );
+
+		$instance->set_recurrence( $post_id );
+
+		$this->assertSame(
+			'',
+			get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ),
+			'Expected mirrors to stay unwritten while the timezone is not yet known.'
+		);
+		$this->assertNotFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_recurrence' ) ),
+			'A shutdown resolution should be scheduled when the timezone is not yet known.'
+		);
+	}
+
+	/**
+	 * `resolve_pending_recurrence()` clears the mirrors, rather than deferring
+	 * again, when the timezone is still unknown at `shutdown` -- the terminal
+	 * case of the same race: the datetime blob genuinely never arrived this
+	 * request.
+	 *
+	 * @covers ::resolve_pending_recurrence
+	 * @covers ::write_recurrence
+	 *
+	 * @return void
+	 */
+	public function test_resolve_pending_recurrence_clears_mirrors_when_timezone_never_resolves(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$instance = $this->create_recurring_event_without_datetime( $post_id );
+
+		$instance->set_recurrence( $post_id );
+		$instance->resolve_pending_recurrence();
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be cleared once the timezone never resolved."
+			);
+		}
+		$this->assertNull( Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * Write a `gatherpress_recurrence` blob with no companion
+	 * `gatherpress_datetime` blob, simulating a recurrence-before-datetime
+	 * write ordering.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post to write the recurrence blob on.
+	 *
+	 * @return Meta The `Meta` singleton, for chaining into the calling test.
+	 */
+	protected function create_recurring_event_without_datetime( int $post_id ): Meta {
+		add_post_meta(
+			$post_id,
+			Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'never',
+				)
+			)
+		);
+
+		return Meta::get_instance();
+	}
+
+	/**
 	 * `filter_readonly_meta` strips the ten derived recurrence keys from a
 	 * REST request's `meta` payload.
 	 *

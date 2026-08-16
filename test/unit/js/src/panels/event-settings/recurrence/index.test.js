@@ -271,9 +271,17 @@ describe( 'RecurrencePanel', () => {
 			target: { value: 'weekly' },
 		} );
 
+		// Switching back to weekly with no weekday selected yet is withheld
+		// (BLOCKING 2 from the review) — the last persisted blob is still the
+		// monthly one until a weekday is chosen, proving no leak either way
+		// once that happens.
+		expect( lastPersistedBlob().monthly_day ).toBe( 20 );
+
+		fireEvent.click( screen.getByLabelText( 'Monday' ) );
+
 		const blob = lastPersistedBlob();
 
-		expect( blob.weekdays ).toEqual( [] );
+		expect( blob.weekdays ).toEqual( [ 1 ] );
 		expect( blob.monthly_day ).toBe( 1 );
 	} );
 
@@ -303,17 +311,31 @@ describe( 'RecurrencePanel', () => {
 		expect( blob.count ).toBe( 10 );
 		expect( blob.until ).toBe( '' );
 
+		// Switching back to "On date" with no date chosen yet leaves the rule
+		// incomplete (`end_type: 'until'` with an empty `until`, which
+		// `Rule::is_valid_end_shape()` rejects) — the panel withholds the
+		// write rather than persisting it, so the last known-good blob (the
+		// count-10 shape) is still what is on the post, and a message tells
+		// the organizer why.
 		fireEvent.change( screen.getByLabelText( 'Ends' ), {
 			target: { value: 'until' },
 		} );
 
 		blob = lastPersistedBlob();
-		expect( blob.count ).toBe( 0 );
+		expect( blob.count ).toBe( 10 );
 		expect( blob.until ).toBe( '' );
+		expect(
+			screen.getByText( 'Choose an end date to save this recurrence.' ),
+		).toBeInTheDocument();
 
 		fireEvent.change( screen.getByLabelText( 'End date' ), {
 			target: { value: '2026-06-15' },
 		} );
+
+		blob = lastPersistedBlob();
+		expect( blob.until ).toBe( '2026-06-15' );
+		expect( blob.count ).toBe( 0 );
+
 		fireEvent.change( screen.getByLabelText( 'Ends' ), {
 			target: { value: 'never' },
 		} );
@@ -322,6 +344,34 @@ describe( 'RecurrencePanel', () => {
 		expect( blob.end_type ).toBe( 'never' );
 		expect( blob.count ).toBe( 0 );
 		expect( blob.until ).toBe( '' );
+	} );
+
+	test( 'withholds the write when "On date" is chosen with no date yet', () => {
+		render( <RecurrencePanel /> );
+
+		fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+		fireEvent.change( screen.getByLabelText( 'Ends' ), {
+			target: { value: 'until' },
+		} );
+
+		expect( lastPersistedBlob().end_type ).toBe( 'never' );
+		expect(
+			screen.getByText( 'Choose an end date to save this recurrence.' ),
+		).toBeInTheDocument();
+	} );
+
+	test( 'withholds the write when "After" is chosen with no count yet', () => {
+		render( <RecurrencePanel /> );
+
+		fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+		fireEvent.change( screen.getByLabelText( 'Ends' ), {
+			target: { value: 'count' },
+		} );
+
+		expect( lastPersistedBlob().end_type ).toBe( 'never' );
+		expect(
+			screen.getByText( 'Enter how many times this event repeats.' ),
+		).toBeInTheDocument();
 	} );
 
 	test( 'surfaces a validation message when weekly has no weekday selected', () => {
@@ -481,5 +531,91 @@ describe( 'RecurrencePanel', () => {
 		expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
 		expect( screen.getByLabelText( 'Frequency' ) ).toHaveValue( 'weekly' );
 		expect( screen.getByLabelText( 'Repeat every' ) ).toHaveValue( 3 );
+	} );
+
+	test( 'treats a non-array weekdays value as empty rather than crashing', () => {
+		const malformedBlob = JSON.stringify( {
+			frequency: 'weekly',
+			interval: 1,
+			weekdays: 3,
+			monthly_mode: 'day_of_month',
+			monthly_day: 1,
+			monthly_ordinal: 1,
+			monthly_weekday: 1,
+			end_type: 'never',
+			until: '',
+			count: 0,
+		} );
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( malformedBlob ) ),
+		);
+
+		render( <RecurrencePanel /> );
+
+		expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
+		expect(
+			screen.getByText( 'Select at least one day of the week.' ),
+		).toBeInTheDocument();
+	} );
+
+	test( 'filters out-of-range weekday values rather than passing them through', () => {
+		const malformedBlob = JSON.stringify( {
+			frequency: 'weekly',
+			interval: 1,
+			weekdays: [ 2, 9, -1, 4 ],
+			monthly_mode: 'day_of_month',
+			monthly_day: 1,
+			monthly_ordinal: 1,
+			monthly_weekday: 1,
+			end_type: 'never',
+			until: '',
+			count: 0,
+		} );
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( malformedBlob ) ),
+		);
+
+		render( <RecurrencePanel /> );
+
+		expect(
+			screen.queryByText( 'Select at least one day of the week.' ),
+		).not.toBeInTheDocument();
+		expect( screen.getByLabelText( 'Tuesday' ) ).toBeChecked();
+		expect( screen.getByLabelText( 'Thursday' ) ).toBeChecked();
+	} );
+
+	test( 're-syncs from meta once the post entity resolves after mount, without clobbering it via the toggle', () => {
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( undefined ) ),
+		);
+
+		const { rerender } = render( <RecurrencePanel /> );
+
+		expect( screen.getByLabelText( 'Repeat' ) ).not.toBeChecked();
+
+		const existingBlob = JSON.stringify( {
+			frequency: 'weekly',
+			interval: 3,
+			weekdays: [ 1, 5 ],
+			monthly_mode: 'day_of_month',
+			monthly_day: 1,
+			monthly_ordinal: 1,
+			monthly_weekday: 1,
+			end_type: 'never',
+			until: '',
+			count: 0,
+		} );
+
+		// The entity resolves after mount — e.g. a slow fetch, or the site
+		// editor mounting the panel before `core/editor` has the post.
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( existingBlob ) ),
+		);
+		rerender( <RecurrencePanel /> );
+
+		expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
+		expect( screen.getByLabelText( 'Frequency' ) ).toHaveValue( 'weekly' );
 	} );
 } );
