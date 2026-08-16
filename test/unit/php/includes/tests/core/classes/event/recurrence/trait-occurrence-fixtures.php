@@ -1,0 +1,170 @@
+<?php
+/**
+ * Shared fixtures for the recurring-events test suites.
+ *
+ * The filename deliberately does not match `class-test-*.php`, so PHPUnit does
+ * not collect this file as a test case. It is required once from
+ * `test/unit/php/bootstrap.php` and consumed with `use Occurrence_Fixtures;`
+ * inside a test class.
+ *
+ * @package GatherPress\Core\Event\Recurrence
+ * @since 0.36.0
+ */
+
+namespace GatherPress\Tests\Core\Event\Recurrence;
+
+use GatherPress\Core\Event;
+use GatherPress\Core\Event\Setup as Event_Setup;
+
+/**
+ * Trait Occurrence_Fixtures.
+ *
+ * Builds a real recurring event post and states the expected occurrence set for
+ * the guide's reference weekly rule, so the expander tests and the persistence
+ * tests assert against one fixture rather than two hand-written lists.
+ *
+ * @since 0.36.0
+ */
+trait Occurrence_Fixtures {
+
+	/**
+	 * Local start of the reference series anchor, `Y-m-d H:i:s`.
+	 *
+	 * A **Thursday**, deliberately. The reference rule is bi-weekly Tue/Thu, and
+	 * anchoring it on a Monday hides the WKST bug entirely: a day-delta walk only
+	 * lands in the wrong week bucket when the anchor falls late in its
+	 * Monday-start week.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	protected string $reference_anchor_start = '2026-09-03 18:00:00';
+
+	/**
+	 * Local end of the reference series anchor, `Y-m-d H:i:s`.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	protected string $reference_anchor_end = '2026-09-03 20:00:00';
+
+	/**
+	 * Create a real recurring event post.
+	 *
+	 * Writes the `gatherpress_datetime` blob the way the plugin already writes
+	 * it, runs `Event\Setup::set_datetimes()` so the derived datetime mirrors and
+	 * the `wp_gatherpress_events` row exist, then writes the
+	 * `gatherpress_recurrence` blob for the passed rule.
+	 *
+	 * This works against the tree as it stands today, before any recurrence
+	 * behavior exists — writing the rule blob is a plain `add_post_meta()` call,
+	 * so the fixture never depends on the code the tests are about to drive out.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array  $rule     Recurrence rule values, stored as the `gatherpress_recurrence` JSON blob.
+	 * @param string $timezone Named tz-database identifier for the series.
+	 *
+	 * @return int The created post ID.
+	 */
+	public function create_recurring_event( array $rule, string $timezone = 'America/New_York' ): int {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_title'  => 'Downtown WordPress Meetup',
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => $timezone,
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		add_post_meta( $post_id, 'gatherpress_recurrence', wp_json_encode( $rule ) );
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * Get the canonical expected occurrence set for the reference weekly rule.
+	 *
+	 * The reference rule is the one the demo opens with and the one PRD F-2
+	 * makes WKST load-bearing for:
+	 *
+	 *     array(
+	 *         'frequency' => 'weekly',
+	 *         'interval'  => 2,
+	 *         'weekdays'  => array( 2, 4 ),
+	 *         'end_type'  => 'count',
+	 *         'count'     => 5,
+	 *     )
+	 *
+	 * anchored on Thursday 2026-09-03 18:00:00 in `America/New_York`. Against a
+	 * Monday-start week index that gives week buckets 0, 2, 2, 4, 4 — the exact
+	 * sequence an external review validated `week_index()` against. A day-delta
+	 * implementation produces a different set, which is the point.
+	 *
+	 * Every entry is a datetime, never a date (PRD C-4), and its
+	 * `recurrence_id` is its **local** start in `Ymd\THis` (PRD C-1). The GMT
+	 * columns are four hours ahead because the whole set falls inside
+	 * `America/New_York`'s 2026 daylight saving period.
+	 *
+	 * Note what is deliberately absent: Tuesday 2026-09-01 shares the anchor's
+	 * Monday-start week bucket and satisfies the weekday list, but the walk
+	 * begins at the anchor date, so it is not an occurrence. A six-entry result
+	 * starting `20260901T180000` is a start-boundary bug, not a WKST bug.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array<int, array<string, string>> Ordered ascending, keyed as the occurrence table's columns are.
+	 */
+	public function expected_weekly_set(): array {
+		return array(
+			array(
+				'recurrence_id'      => '20260903T180000',
+				'datetime_start'     => '2026-09-03 18:00:00',
+				'datetime_start_gmt' => '2026-09-03 22:00:00',
+				'datetime_end'       => '2026-09-03 20:00:00',
+				'datetime_end_gmt'   => '2026-09-04 00:00:00',
+			),
+			array(
+				'recurrence_id'      => '20260915T180000',
+				'datetime_start'     => '2026-09-15 18:00:00',
+				'datetime_start_gmt' => '2026-09-15 22:00:00',
+				'datetime_end'       => '2026-09-15 20:00:00',
+				'datetime_end_gmt'   => '2026-09-16 00:00:00',
+			),
+			array(
+				'recurrence_id'      => '20260917T180000',
+				'datetime_start'     => '2026-09-17 18:00:00',
+				'datetime_start_gmt' => '2026-09-17 22:00:00',
+				'datetime_end'       => '2026-09-17 20:00:00',
+				'datetime_end_gmt'   => '2026-09-18 00:00:00',
+			),
+			array(
+				'recurrence_id'      => '20260929T180000',
+				'datetime_start'     => '2026-09-29 18:00:00',
+				'datetime_start_gmt' => '2026-09-29 22:00:00',
+				'datetime_end'       => '2026-09-29 20:00:00',
+				'datetime_end_gmt'   => '2026-09-30 00:00:00',
+			),
+			array(
+				'recurrence_id'      => '20261001T180000',
+				'datetime_start'     => '2026-10-01 18:00:00',
+				'datetime_start_gmt' => '2026-10-01 22:00:00',
+				'datetime_end'       => '2026-10-01 20:00:00',
+				'datetime_end_gmt'   => '2026-10-02 00:00:00',
+			),
+		);
+	}
+}

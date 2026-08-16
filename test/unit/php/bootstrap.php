@@ -14,6 +14,10 @@ if ( ! defined( 'WP_CLI' ) ) {
 	define( 'WP_CLI', true ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound
 }
 
+// Shared test fixtures. The autoloader maps `class-*.php` only, and PHPUnit
+// collects `class-test-*.php` only, so trait files are required by hand.
+require_once __DIR__ . '/includes/tests/core/classes/event/recurrence/trait-occurrence-fixtures.php';
+
 $gatherpress_bootstrap_instance = PMC\Unit_Test\Bootstrap::get_instance();
 
 tests_add_filter(
