@@ -68,6 +68,7 @@ class Test_Rule extends Base {
 	 *
 	 * @covers ::from_post
 	 * @covers ::from_array
+	 * @covers ::__construct
 	 * @covers ::frequency
 	 * @covers ::interval
 	 * @covers ::weekdays
@@ -323,6 +324,48 @@ class Test_Rule extends Base {
 	}
 
 	/**
+	 * A weekly rule with a weekday outside 0-6 is rejected, whether the whole
+	 * list is out of range or only one entry is -- an unchecked value here
+	 * would leave an undefined `WEEKDAY_CODES` lookup at write-mirror and
+	 * RRULE-export time.
+	 *
+	 * @covers ::from_array
+	 * @covers ::is_valid
+	 *
+	 * @return void
+	 */
+	public function test_weekly_with_out_of_range_weekday_is_rejected(): void {
+		$too_high = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( 7 ),
+				'end_type'  => 'never',
+			)
+		);
+		$negative = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( -1 ),
+				'end_type'  => 'never',
+			)
+		);
+		$mixed    = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( -1, 3 ),
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertNull( $too_high );
+		$this->assertNull( $negative );
+		$this->assertNull( $mixed );
+	}
+
+	/**
 	 * A monthly rule with neither a recognized monthly mode is rejected.
 	 *
 	 * @covers ::from_array
@@ -517,6 +560,7 @@ class Test_Rule extends Base {
 	 * carrying both a count and an until, is exercised directly by
 	 * constructing the object via reflection.
 	 *
+	 * @covers ::__construct
 	 * @covers ::is_valid
 	 *
 	 * @return void

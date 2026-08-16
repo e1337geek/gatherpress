@@ -10,9 +10,11 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Meta;
+use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Utility;
 use GatherPress\Tests\Base;
+use PMC\Unit_Test\Utility as PMC_Utility;
 use stdClass;
 use WP_REST_Request;
 
@@ -137,6 +139,39 @@ class Test_Meta extends Base {
 	}
 
 	/**
+	 * The five numeric mirrors register with `type => integer`, so REST reads
+	 * back a JSON number rather than a string -- the whole justification for
+	 * decomposing into individually typed mirrors in the first place.
+	 *
+	 * @covers ::register
+	 *
+	 * @return void
+	 */
+	public function test_numeric_mirrors_register_with_integer_type(): void {
+		$instance = Meta::get_instance();
+		$instance->register( Event::POST_TYPE );
+
+		$meta            = get_registered_meta_keys( 'post', Event::POST_TYPE );
+		$integer_mirrors = array(
+			'gatherpress_recurrence_interval',
+			'gatherpress_recurrence_monthly_day',
+			'gatherpress_recurrence_monthly_ordinal',
+			'gatherpress_recurrence_monthly_weekday',
+			'gatherpress_recurrence_count',
+		);
+
+		foreach ( $integer_mirrors as $meta_key ) {
+			$this->assertSame( 'integer', $meta[ $meta_key ]['type'], "Expected {$meta_key} to register as integer." );
+		}
+
+		$string_mirrors = array_diff( Meta::DERIVED_META_KEYS, $integer_mirrors );
+
+		foreach ( $string_mirrors as $meta_key ) {
+			$this->assertSame( 'string', $meta[ $meta_key ]['type'], "Expected {$meta_key} to register as string." );
+		}
+	}
+
+	/**
 	 * `set_recurrence()` is a no-op on a post type without
 	 * `gatherpress-event-date` support.
 	 *
@@ -155,41 +190,154 @@ class Test_Meta extends Base {
 	}
 
 	/**
-	 * `set_recurrence()` is a no-op when the post carries no recurrence blob.
+	 * `set_recurrence()` does not write mirrors immediately when the post
+	 * carries no recurrence blob yet -- it defers the decision to `shutdown`
+	 * rather than treating "not written yet" the same as "removed", since
+	 * `wp_after_insert_post` can fire before a REST/editor/duplicate caller's
+	 * separate `add_post_meta()` call for the blob has landed.
 	 *
 	 * @covers ::set_recurrence
 	 *
 	 * @return void
 	 */
-	public function test_set_recurrence_skips_when_no_blob(): void {
-		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+	public function test_set_recurrence_defers_when_no_blob_yet(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$instance = Meta::get_instance();
 
-		Meta::get_instance()->set_recurrence( $post_id );
+		$instance->set_recurrence( $post_id );
 
 		$this->assertSame( '', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+		$this->assertNotFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_recurrence' ) ),
+			'A shutdown resolution should be scheduled for the post with no blob yet.'
+		);
 	}
 
 	/**
-	 * `set_recurrence()` leaves the mirrors unwritten when the stored blob
-	 * decodes to an invalid rule.
+	 * The deferred `wp_after_insert_post` → `shutdown` path resolves correctly
+	 * when the blob arrives after `set_recurrence()` ran but before shutdown --
+	 * the exact ordering a first publish produces when this class's hook
+	 * happens to run before the blob-writing caller. This is BLOCKING 1 from
+	 * the review: the fix is robust to hook order because it never decides
+	 * from a mid-request read, only from the state at shutdown.
 	 *
 	 * @covers ::set_recurrence
-	 *
-	 * @return void
-	 */
-	public function test_set_recurrence_skips_invalid_rule(): void {
-		$post_id = $this->create_recurring_event( array( 'frequency' => 'weekly' ) );
-
-		Meta::get_instance()->set_recurrence( $post_id );
-
-		$this->assertSame( '', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
-	}
-
-	/**
-	 * `set_recurrence()` writes all ten mirrors from a valid rule.
-	 *
-	 * @covers ::set_recurrence
+	 * @covers ::resolve_pending_recurrence
+	 * @covers ::write_recurrence
 	 * @covers ::write_mirrors
+	 *
+	 * @return void
+	 */
+	public function test_deferred_first_publish_resolves_into_a_recurring_event(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$instance = Meta::get_instance();
+
+		// wp_after_insert_post fires before the blob-writing caller runs.
+		$instance->set_recurrence( $post_id );
+
+		$this->assertSame( '', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+
+		// The blob (and the datetime blob its timezone is read from) land
+		// afterward, in the same request, exactly as REST/editor writes do.
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => '2026-09-03 18:00:00',
+					'dateTimeEnd'   => '2026-09-03 20:00:00',
+					'timezone'      => 'America/New_York',
+				)
+			)
+		);
+		add_post_meta(
+			$post_id,
+			Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+
+		// Simulates the shutdown hook firing.
+		$instance->resolve_pending_recurrence();
+
+		$this->assertSame( 'daily', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+		$this->assertInstanceOf( Rule::class, Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * `resolve_pending_recurrence()` clears any (necessarily stale) mirrors
+	 * when the blob is still empty at shutdown -- a genuine removal, not a
+	 * late arrival.
+	 *
+	 * @covers ::resolve_pending_recurrence
+	 * @covers ::clear_mirrors
+	 *
+	 * @return void
+	 */
+	public function test_resolve_pending_recurrence_clears_mirrors_when_blob_never_arrives(): void {
+		$post_id  = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+		$instance = Meta::get_instance();
+
+		$instance->set_recurrence( $post_id );
+		$this->assertSame( 'daily', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+
+		// The rule is removed entirely -- the blob is gone by shutdown.
+		delete_post_meta( $post_id, Meta::META_KEY );
+		$instance->set_recurrence( $post_id );
+
+		$instance->resolve_pending_recurrence();
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be cleared."
+			);
+		}
+		$this->assertNull( Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * `resolve_pending_recurrence()` skips a post whose type no longer
+	 * supports `gatherpress-event-date` by the time shutdown runs -- the post
+	 * can be gone, or its type support can have changed, between the insert
+	 * hook and shutdown.
+	 *
+	 * @covers ::resolve_pending_recurrence
+	 *
+	 * @return void
+	 */
+	public function test_resolve_pending_recurrence_skips_unsupported_post_type(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => 'post' ) );
+		$instance = Meta::get_instance();
+
+		PMC_Utility::set_and_get_hidden_property( $instance, 'pending_recurrence', array( $post_id => true ) );
+
+		$instance->resolve_pending_recurrence();
+
+		$this->assertSame( '', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+	}
+
+	/**
+	 * `set_recurrence()` writes all ten mirrors from a valid rule when the
+	 * blob is already present on this pass -- the immediate, non-deferred path.
+	 *
+	 * @covers ::set_recurrence
+	 * @covers ::write_recurrence
+	 * @covers ::write_mirrors
+	 * @covers ::read_timezone
 	 *
 	 * @return void
 	 */
@@ -211,6 +359,81 @@ class Test_Meta extends Base {
 		$this->assertSame( '3', get_post_meta( $post_id, 'gatherpress_recurrence_count', true ) );
 
 		$this->assertInstanceOf( Rule::class, Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * `set_recurrence()` clears the mirrors, rather than leaving a previous
+	 * rule's mirrors in place, when the stored blob decodes to an invalid
+	 * rule -- BLOCKING 3 from the review. A stale `frequency` mirror is what
+	 * makes `Query::refresh_has_recurring_events()` keep believing the site
+	 * has a recurring event that was, in fact, just invalidated.
+	 *
+	 * @covers ::set_recurrence
+	 * @covers ::write_recurrence
+	 * @covers ::clear_mirrors
+	 *
+	 * @return void
+	 */
+	public function test_set_recurrence_clears_mirrors_when_rule_becomes_invalid(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		Meta::get_instance()->set_recurrence( $post_id );
+		$this->assertSame( 'daily', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+
+		// The blob is overwritten with a structurally invalid rule (weekly,
+		// no weekdays), as an editor round-trip that clears the weekday
+		// selection but leaves the frequency as weekly would produce.
+		update_post_meta( $post_id, Meta::META_KEY, wp_json_encode( array( 'frequency' => 'weekly' ) ) );
+
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be cleared."
+			);
+		}
+		$this->assertNull( Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * `Query::refresh_has_recurring_events()` runs after `write_mirrors()`,
+	 * never before it -- a regression test for the ordering, since
+	 * `refresh_has_recurring_events()` reads the frequency mirror directly
+	 * from storage and would observe nothing yet if it ran first.
+	 *
+	 * @covers ::write_recurrence
+	 * @covers ::write_mirrors
+	 *
+	 * @return void
+	 */
+	public function test_refresh_has_recurring_events_runs_after_write_mirrors(): void {
+		delete_option( Query::HAS_RECURRING_OPTION );
+
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertFalse( Query::site_has_recurring_events() );
+
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'The has-recurring-events flag should read true, which is only possible if the'
+			. ' frequency mirror was already on disk when refresh ran.'
+		);
 	}
 
 	/**

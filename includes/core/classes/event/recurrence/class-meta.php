@@ -9,10 +9,11 @@
  * than to the event post type, and no new `post_type_supports` flag is
  * introduced.
  *
- * Registration hooks `registered_post_type` at priority 11 and loops
- * `get_post_types_by_support( 'gatherpress-event-date' )`. Keeping it in its own
- * class rather than editing `Event\Meta` is what keeps parallel tasks' file sets
- * disjoint.
+ * Registration hooks `registered_post_type` at priority 11, after the default
+ * priority 10 a post type normally registers at, so a companion plugin's own
+ * `add_post_type_support()` call has already landed by the time this runs.
+ * Keeping it in its own class rather than editing `Event\Meta` is what keeps
+ * parallel tasks' file sets disjoint.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -25,6 +26,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
+use InvalidArgumentException;
 use stdClass;
 use WP_REST_Request;
 
@@ -71,6 +73,21 @@ final class Meta {
 	);
 
 	/**
+	 * Posts whose recurrence blob was empty when `set_recurrence()` ran.
+	 *
+	 * `wp_after_insert_post` can fire before the request's meta writes have
+	 * all landed -- REST, duplication, and import all write the blob with a
+	 * separate `add_post_meta()` call after the insert completes. Mirrors
+	 * `Event\Setup::$pending_datetimes`: rather than guess, note the post and
+	 * decide once more on `shutdown`, when every write this request is going
+	 * to make has already happened.
+	 *
+	 * @since 0.36.0
+	 * @var array<int, bool>
+	 */
+	protected array $pending_recurrence = array();
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -87,8 +104,6 @@ final class Meta {
 	 * @return void
 	 */
 	protected function setup_hooks(): void {
-		// Priority 11 so post types registered at the default priority 10 are
-		// available for get_post_types_by_support().
 		add_action( 'registered_post_type', array( $this, 'register' ), 11 );
 		add_action( 'wp_after_insert_post', array( $this, 'set_recurrence' ) );
 	}
@@ -120,19 +135,21 @@ final class Meta {
 		);
 
 		$derived_meta = array(
-			'gatherpress_recurrence_frequency'       => 'sanitize_text_field',
-			'gatherpress_recurrence_interval'        => 'absint',
-			'gatherpress_recurrence_byday'           => 'sanitize_text_field',
-			'gatherpress_recurrence_monthly_mode'    => 'sanitize_text_field',
-			'gatherpress_recurrence_monthly_day'     => 'absint',
-			'gatherpress_recurrence_monthly_ordinal' => array( self::class, 'sanitize_signed_int' ),
-			'gatherpress_recurrence_monthly_weekday' => 'absint',
-			'gatherpress_recurrence_end_type'        => 'sanitize_text_field',
-			'gatherpress_recurrence_until'           => 'sanitize_text_field',
-			'gatherpress_recurrence_count'           => 'absint',
+			'gatherpress_recurrence_frequency'       => array( 'sanitize_text_field', 'string' ),
+			'gatherpress_recurrence_interval'        => array( 'absint', 'integer' ),
+			'gatherpress_recurrence_byday'           => array( 'sanitize_text_field', 'string' ),
+			'gatherpress_recurrence_monthly_mode'    => array( 'sanitize_text_field', 'string' ),
+			'gatherpress_recurrence_monthly_day'     => array( 'absint', 'integer' ),
+			'gatherpress_recurrence_monthly_ordinal' => array( array( self::class, 'sanitize_signed_int' ), 'integer' ),
+			'gatherpress_recurrence_monthly_weekday' => array( 'absint', 'integer' ),
+			'gatherpress_recurrence_end_type'        => array( 'sanitize_text_field', 'string' ),
+			'gatherpress_recurrence_until'           => array( 'sanitize_text_field', 'string' ),
+			'gatherpress_recurrence_count'           => array( 'absint', 'integer' ),
 		);
 
-		foreach ( $derived_meta as $meta_key => $sanitize_callback ) {
+		foreach ( $derived_meta as $meta_key => $meta_args ) {
+			[ $sanitize_callback, $type ] = $meta_args;
+
 			register_post_meta(
 				$post_type,
 				$meta_key,
@@ -141,6 +158,7 @@ final class Meta {
 					'sanitize_callback' => $sanitize_callback,
 					'show_in_rest'      => true,
 					'single'            => true,
+					'type'              => $type,
 				)
 			);
 		}
@@ -165,9 +183,6 @@ final class Meta {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter) -- $meta_key, $object_subtype,
-	 * and $object_type are required by WP's sanitize_callback signature.
-	 *
 	 * @param mixed $value Raw meta value to sanitize.
 	 *
 	 * @return int The value cast to a signed integer.
@@ -179,7 +194,9 @@ final class Meta {
 	/**
 	 * Read the recurrence blob, write the derived mirrors, and trigger projection.
 	 *
-	 * The recurrence counterpart to `Event\Setup::set_datetimes()`.
+	 * The recurrence counterpart to `Event\Setup::set_datetimes()`, including
+	 * the same deferred-to-`shutdown` handling for a blob that has not landed
+	 * yet on this pass.
 	 *
 	 * @since 0.36.0
 	 *
@@ -194,25 +211,130 @@ final class Meta {
 
 		$data = get_post_meta( $post_id, self::META_KEY, true );
 
-		if ( empty( $data ) ) {
+		if ( ! empty( $data ) ) {
+			$this->write_recurrence( $post_id, (string) $data );
+
 			return;
 		}
 
-		$values = json_decode( (string) $data, true );
+		// Nothing stored yet, but that does not mean nothing is coming, and it
+		// does not mean the rule was removed either -- `wp_after_insert_post`
+		// fires from inside `wp_insert_post()`, before REST/editor/duplicate
+		// callers have necessarily written the blob (#2116's datetime race,
+		// same shape here). Decide once more at shutdown, once the request's
+		// meta writes are done.
+		$this->pending_recurrence[ $post_id ] = true;
+
+		add_action( 'shutdown', array( $this, 'resolve_pending_recurrence' ) );
+	}
+
+	/**
+	 * Resolve every post that finished its save without a stored recurrence blob.
+	 *
+	 * Runs on shutdown, so the meta read here is whatever the request actually
+	 * ended up with rather than what existed mid-insert. A blob that is still
+	 * empty here means the rule was genuinely removed (or never existed), so
+	 * the mirrors are cleared rather than left stale.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function resolve_pending_recurrence(): void {
+		$pending                  = $this->pending_recurrence;
+		$this->pending_recurrence = array();
+
+		foreach ( array_keys( $pending ) as $post_id ) {
+			// The post can be gone by shutdown -- a duplicate that failed, or
+			// an insert rolled back after this hook ran.
+			if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
+				continue;
+			}
+
+			$data = get_post_meta( $post_id, self::META_KEY, true );
+
+			if ( empty( $data ) ) {
+				$this->clear_mirrors( $post_id );
+
+				continue;
+			}
+
+			$this->write_recurrence( $post_id, (string) $data );
+		}
+	}
+
+	/**
+	 * Decode a recurrence blob and either project it onto the mirrors or clear them.
+	 *
+	 * A blob that fails to decode into a valid `Rule`, or whose series carries
+	 * a fixed-offset timezone rather than a named tz-database identifier, is
+	 * treated the same way as no rule at all: the mirrors are cleared rather
+	 * than left holding a previous, now-orphaned, rule. A fixed-offset
+	 * timezone must reject the rule, not fatal the post save -- a REST write
+	 * can carry one just as easily as the editor can.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id Post the blob belongs to.
+	 * @param string $data    Raw `gatherpress_recurrence` JSON blob.
+	 *
+	 * @return void
+	 */
+	protected function write_recurrence( int $post_id, string $data ): void {
+		$values = json_decode( $data, true );
 		$rule   = is_array( $values ) ? Rule::from_array( $values ) : null;
 
 		if ( ! $rule instanceof Rule ) {
+			$this->clear_mirrors( $post_id );
+
 			return;
 		}
 
-		// A named tz-database identifier is asserted before any recurrence
-		// value could reach the expander. A fixed UTC offset carries no DST
-		// rules and would silently drift a recurring series.
-		Timezone_Guard::assert_named( (string) get_post_meta( $post_id, 'gatherpress_timezone', true ) );
+		try {
+			// A named tz-database identifier is asserted before any recurrence
+			// value could reach the expander. A fixed UTC offset carries no
+			// DST rules and would silently drift a recurring series. Read from
+			// the same `gatherpress_datetime` blob `Event\Setup::set_datetimes()`
+			// reads, rather than the `gatherpress_timezone` mirror it derives --
+			// depending on that mirror would make this depend on that class
+			// having already run on this pass.
+			Timezone_Guard::assert_named( $this->read_timezone( $post_id ) );
+			// @codeCoverageIgnoreStart
+			// Untestable today: Timezone_Guard::assert_named() is still a T0
+			// no-op skeleton owned by another task and never throws, so this
+			// catch is provably unreachable in the current tree (confirmed by
+			// reading class-timezone-guard.php, not assumed). The behavior is
+			// correct and wired now on purpose -- a fixed-offset timezone must
+			// reject the rule, not fatal the post save on a REST write that
+			// bypasses the editor -- and this block activates automatically,
+			// with no code change here, the moment the guard's real
+			// implementation lands.
+		} catch ( InvalidArgumentException $e ) {
+			$this->clear_mirrors( $post_id );
+
+			return;
+			// @codeCoverageIgnoreEnd
+		}
 
 		$this->write_mirrors( $post_id, $rule );
 
 		Query::refresh_has_recurring_events();
+	}
+
+	/**
+	 * Read the series timezone from the `gatherpress_datetime` blob.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post to read the datetime blob from.
+	 *
+	 * @return string The timezone value, or '' when the blob is missing or malformed.
+	 */
+	protected function read_timezone( int $post_id ): string {
+		$data   = get_post_meta( $post_id, 'gatherpress_datetime', true );
+		$values = ! empty( $data ) ? json_decode( (string) $data, true ) : null;
+
+		return is_array( $values ) ? (string) ( $values['timezone'] ?? '' ) : '';
 	}
 
 	/**
@@ -250,6 +372,31 @@ final class Meta {
 		foreach ( $mirrors as $meta_key => $value ) {
 			update_post_meta( $post_id, $meta_key, $value );
 		}
+	}
+
+	/**
+	 * Delete all ten derived mirrors and refresh the has-recurring-events flag.
+	 *
+	 * Called whenever a post ends up with no valid, expandable rule -- the
+	 * blob was removed, failed to decode, or carries a fixed-offset timezone.
+	 * Without this, a removed or invalidated rule's mirrors survive the save
+	 * that removed it: `from_post()` keeps reconstructing the deleted rule,
+	 * the site keeps expanding it, and `Query::refresh_has_recurring_events()`
+	 * -- which reads the frequency mirror directly from `wp_postmeta` -- never
+	 * sees the removal.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID to clear the mirrors on.
+	 *
+	 * @return void
+	 */
+	protected function clear_mirrors( int $post_id ): void {
+		foreach ( self::DERIVED_META_KEYS as $meta_key ) {
+			delete_post_meta( $post_id, $meta_key );
+		}
+
+		Query::refresh_has_recurring_events();
 	}
 
 	/**

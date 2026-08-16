@@ -136,6 +136,19 @@ final class Rule {
 	 * Approximate days per occurrence, keyed by frequency, used only for the
 	 * `COUNT` iteration-budget check at the meta boundary.
 	 *
+	 * Deliberately kept in step with `Expander::iteration_budget()`'s own
+	 * `match ( $rule->frequency() ) { DAILY => 1, WEEKLY => 7, default => 31 }`
+	 * -- both sides land on `count * per_frequency * interval + 366`. This
+	 * duplicates the arithmetic rather than sharing it, because `Expander` is
+	 * a different task's file and `iteration_budget()` is a `protected`
+	 * instance method taking an anchor and horizon this validation-time check
+	 * has neither of; a rejection here must be at least as strict as the
+	 * expander's own budget, never looser, or an accepted rule could still be
+	 * silently truncated at expansion. If the two constants drift, fix this
+	 * one to match `Expander`'s, not the other way around: `Expander::MAX_ITERATIONS`
+	 * is the actual backstop, and this check exists only to reject before that
+	 * backstop is ever reached.
+	 *
 	 * @since 0.36.0
 	 * @var array<string, int>
 	 */
@@ -274,8 +287,18 @@ final class Rule {
 		$until     = null;
 
 		if ( is_string( $raw_until ) && '' !== $raw_until ) {
-			$parsed = date_create_immutable( $raw_until );
-			$until  = false !== $parsed ? $parsed : null;
+			// Strict `Y-m-d` parsing, matching the format `to_array()` and
+			// `write_mirrors()` emit -- `date_create_immutable()` would also
+			// accept relative strings like 'tomorrow' or '+1 year' (an end
+			// date that depends on when it was saved) and silently roll an
+			// invalid calendar date like '2026-02-31' over into March. The
+			// leading `!` resets every field the format does not name to the
+			// Unix epoch, rather than to the current moment.
+			$parsed = DateTimeImmutable::createFromFormat( '!Y-m-d', $raw_until );
+			$errors = DateTimeImmutable::getLastErrors();
+			$clean  = ! is_array( $errors ) || ( 0 === $errors['warning_count'] && 0 === $errors['error_count'] );
+
+			$until = ( false !== $parsed && $clean ) ? $parsed : null;
 		}
 
 		// RFC 5545 forbids a rule that carries both an end date and an
@@ -427,15 +450,22 @@ final class Rule {
 		$valid_frequencies = array( self::FREQUENCY_DAILY, self::FREQUENCY_WEEKLY, self::FREQUENCY_MONTHLY );
 		$valid_end_types   = array( self::END_TYPE_NEVER, self::END_TYPE_UNTIL, self::END_TYPE_COUNT );
 
+		// A weekly rule needs at least one weekday, and every weekday it names
+		// must be a real day, 0 (Sunday) through 6 (Saturday) -- an unchecked
+		// out-of-range value (e.g. 7, or -1) would otherwise leave an
+		// undefined WEEKDAY_CODES lookup at write-mirror and RRULE-export time.
+		$weekly_weekdays_valid = self::FREQUENCY_WEEKLY !== $this->frequency
+			|| ( array() !== $this->weekdays && array() === array_diff( $this->weekdays, range( 0, 6 ) ) );
+
+		// Guard every top-level shape requirement in one place: a recognized
+		// frequency and end type, an interval within bounds, and a weekly
+		// rule's weekdays all within range.
 		if ( ! in_array( $this->frequency, $valid_frequencies, true )
 			|| $this->interval < 1
 			|| $this->interval > self::MAX_INTERVAL
 			|| ! in_array( $this->end_type, $valid_end_types, true )
+			|| ! $weekly_weekdays_valid
 		) {
-			return false;
-		}
-
-		if ( self::FREQUENCY_WEEKLY === $this->frequency && array() === $this->weekdays ) {
 			return false;
 		}
 
@@ -488,8 +518,13 @@ final class Rule {
 				return false;
 			}
 
+			// Matches Expander::iteration_budget()'s own `match` fallback of 31
+			// (monthly-shaped) for anything outside DAILY/WEEKLY -- unreachable
+			// through from_array() today, since is_valid() already rejects an
+			// unrecognized frequency before this runs, but kept aligned so a
+			// future frequency added to one side is never looser on this one.
 			$per_frequency = self::BUDGET_DAYS_PER_FREQUENCY[ $this->frequency ]
-				?? self::BUDGET_DAYS_PER_FREQUENCY[ self::FREQUENCY_DAILY ];
+				?? self::BUDGET_DAYS_PER_FREQUENCY[ self::FREQUENCY_MONTHLY ];
 			$budget        = ( $this->count * $per_frequency * $this->interval ) + 366;
 
 			return $budget <= Expander::MAX_ITERATIONS;
