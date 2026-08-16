@@ -53,16 +53,20 @@ final class Expander {
 	const MAX_COUNT = 730;
 
 	/**
-	 * How many months past its starting month the monthly walk looks for a date.
+	 * How many candidate months the monthly walk examines before giving up.
 	 *
-	 * Generous enough for the widest legal gap — a February 29th anchor repeating
-	 * every twelve months waits four years for its next date — and small enough
-	 * that an unsatisfiable rule terminates immediately.
+	 * Counted in candidates, not in absolute months: the walk steps by the rule's
+	 * interval, so an absolute-month bound would collapse to `bound / interval`
+	 * candidates and silently truncate a legal `COUNT` at a wide interval. An
+	 * exhaustive search over every interval from 1 to `Rule::MAX_INTERVAL` and
+	 * every day from the 28th to the 31st puts the worst run of unusable
+	 * candidate months at seven — a February 29th rule at interval 12 — so this
+	 * leaves a wide margin while still terminating an unsatisfiable rule at once.
 	 *
 	 * @since 0.36.0
 	 * @var int
 	 */
-	const MONTH_SCAN_STEPS = 120;
+	const MONTH_SCAN_STEPS = 48;
 
 	/**
 	 * Derive the candidate-step budget from the rule rather than guessing it.
@@ -102,9 +106,10 @@ final class Expander {
 	 * @since 0.36.0
 	 *
 	 * @param Rule              $rule         Rule being expanded.
-	 * @param DateTimeImmutable $anchor_start Series anchor start, source of the wall-clock time.
+	 * @param DateTimeImmutable $anchor_start Series anchor start, source of the wall-clock time. Converted into
+	 *                                        `$timezone` first, so a UTC-expressed anchor is not reinterpreted.
 	 * @param DateTimeZone      $timezone     Series timezone, which must be a named identifier.
-	 * @param DateTimeImmutable $through      Horizon, ignored by a count-bounded rule.
+	 * @param DateTimeImmutable $through      Horizon, ignored by a count-bounded rule. Also read in `$timezone`.
 	 *
 	 * @return DateTimeImmutable[] Ordered ascending. Never contains a nonexistent local time.
 	 */
@@ -116,13 +121,19 @@ final class Expander {
 	): array {
 		Timezone_Guard::assert_named( $timezone->getName() );
 
+		// The wall clock belongs to the series timezone, not to whichever timezone
+		// the caller's value happens to carry. Reading `H:i:s` off a UTC-expressed
+		// anchor would shift every occurrence by the UTC offset and still look
+		// like a working series.
+		$anchor_start = $anchor_start->setTimezone( $timezone );
+
 		// PRD C-3: the wall-clock time is read from the anchor once, and the walk
 		// itself runs on timezone-free dates so no interval arithmetic can land on
 		// a datetime that carries an offset.
 		$time       = $anchor_start->format( 'H:i:s' );
 		$anchor     = $this->date_only( $anchor_start );
 		$cursor     = $anchor;
-		$horizon    = $through->format( 'Y-m-d' );
+		$horizon    = $through->setTimezone( $timezone )->format( 'Y-m-d' );
 		$results    = array();
 		$delivered  = 0;
 		$iterations = 0;
@@ -242,8 +253,8 @@ final class Expander {
 		$start = max( 0, (int) ceil( $this->months_apart( $anchor, $cursor ) / $step ) ) * $step;
 		$found = null;
 
-		for ( $offset = $start; $offset <= $start + self::MONTH_SCAN_STEPS; $offset += $step ) {
-			$date = $this->monthly_date_for_offset( $rule, $anchor, $offset );
+		for ( $candidate = 0; $candidate <= self::MONTH_SCAN_STEPS; $candidate++ ) {
+			$date = $this->monthly_date_for_offset( $rule, $anchor, $start + $candidate * $step );
 
 			if ( null !== $date && $date >= $cursor ) {
 				$found = $date;
@@ -317,6 +328,10 @@ final class Expander {
 		return match ( $rule->frequency() ) {
 			Rule::FREQUENCY_DAILY   => $this->matches_daily( $rule, $candidate, $anchor ),
 			Rule::FREQUENCY_WEEKLY  => $this->matches_weekly( $rule, $candidate, $anchor ),
+			// The walk sends monthly rules to `next_monthly_date()` rather than
+			// through the day scan, so this arm answers direct callers only. It is
+			// kept so the predicate is complete for every frequency the rule can
+			// hold, rather than correct for the two the scan happens to use.
 			Rule::FREQUENCY_MONTHLY => $this->matches_monthly( $rule, $candidate, $anchor ),
 			// An unrecognized frequency matches nothing rather than fataling.
 			default                 => false,
@@ -357,7 +372,11 @@ final class Expander {
 	protected function matches_weekly( Rule $rule, DateTimeImmutable $candidate, DateTimeImmutable $anchor ): bool {
 		$weeks_apart = $this->week_index( $candidate ) - $this->week_index( $anchor );
 
-		return in_array( (int) $candidate->format( 'w' ), $rule->weekdays(), true )
+		// The anchor guard mirrors `matches_daily()`. The walk never offers a
+		// candidate behind the anchor, but a direct caller can, and a negative
+		// bucket delta divides evenly just as often as a positive one.
+		return $candidate >= $anchor
+			&& in_array( (int) $candidate->format( 'w' ), $rule->weekdays(), true )
 			&& 0 === $weeks_apart % $rule->interval();
 	}
 
@@ -414,6 +433,8 @@ final class Expander {
 			Rule::FREQUENCY_DAILY  => $rule->interval(),
 			Rule::FREQUENCY_WEEKLY => $rule->interval() * 7 + 7,
 			// Monthly walks months, and an unrecognized frequency scans nothing.
+			// `next_candidate_date()` already routes both away from the day scan,
+			// so this arm is defense in depth rather than a live path.
 			default                => 0,
 		};
 	}
@@ -450,7 +471,13 @@ final class Expander {
 	 *
 	 * PHP normalizes a nonexistent local time forward — 02:30 on a spring-forward
 	 * date becomes 03:30 — so the detection is a round trip: format the result
-	 * back out and compare it to the time that went in.
+	 * back out and compare it to what went in.
+	 *
+	 * The comparison is on the whole local datetime rather than on the time
+	 * alone, because a zone can skip an entire calendar date: Samoa's date-line
+	 * crossing erased 2011-12-30, and `Pacific/Apia` normalizes 09:00 that day to
+	 * 09:00 on the 31st. A time-only round trip accepts that, emits a duplicate of
+	 * the following day, and spends a `COUNT` slot on it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -458,12 +485,18 @@ final class Expander {
 	 * @param string       $time     Wall-clock time in `H:i:s` form.
 	 * @param DateTimeZone $timezone Series timezone.
 	 *
-	 * @return DateTimeImmutable|null The datetime, or null when the local time does not exist.
+	 * @return DateTimeImmutable|null The datetime, or null when the local datetime does not exist.
 	 */
 	protected function materialize( string $date, string $time, DateTimeZone $timezone ): ?DateTimeImmutable {
-		$datetime = DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $date . ' ' . $time, $timezone );
+		$local    = $date . ' ' . $time;
+		$datetime = DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $local, $timezone );
+		$errors   = DateTimeImmutable::getLastErrors();
 
-		return ( false === $datetime || $datetime->format( 'H:i:s' ) !== $time ) ? null : $datetime;
+		$exists = false !== $datetime
+			&& ( ! is_array( $errors ) || 0 === $errors['warning_count'] )
+			&& $datetime->format( 'Y-m-d H:i:s' ) === $local;
+
+		return $exists ? $datetime : null;
 	}
 
 	/**
@@ -487,9 +520,14 @@ final class Expander {
 	/**
 	 * Reduce a datetime to its date, held in UTC.
 	 *
-	 * The walk runs on UTC midnights so that stepping a day, bucketing a week,
-	 * and comparing two candidates are all free of daylight saving arithmetic.
-	 * The series timezone is reapplied in `materialize()` and nowhere else.
+	 * The walk runs on UTC midnights because `setTime( 0, 0, 0 )` is undefined in
+	 * a zone whose transition lands on midnight — `America/Santiago` on
+	 * 2026-09-06 and `Asia/Beirut` on 2026-03-29 both return 01:00 — and because
+	 * `diff()->days` on a timezone-aware pair misreports a 23-hour day. Week
+	 * bucketing is not the reason: `floor( $timestamp / 604800 )` breaks at
+	 * Thursday 00:00 UTC, so a local Monday midnight sits in the bucket interior
+	 * and never crosses under a daylight saving shift. The series timezone is
+	 * reapplied in `materialize()` and nowhere else.
 	 *
 	 * @since 0.36.0
 	 *

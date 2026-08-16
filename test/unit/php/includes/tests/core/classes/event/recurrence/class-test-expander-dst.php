@@ -194,6 +194,54 @@ class Test_Expander_Dst extends Base {
 	}
 
 	/**
+	 * A calendar date the zone never had is skipped, and does not consume the count.
+	 *
+	 * Samoa moved west of the date line at the end of 2011, so 2011-12-30 never
+	 * existed in `Pacific/Apia`. PHP normalizes 09:00 that day to 09:00 on the
+	 * 31st — the clock time survives intact, so a round trip on the time alone
+	 * accepts it, emits a duplicate of the following day, and spends a `COUNT`
+	 * slot doing it. The round trip is on the whole local datetime for that
+	 * reason.
+	 *
+	 * @covers ::expand
+	 * @covers ::materialize
+	 *
+	 * @return void
+	 */
+	public function test_daily_skips_a_calendar_date_the_zone_never_had(): void {
+		$timezone = new DateTimeZone( 'Pacific/Apia' );
+
+		$occurrences = ( new Expander() )->expand(
+			$this->make_rule(
+				array(
+					'frequency' => Rule::FREQUENCY_DAILY,
+					'interval'  => 1,
+					'end_type'  => Rule::END_TYPE_COUNT,
+					'count'     => 3,
+				)
+			),
+			new DateTimeImmutable( '2011-12-29 09:00:00', $timezone ),
+			$timezone,
+			new DateTimeImmutable( '2012-01-31 09:00:00', $timezone )
+		);
+
+		$this->assertCount(
+			3,
+			$occurrences,
+			'Failed to assert that a skipped calendar date leaves the COUNT budget intact.'
+		);
+		$this->assertSame(
+			array(
+				'2011-12-29 09:00:00 -10:00 | 2011-12-29 19:00:00',
+				'2011-12-31 09:00:00 +14:00 | 2011-12-30 19:00:00',
+				'2012-01-01 09:00:00 +14:00 | 2011-12-31 19:00:00',
+			),
+			$this->to_local_and_utc( $occurrences ),
+			'Failed to assert that 2011-12-30 is absent and is not duplicated by the 31st.'
+		);
+	}
+
+	/**
 	 * An ambiguous fall-back local time pins to the earlier, still-daylight instant.
 	 *
 	 * RFC 5545 says nothing about ambiguous local times, so this records the

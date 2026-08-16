@@ -284,6 +284,85 @@ class Test_Expander extends Base {
 	}
 
 	/**
+	 * A day-of-month rule on the 31st at a wide interval still delivers its whole count.
+	 *
+	 * The monthly walk steps by the interval, so a bound expressed in absolute
+	 * months would examine `bound / interval` candidates and stop early. At
+	 * interval 43 the gap between the fifth and sixth occurrence is 258 months —
+	 * six candidate months, but more than two hundred calendar ones.
+	 *
+	 * @covers ::expand
+	 * @covers ::next_monthly_date
+	 *
+	 * @return void
+	 */
+	public function test_monthly_day_of_month_thirty_first_at_interval_forty_three_yields_six(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+
+		$occurrences = ( new Expander() )->expand(
+			$this->make_rule(
+				array(
+					'frequency'    => Rule::FREQUENCY_MONTHLY,
+					'interval'     => 43,
+					'monthly_mode' => Rule::MONTHLY_MODE_DAY_OF_MONTH,
+					'monthly_day'  => 31,
+					'end_type'     => Rule::END_TYPE_COUNT,
+					'count'        => 6,
+				)
+			),
+			new DateTimeImmutable( '2024-03-31 09:00:00', $timezone ),
+			$timezone,
+			new DateTimeImmutable( '2025-03-31 09:00:00', $timezone )
+		);
+
+		$this->assertSame(
+			array( '2024-03-31', '2027-10-31', '2031-05-31', '2034-12-31', '2038-07-31', '2060-01-31' ),
+			array_map(
+				static function ( DateTimeImmutable $occurrence ): string {
+					return $occurrence->format( 'Y-m-d' );
+				},
+				$occurrences
+			),
+			'Failed to assert that a wide monthly interval delivers its whole count.'
+		);
+	}
+
+	/**
+	 * An anchor expressed in another timezone is read in the series timezone.
+	 *
+	 * The wall clock belongs to the series, so a UTC-expressed anchor an hour
+	 * past midnight is a nine o'clock evening event in New York, not a one
+	 * o'clock morning one.
+	 *
+	 * @covers ::expand
+	 *
+	 * @return void
+	 */
+	public function test_expand_normalizes_a_foreign_timezone_anchor_and_horizon(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$utc      = new DateTimeZone( 'UTC' );
+
+		$occurrences = ( new Expander() )->expand(
+			$this->make_rule(
+				array(
+					'frequency' => Rule::FREQUENCY_DAILY,
+					'interval'  => 1,
+					'end_type'  => Rule::END_TYPE_NEVER,
+				)
+			),
+			new DateTimeImmutable( '2026-09-04 01:00:00', $utc ),
+			$timezone,
+			new DateTimeImmutable( '2026-09-06 01:00:00', $utc )
+		);
+
+		$this->assertSame(
+			array( '2026-09-03 21:00:00', '2026-09-04 21:00:00', '2026-09-05 21:00:00' ),
+			$this->to_local_strings( $occurrences ),
+			'Failed to assert that a UTC-expressed anchor and horizon are read in the series timezone.'
+		);
+	}
+
+	/**
 	 * An nth-weekday rule on the third Thursday tracks the weekday, not the date.
 	 *
 	 * @covers ::expand
@@ -758,6 +837,61 @@ class Test_Expander extends Base {
 	}
 
 	/**
+	 * The day scan returns the next matching date.
+	 *
+	 * @covers ::next_scanned_date
+	 *
+	 * @return void
+	 */
+	public function test_next_scanned_date_returns_the_next_matching_date(): void {
+		$anchor = new DateTimeImmutable( '2026-09-03', new DateTimeZone( 'UTC' ) );
+
+		$candidate = Utility::invoke_hidden_method(
+			new Expander(),
+			'next_scanned_date',
+			array( $this->make_rule( $this->reference_rule_values() ), $anchor->modify( '+1 day' ), $anchor )
+		);
+
+		$this->assertSame(
+			'2026-09-15',
+			$candidate->format( 'Y-m-d' ),
+			'Failed to assert that the day scan skips the intervening week and returns the next Tuesday.'
+		);
+	}
+
+	/**
+	 * The monthly walk returns the next matching date.
+	 *
+	 * @covers ::next_monthly_date
+	 *
+	 * @return void
+	 */
+	public function test_next_monthly_date_returns_the_next_matching_date(): void {
+		$anchor = new DateTimeImmutable( '2026-01-31', new DateTimeZone( 'UTC' ) );
+		$rule   = $this->make_rule(
+			array(
+				'frequency'    => Rule::FREQUENCY_MONTHLY,
+				'interval'     => 1,
+				'monthly_mode' => Rule::MONTHLY_MODE_DAY_OF_MONTH,
+				'monthly_day'  => 31,
+				'end_type'     => Rule::END_TYPE_NEVER,
+			)
+		);
+
+		$candidate = Utility::invoke_hidden_method(
+			new Expander(),
+			'next_monthly_date',
+			array( $rule, $anchor->modify( '+1 day' ), $anchor )
+		);
+
+		$this->assertSame(
+			'2026-03-31',
+			$candidate->format( 'Y-m-d' ),
+			'Failed to assert that the monthly walk skips February and returns the next 31st.'
+		);
+	}
+
+	/**
 	 * The monthly walk returns null when no month in its window resolves a date.
 	 *
 	 * @covers ::next_monthly_date
@@ -868,6 +1002,14 @@ class Test_Expander extends Base {
 				array( $rule, new DateTimeImmutable( '2026-09-08', new DateTimeZone( 'UTC' ) ), $anchor )
 			),
 			'Failed to assert that a Tuesday one week bucket on does not match.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$expander,
+				'matches_weekly',
+				array( $rule, new DateTimeImmutable( '2026-08-18', new DateTimeZone( 'UTC' ) ), $anchor )
+			),
+			'Failed to assert that a Tuesday two week buckets before the anchor does not match.'
 		);
 	}
 
@@ -1205,6 +1347,14 @@ class Test_Expander extends Base {
 				array( '2026-03-08', '02:30:00', $timezone )
 			),
 			'Failed to assert that a nonexistent local time materializes to null.'
+		);
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				$expander,
+				'materialize',
+				array( '2011-12-30', '09:00:00', new DateTimeZone( 'Pacific/Apia' ) )
+			),
+			'Failed to assert that a date the zone never had materializes to null.'
 		);
 	}
 
