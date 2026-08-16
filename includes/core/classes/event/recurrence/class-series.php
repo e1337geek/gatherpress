@@ -37,7 +37,6 @@ final class Series {
 	 */
 	use Singleton;
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
 	/**
 	 * Resolve a post to every post ID in its series.
 	 *
@@ -48,13 +47,6 @@ final class Series {
 	 * because a one-post series makes `IN ( … )` and `= %d` behave identically
 	 * and the review gate cannot tell them apart without it.
 	 *
-	 * The frozen shape, which T1 reproduces as a canonical hook docblock above
-	 * its call — description "Filters the post IDs that make up an event's
-	 * series.", then `@since 0.36.0`, then two params in this order:
-	 * `int[] $post_ids` (post IDs in the series, default `array( $post_id )`)
-	 * and `int $post_id` (the post ID being resolved). The call itself is
-	 * `apply_filters( 'gatherpress_series_post_ids', array( $post_id ), $post_id )`.
-	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID to resolve.
@@ -62,7 +54,16 @@ final class Series {
 	 * @return int[] Every post ID in the series, which is `array( $post_id )` in the POC.
 	 */
 	public function resolve_post_ids( int $post_id ): array {
-		return array();
+		/**
+		 * Filters the post IDs that make up an event's series.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param int[] $post_ids Post IDs in the series, default `array( $post_id )`.
+		 * @param int   $post_id  The post ID being resolved.
+		 *
+		 * @return int[] Post IDs in the series.
+		 */
+		return apply_filters( 'gatherpress_series_post_ids', array( $post_id ), $post_id );
 	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 }

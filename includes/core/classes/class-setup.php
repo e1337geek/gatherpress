@@ -16,6 +16,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use Exception;
 use GatherPress\Core\Admin\Notices\Setup as Notices_Setup;
+use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Traits\Singleton;
 use WP_Site;
 
@@ -482,6 +483,21 @@ final class Setup {
 					PRIMARY KEY  (post_id),
 					KEY datetime_start_gmt (datetime_start_gmt),
 					KEY datetime_end_gmt (datetime_end_gmt)
+				) {$charset_collate};";
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $prefix );
+		$sql[]             = "CREATE TABLE {$occurrences_table} (
+					series_post_id bigint(20) unsigned NOT NULL default '0',
+					recurrence_id varchar(20) NOT NULL default '',
+					datetime_start datetime NOT NULL default '0000-00-00 00:00:00',
+					datetime_start_gmt datetime NOT NULL default '0000-00-00 00:00:00',
+					datetime_end datetime NOT NULL default '0000-00-00 00:00:00',
+					datetime_end_gmt datetime NOT NULL default '0000-00-00 00:00:00',
+					timezone varchar(255) default NULL,
+					status varchar(20) NOT NULL default 'scheduled',
+					PRIMARY KEY  (series_post_id,recurrence_id),
+					KEY start_gmt (datetime_start_gmt),
+					KEY series_status_start (series_post_id,status,datetime_start_gmt)
 				) {$charset_collate};";
 
 		// Loading WordPress core file for dbDelta function, not importing a class.
