@@ -9,6 +9,7 @@
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use GatherPress\Core\Event\Recurrence\Timezone_Guard;
+use GatherPress\Core\Utility;
 use GatherPress\Tests\Base;
 use InvalidArgumentException;
 
@@ -59,7 +60,18 @@ class Test_Timezone_Guard extends Base {
 	 *
 	 * Mirrors the offset list wp-admin/options-general.php builds for the
 	 * "Manual Offsets" <optgroup>, formatted the same way WordPress formats
-	 * the option value: `UTC` followed by the signed decimal-hour offset.
+	 * the option value: `UTC` followed by the signed decimal-hour offset
+	 * (WP's own sign test is `0 <= $offset`, so the zero case reads `UTC+0`,
+	 * not `UTC0` -- getting that sign wrong would let a regression that
+	 * accepted `UTC+0` slip past this loop unnoticed, so it is asserted
+	 * explicitly below as well as generated here).
+	 *
+	 * GatherPress never actually stores a raw `<option value>` like this --
+	 * `Event::save_datetimes()` runs every timezone through
+	 * `Utility::maybe_convert_utc_offset()` first, which rewrites `UTC+5.5` to
+	 * `+05:30`. Both forms are asserted here: the raw form because it is what
+	 * WordPress emits, and the normalized form because it is what the guard
+	 * actually receives on a real site.
 	 *
 	 * @covers ::is_named
 	 *
@@ -125,13 +137,29 @@ class Test_Timezone_Guard extends Base {
 		);
 
 		foreach ( $offsets as $offset ) {
-			$timezone = 'UTC' . ( $offset > 0 ? '+' . $offset : $offset );
+			$timezone = 'UTC' . ( $offset >= 0 ? '+' . $offset : $offset );
 
 			$this->assertFalse(
 				Timezone_Guard::is_named( $timezone ),
 				sprintf( 'Failed to assert that the manual offset "%s" was rejected.', $timezone )
 			);
+
+			$normalized = Utility::maybe_convert_utc_offset( $timezone );
+
+			$this->assertFalse(
+				Timezone_Guard::is_named( $normalized ),
+				sprintf(
+					'Failed to assert that "%s", normalized from "%s", was rejected.',
+					$normalized,
+					$timezone
+				)
+			);
 		}
+
+		$this->assertFalse(
+			Timezone_Guard::is_named( 'UTC+0' ),
+			'Failed to assert that WordPress\'s zero-offset form "UTC+0" was rejected.'
+		);
 	}
 
 	/**
