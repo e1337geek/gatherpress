@@ -1835,6 +1835,44 @@ final class Occurrences {
 	}
 
 	/**
+	 * Read one occurrence of a series by its identifier.
+	 *
+	 * Takes an array of post IDs, never a single ID, so the query emits
+	 * `series_post_id IN (…)` and REQ-18 stays reachable. This is the lookup
+	 * every request-supplied `recurrence_id` is validated against: `get()`
+	 * pins one post, which would refuse an occurrence that a forward split had
+	 * moved to a sibling post of the same series.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[]  $post_ids      Post IDs from `Series::resolve_post_ids()`.
+	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
+	 *
+	 * @return array|null The row, or null when nothing in the series carries that identifier.
+	 */
+	public function find_in_series( array $post_ids, string $recurrence_id ): ?array {
+		global $wpdb;
+
+		if ( array() === $post_ids || '' === $recurrence_id ) {
+			return null;
+		}
+
+		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+		$placeholders = implode( ', ', array_fill( 0, count( $post_ids ), '%d' ) );
+		$sql          = "SELECT * FROM %i WHERE series_post_id IN ( {$placeholders} )"
+			. ' AND recurrence_id = %s LIMIT 1';
+		$values       = array_merge( array( $table ), $post_ids, array( $recurrence_id ) );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $values ), ARRAY_A );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		return null === $row ? null : $row;
+	}
+
+	/**
 	 * Read the occurrences of a series.
 	 *
 	 * Takes an array of post IDs, never a single ID, so the query emits

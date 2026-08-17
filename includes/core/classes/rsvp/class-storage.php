@@ -275,13 +275,14 @@ final class Storage {
 
 		// No early return for an empty set: `wp_get_object_terms()` bails on one
 		// itself, so a guard here would be a branch no test could distinguish.
-		$non_cached_ids = array_unique( $non_cached_ids );
-		$terms          = wp_get_object_terms(
+		// The list is not deduplicated either — a comment uncached in both
+		// taxonomies appears twice, `IN ( … )` collapses the duplicate in SQL,
+		// and `wp_cache_add()` makes the second pass over it a no-op.
+		$terms = wp_get_object_terms(
 			$non_cached_ids,
 			$taxonomies,
 			array(
 				'fields'                 => 'all_with_object_id',
-				'orderby'                => 'name',
 				'update_term_meta_cache' => false,
 			)
 		);

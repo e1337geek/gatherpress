@@ -106,6 +106,28 @@ function announceRsvpSuccess( res, previousOnlineLink ) {
 }
 
 /**
+ * Build the occurrence identity to send with an RSVP REST request.
+ *
+ * Emitted server-side into the interactivity state by `Assets::add_interactivity_state()`,
+ * and only on a page that is actually rendering one occurrence of a recurring
+ * series. Without it the server has no way to tell which date a response
+ * belongs to: a REST request never fires `wp`, so the occurrence context the
+ * page itself was rendered in does not exist by the time the route runs.
+ *
+ * Returns an empty object off an occurrence page, so the spread adds nothing
+ * and the request body stays byte-identical to what it has always been.
+ *
+ * @since 0.36.0
+ *
+ * @return {Object} Either `{ recurrence_id }` or an empty object.
+ */
+export function withRecurrenceId() {
+	const recurrenceId = gatherPressState.recurrenceId;
+
+	return recurrenceId ? { recurrence_id: recurrenceId } : {};
+}
+
+/**
  * Initializes the post context within the application state.
  *
  * This function ensures that the given `postId` has an entry in the `state.posts` object.
@@ -299,6 +321,7 @@ export async function sendRsvpApiRequest(
 					guests: args.guests,
 					anonymous: args.anonymous,
 					rsvp_token: args.rsvpToken,
+					...withRecurrenceId(),
 				} ),
 			},
 		);

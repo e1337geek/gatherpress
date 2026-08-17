@@ -20,11 +20,7 @@ namespace GatherPress\Core\Event\Recurrence;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
-use GatherPress\Core\Rsvp\Response\Provider\Base as Provider;
-use GatherPress\Core\Rsvp\Response\Status;
-use GatherPress\Core\Rsvp\Rsvp;
 use GatherPress\Core\Traits\Singleton;
-use WP_Comment;
 use WP_Term;
 
 /**
@@ -52,63 +48,15 @@ final class Rsvp_Occurrence {
 	/**
 	 * Class constructor.
 	 *
+	 * Nothing to hook: the `delete_comment` relationship cleanup this class
+	 * used to own cleans all three RSVP comment taxonomies, only one of which
+	 * is about recurrence, and now lives on `Rsvp\Cleanup` alongside the
+	 * hard-delete cron it belongs with. The constructor stays declared and
+	 * `protected` so `get_instance()` remains the only way to build one.
+	 *
 	 * @since 0.36.0
 	 */
 	protected function __construct() {
-		$this->setup_hooks();
-	}
-
-	/**
-	 * Set up hooks for the occurrence link.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @return void
-	 */
-	protected function setup_hooks(): void {
-		add_action( 'delete_comment', array( $this, 'delete_term_relationships' ), 10, 2 );
-	}
-
-	/**
-	 * Remove an RSVP's term relationships before its comment row disappears.
-	 *
-	 * `wp_delete_comment()` deletes the comment and its meta but never its term
-	 * relationships, so every hard delete has been leaving orphaned
-	 * `_gatherpress_rsvp_status` and `_gatherpress_rsvp_provider` rows behind —
-	 * rows that keep inflating term counts and that nothing will ever collect,
-	 * because the object ID they point at is gone. This predates recurrence
-	 * entirely; the occurrence taxonomy would simply have been the third
-	 * leaking one.
-	 *
-	 * `delete_comment` fires before the row is removed, which is what keeps the
-	 * object resolvable here. The three real hard-delete sites are the cleanup
-	 * cron, the RSVP list table, and WordPress emptying its own trash —
-	 * `Rsvp\Storage::save()` calls `wp_delete_comment()` without the force
-	 * flag, so it trashes rather than deletes and never reaches this.
-	 *
-	 * The occurrence taxonomy is only named on a site that actually has
-	 * recurring events (REQ-16): elsewhere there is nothing to clean up and the
-	 * lookup would be pure cost.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @param string|int      $comment_id The comment ID, as WordPress passes it.
-	 * @param WP_Comment|null $comment    The comment being deleted.
-	 *
-	 * @return void
-	 */
-	public function delete_term_relationships( $comment_id, $comment = null ): void {
-		if ( ! $comment instanceof WP_Comment || Rsvp::COMMENT_TYPE !== $comment->comment_type ) {
-			return;
-		}
-
-		$taxonomies = array( Status::TAXONOMY, Provider::TAXONOMY );
-
-		if ( Query::site_has_recurring_events() ) {
-			$taxonomies[] = self::TAXONOMY;
-		}
-
-		wp_delete_object_term_relationships( (int) $comment_id, $taxonomies );
 	}
 
 	/**
@@ -165,6 +113,64 @@ final class Rsvp_Occurrence {
 		}
 
 		return (string) $occurrence['recurrence_id'];
+	}
+
+	/**
+	 * Resolve the occurrence an already-stored RSVP belongs to.
+	 *
+	 * Reads the comment's own `_gatherpress_occurrence` term rather than the
+	 * request, which is what makes it usable from callbacks that run before
+	 * `wp` — `Rsvp\Token::handle_rsvp_token()` on `init` being the one that
+	 * matters, since without this its cache invalidation drops only the
+	 * series-wide key and leaves the occurrence's warm counts stale for the
+	 * length of `Cache::CACHE_EXPIRATION`, shared across every visitor under a
+	 * persistent object cache.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $comment_id RSVP comment ID.
+	 *
+	 * @return string|null The occurrence identifier, or null when the RSVP is not scoped to one.
+	 */
+	public static function recurrence_id_for_comment( int $comment_id ): ?string {
+		if ( ! Query::site_has_recurring_events() || 1 > $comment_id ) {
+			return null;
+		}
+
+		$slugs = wp_get_object_terms( $comment_id, self::TAXONOMY, array( 'fields' => 'slugs' ) );
+
+		if ( is_wp_error( $slugs ) || empty( $slugs ) ) {
+			return null;
+		}
+
+		return self::recurrence_id_from_slug( (string) $slugs[0] );
+	}
+
+	/**
+	 * Recover the canonical occurrence identifier from a term slug.
+	 *
+	 * The exact inverse of `term_slug()`, and it has to be: `term_slug()`
+	 * passes the composite through `sanitize_title()`, which lowercases it, so
+	 * the stored slug reads `12-20260903t180000` while every cache key and
+	 * every occurrence row carries `20260903T180000`. `Ymd\THis` contains
+	 * exactly one letter, so uppercasing recovers the identifier byte for
+	 * byte; handing the lowercased form back would compose a cache key that
+	 * matches nothing.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $slug Term slug, in the form `term_slug()` produces.
+	 *
+	 * @return string|null The occurrence identifier, or null when the slug carries none.
+	 */
+	public static function recurrence_id_from_slug( string $slug ): ?string {
+		$separator = strrpos( $slug, '-' );
+
+		if ( false === $separator || strlen( $slug ) - 1 === $separator ) {
+			return null;
+		}
+
+		return strtoupper( substr( $slug, $separator + 1 ) );
 	}
 
 	/**

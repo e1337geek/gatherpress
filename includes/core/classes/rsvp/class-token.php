@@ -12,6 +12,7 @@
 
 namespace GatherPress\Core\Rsvp;
 
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Utility;
 use WP_Comment;
 use WP_Post;
@@ -188,7 +189,14 @@ final class Token {
 		$post_id = (int) $this->comment->comment_post_ID;
 
 		if ( $post_id ) {
-			Cache::delete( $post_id );
+			// The occurrence is read off the comment's own term rather than
+			// off the request: `handle_rsvp_token()` runs on `init`, before
+			// `wp`, so there is no occurrence context to resolve and the
+			// occurrence-scoped key would otherwise survive the write.
+			Cache::delete(
+				$post_id,
+				Rsvp_Occurrence::recurrence_id_for_comment( (int) $this->comment->comment_ID )
+			);
 			clean_post_cache( $post_id );
 		}
 	}

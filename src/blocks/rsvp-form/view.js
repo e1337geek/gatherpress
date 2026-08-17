@@ -6,7 +6,11 @@ import { store, getElement, getContext } from '@wordpress/interactivity';
 /**
  * Internal dependencies
  */
-import { initPostContext, getNonce } from '../../helpers/interactivity';
+import {
+	initPostContext,
+	getNonce,
+	withRecurrenceId,
+} from '../../helpers/interactivity';
 const { state } = store( 'gatherpress', {
 	state: {
 		posts: {},
@@ -46,6 +50,7 @@ const { state } = store( 'gatherpress', {
 				author: formData.get( 'author' ),
 				email: formData.get( 'email' ),
 				gatherpress_rsvp_form_guests: formData.get( 'gatherpress_rsvp_form_guests' ) || '0',
+				...withRecurrenceId(),
 			};
 
 			// Handle checkbox fields - they only appear in FormData when checked.

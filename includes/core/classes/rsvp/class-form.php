@@ -17,6 +17,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Blocks\Rsvp_Form;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
@@ -385,6 +386,11 @@ final class Form {
 	 * This prevents duplicate RSVPs when someone submits with an email that
 	 * belongs to an existing user who already RSVP'd.
 	 *
+	 * When the request is scoped to one occurrence of a series, so is the
+	 * check: a responder who took the September 3rd date has not already
+	 * RSVPd to the September 10th one, and refusing them would make every
+	 * occurrence after the first unbookable.
+	 *
 	 * @since 0.34.0
 	 *
 	 * @param int    $post_id The event post ID.
@@ -408,6 +414,13 @@ final class Form {
 			$prepare_values = array( $post_id, Rsvp::COMMENT_TYPE, $email );
 		}
 
+		$occurrence = $this->duplicate_occurrence_clause( $post_id );
+
+		if ( null !== $occurrence ) {
+			$query         .= $occurrence['clause'];
+			$prepare_values = array_merge( $prepare_values, $occurrence['values'] );
+		}
+
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared
@@ -422,6 +435,72 @@ final class Form {
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
 		return (int) $count > 0;
+	}
+
+	/**
+	 * Bind a freshly inserted RSVP comment to the occurrence in play.
+	 *
+	 * A no-op outside occurrence context, and on every site with no recurring
+	 * events, since `current_recurrence_id()` short-circuits on the autoloaded
+	 * `gatherpress_has_recurring_events` option (REQ-16).
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $comment_id The RSVP comment that was just created.
+	 * @param int $post_id    The event post ID.
+	 *
+	 * @return void
+	 */
+	private function assign_occurrence( int $comment_id, int $post_id ): void {
+		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $post_id );
+
+		if ( null === $recurrence_id ) {
+			return;
+		}
+
+		Rsvp_Occurrence::get_instance()->assign( $comment_id, $post_id, $recurrence_id );
+	}
+
+	/**
+	 * Build the clause narrowing the duplicate check to one occurrence.
+	 *
+	 * Returns null outside occurrence context — and on every site with no
+	 * recurring events at all, since `current_recurrence_id()` short-circuits
+	 * on the `gatherpress_has_recurring_events` option (REQ-16). The query
+	 * string is then byte-identical to the one this method's caller has always
+	 * built.
+	 *
+	 * The occurrence link is the `_gatherpress_occurrence` term on the comment,
+	 * so the narrowing is a term-relationship subquery rather than a new
+	 * column, a meta key, or a table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id The event post ID.
+	 *
+	 * @return array{clause: string, values: array<int, string>}|null The clause and its
+	 *               prepare values, or null when the request is not scoped to an occurrence.
+	 */
+	private function duplicate_occurrence_clause( int $post_id ): ?array {
+		global $wpdb;
+
+		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $post_id );
+
+		if ( null === $recurrence_id ) {
+			return null;
+		}
+
+		return array(
+			'clause' => " AND comment_ID IN (
+				SELECT tr.object_id FROM {$wpdb->term_relationships} AS tr
+				INNER JOIN {$wpdb->term_taxonomy} AS tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+				INNER JOIN {$wpdb->terms} AS t ON t.term_id = tt.term_id
+				WHERE tt.taxonomy = %s AND t.slug = %s )",
+			'values' => array(
+				Rsvp_Occurrence::TAXONOMY,
+				Rsvp_Occurrence::term_slug( $post_id, $recurrence_id ),
+			),
+		);
 	}
 
 	/**
@@ -652,6 +731,11 @@ final class Form {
 
 		// Set RSVP status to attending.
 		wp_set_object_terms( $comment_id, Status::ATTENDING->value, Status::TAXONOMY );
+
+		// Bind the response to the occurrence the request is scoped to. This
+		// path inserts its comment directly rather than through
+		// `Rsvp\Storage::save()`, so it carries its own stamping.
+		$this->assign_occurrence( $comment_id, intval( $data['post_id'] ) );
 
 		// Process all fields.
 		$this->process_fields( $comment_id, $data );

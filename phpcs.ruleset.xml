@@ -5,6 +5,9 @@
 	<!-- What to scan -->
 	<file>.</file>
 	<exclude-pattern>/.git/</exclude-pattern>
+	<!-- Untracked local scratch space (benchmarks, notes). CI never sees it, so
+	     scanning it here only makes the local gate fail for reasons the PR cannot. -->
+	<exclude-pattern>/.local-docs/</exclude-pattern>
 	<exclude-pattern>.gatherpress.org/playground-preview</exclude-pattern>
 	<exclude-pattern>*.asset.php</exclude-pattern>
 	<exclude-pattern>/data/credits.php</exclude-pattern>

@@ -207,6 +207,58 @@ final class Context {
 	}
 
 	/**
+	 * Enter the context of one occurrence named by a request parameter.
+	 *
+	 * The counterpart to `set()` for requests that never reach `wp` — REST
+	 * being the whole of them, since core's `rest_api_loaded()` runs on
+	 * `parse_request` and ends in `die()`, so `sync()` is never called for a
+	 * REST request. Resolution goes through `Series::resolve_post_ids()` (PRD
+	 * C-2) rather than pinning the one post the caller named, so an occurrence
+	 * a forward split has moved onto a sibling post still resolves.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id       Post ID the request names.
+	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
+	 *
+	 * @return bool True when the identifier resolved and context was entered.
+	 */
+	public function set_for_series( int $post_id, string $recurrence_id ): bool {
+		$this->occurrence = self::resolve_in_series( $post_id, $recurrence_id );
+
+		return null !== $this->occurrence;
+	}
+
+	/**
+	 * Resolve an occurrence across every post of a series, without entering it.
+	 *
+	 * Shared by `set_for_series()` and by the REST layer's validation, which
+	 * has to reject an unknown or malformed identifier before any callback
+	 * runs rather than silently falling back to the series.
+	 *
+	 * REQ-16 is the first guard: on a site with no recurring events this
+	 * returns without touching the occurrence table, so a request carrying a
+	 * fabricated `recurrence_id` costs nothing there.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id       Post ID the request names.
+	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
+	 *
+	 * @return array|null The occurrence row, or null when nothing in the series carries that identifier.
+	 */
+	public static function resolve_in_series( int $post_id, string $recurrence_id ): ?array {
+		if ( ! Query::site_has_recurring_events() || '' === $recurrence_id || 1 > $post_id ) {
+			return null;
+		}
+
+		return Occurrences::get_instance()->find_in_series(
+			Series::get_instance()->resolve_post_ids( $post_id ),
+			$recurrence_id
+		);
+	}
+
+	/**
 	 * Leave the current occurrence context.
 	 *
 	 * @since 0.36.0

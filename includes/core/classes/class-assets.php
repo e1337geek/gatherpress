@@ -12,6 +12,7 @@ namespace GatherPress\Core;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use Error;
+use GatherPress\Core\Event\Recurrence\Context as Recurrence_Context;
 use GatherPress\Core\Traits\Singleton;
 
 /**
@@ -202,6 +203,7 @@ final class Assets {
 	 */
 	public function add_interactivity_state(): void {
 		$event_rest_api_slug = sprintf( '%s/event', GATHERPRESS_REST_NAMESPACE );
+		$occurrence          = Recurrence_Context::get_instance()->current();
 
 		wp_interactivity_state(
 			'gatherpress',
@@ -226,6 +228,19 @@ final class Assets {
 				),
 			)
 		);
+
+		// Only emitted on a page that is actually rendering an occurrence, so
+		// the state payload of every other request stays byte-identical. The
+		// front end sends this back on its RSVP requests, which is what binds
+		// a response to the date the visitor is looking at rather than to the
+		// series -- a REST request never fires `wp`, so the server cannot
+		// derive it from the request on its own.
+		if ( null !== $occurrence ) {
+			wp_interactivity_state(
+				'gatherpress',
+				array( 'recurrenceId' => (string) $occurrence['recurrence_id'] )
+			);
+		}
 	}
 
 	/**

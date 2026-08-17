@@ -17,6 +17,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 use Exception;
 use GatherPress\Core\Blocks\Rsvp_Template;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Rsvp\Form;
 use GatherPress\Core\Rsvp\Query as Rsvp_Query;
 use GatherPress\Core\Rsvp;
@@ -49,6 +50,18 @@ final class Rest_Api {
 	 * Enforces a single instance of this class.
 	 */
 	use Singleton;
+
+	/**
+	 * Request parameter naming the occurrence an RSVP route operates on.
+	 *
+	 * Optional on every route that accepts it. Absent means the series, which
+	 * is what every one of these routes has always meant, so an unmodified
+	 * client keeps its exact behavior.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const RECURRENCE_ID_PARAM = 'recurrence_id';
 
 	/**
 	 * Class constructor.
@@ -228,20 +241,21 @@ final class Rest_Api {
 					return is_user_logged_in() && $this->can_read_event_rsvps( $request );
 				},
 				'args'                => array(
-					'post_id'    => array(
+					'post_id'                 => array(
 						'required'          => true,
 						'validate_callback' => array( Validate::class, 'event_post_id' ),
 					),
-					'rsvp_token' => array(
+					'rsvp_token'              => array(
 						'required'          => false,
 						'validate_callback' => static function ( $param ): bool {
 							return ! empty( Token::parse_token_string( $param ) );
 						},
 					),
-					'status'     => array(
+					'status'                  => array(
 						'required'          => true,
 						'validate_callback' => array( Validate::class, 'rsvp_status' ),
 					),
+					self::RECURRENCE_ID_PARAM => $this->recurrence_id_arg(),
 				),
 			),
 		);
@@ -300,6 +314,7 @@ final class Rest_Api {
 						'required'          => false,
 						'validate_callback' => array( Validate::class, 'boolean' ),
 					),
+					self::RECURRENCE_ID_PARAM          => $this->recurrence_id_arg(),
 				),
 			),
 		);
@@ -325,26 +340,27 @@ final class Rest_Api {
 				'callback'            => array( $this, 'rsvp_status_html' ),
 				'permission_callback' => array( $this, 'can_read_event_rsvps' ),
 				'args'                => array(
-					'post_id'       => array(
+					'post_id'                 => array(
 						'required'          => true,
 						'validate_callback' => array( Validate::class, 'event_post_id' ),
 					),
-					'status'        => array(
+					'status'                  => array(
 						'required'          => true,
 						'validate_callback' => array( Validate::class, 'rsvp_status' ),
 					),
-					'block_data'    => array(
+					'block_data'              => array(
 						'required'          => true,
 						'validate_callback' => array( Validate::class, 'block_data' ),
 					),
-					'limit_enabled' => array(
+					'limit_enabled'           => array(
 						'required'          => false,
 						'validate_callback' => array( Validate::class, 'boolean' ),
 					),
-					'limit'         => array(
+					'limit'                   => array(
 						'required'          => false,
 						'validate_callback' => array( Validate::class, 'positive_number' ),
 					),
+					self::RECURRENCE_ID_PARAM => $this->recurrence_id_arg(),
 				),
 			),
 		);
@@ -368,13 +384,126 @@ final class Rest_Api {
 				'callback'            => array( $this, 'rsvp_responses' ),
 				'permission_callback' => array( $this, 'can_read_event_rsvps' ),
 				'args'                => array(
-					'post_id' => array(
+					'post_id'                 => array(
 						'required'          => true,
 						'validate_callback' => array( Validate::class, 'event_post_id' ),
 					),
+					self::RECURRENCE_ID_PARAM => $this->recurrence_id_arg(),
 				),
 			),
 		);
+	}
+
+	/**
+	 * Build the shared optional `recurrence_id` argument definition.
+	 *
+	 * Optional everywhere. An absent argument means the series — the behavior
+	 * every one of these routes has always had — so an unmodified client is
+	 * unaffected and a site with no recurring events never reaches any of the
+	 * occurrence machinery at all.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array The argument definition, in `register_rest_route()` shape.
+	 */
+	protected function recurrence_id_arg(): array {
+		return array(
+			'required'          => false,
+			'validate_callback' => array( $this, 'validate_recurrence_id' ),
+			'sanitize_callback' => 'sanitize_text_field',
+		);
+	}
+
+	/**
+	 * Reject a `recurrence_id` that does not name a real occurrence of this event.
+	 *
+	 * WordPress only runs a validate callback for a parameter the request
+	 * actually carries, so anything reaching here is a caller naming an
+	 * occurrence. A malformed or unknown identifier is refused with a 400
+	 * rather than silently falling back to the series, which would show the
+	 * caller the whole series' RSVPs and write their response against it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param mixed           $param   The submitted value, before sanitization.
+	 * @param WP_REST_Request $request The request, read for the post the occurrence must belong to.
+	 *
+	 * @return bool True when the identifier resolves to an occurrence of this event's series.
+	 */
+	public function validate_recurrence_id( $param, WP_REST_Request $request ): bool {
+		return null !== Context::resolve_in_series(
+			$this->request_post_id( $request ),
+			sanitize_text_field( (string) $param )
+		);
+	}
+
+	/**
+	 * Read the event post ID a request names, whichever parameter carries it.
+	 *
+	 * The RSVP form route inherits `comment_post_ID` from the comment form it
+	 * replaced; every other RSVP route uses `post_id`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_REST_Request $request Contains data from the request.
+	 *
+	 * @return int The event post ID, or 0 when the request names none.
+	 */
+	private function request_post_id( WP_REST_Request $request ): int {
+		return (int) ( $request->get_param( 'post_id' ) ?? $request->get_param( 'comment_post_ID' ) );
+	}
+
+	/**
+	 * Enter the occurrence context a request names, for the rest of the dispatch.
+	 *
+	 * `Context::sync()` is hooked on `wp`, which a REST request never reaches:
+	 * core's `rest_api_loaded()` runs on `parse_request` and ends in `die()`,
+	 * so `WP::main()` never fires `wp`. Without this, every RSVP written
+	 * through the REST layer is a series-wide RSVP however the visitor got
+	 * there, and every read returns the union of the series.
+	 *
+	 * Returning early on an absent parameter is what keeps the series behavior
+	 * byte-identical: nothing is resolved, no filter is registered, and no
+	 * occurrence machinery is touched.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_REST_Request $request Contains data from the request.
+	 *
+	 * @return void
+	 */
+	private function enter_occurrence_context( WP_REST_Request $request ): void {
+		$recurrence_id = (string) $request->get_param( self::RECURRENCE_ID_PARAM );
+
+		if ( '' === $recurrence_id ) {
+			return;
+		}
+
+		Context::get_instance()->set_for_series( $this->request_post_id( $request ), $recurrence_id );
+
+		add_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ) );
+	}
+
+	/**
+	 * Leave the occurrence context once the route callback has returned.
+	 *
+	 * `rest_request_after_callbacks` is used rather than `rest_post_dispatch`
+	 * because the latter only fires from `WP_REST_Server::serve_request()` —
+	 * an internal `rest_do_request()` call would leave the context set for
+	 * whatever ran next in the same process.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param mixed $response The response the callback produced.
+	 *
+	 * @return mixed The response, unchanged.
+	 */
+	public function leave_occurrence_context( $response ) {
+		Context::get_instance()->clear();
+
+		remove_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ) );
+
+		return $response;
 	}
 
 	/**
@@ -731,6 +860,10 @@ final class Rest_Api {
 		// Prevent caching of RSVP updates.
 		nocache_headers();
 
+		// Scope every read and write below to the occurrence the visitor is
+		// looking at, when the request names one.
+		$this->enter_occurrence_context( $request );
+
 		$params          = $request->get_params();
 		$success         = false;
 		$current_user_id = get_current_user_id();
@@ -847,6 +980,9 @@ final class Rest_Api {
 			nocache_headers();
 		}
 
+		// Scope the rendered roster to the occurrence the visitor is looking at.
+		$this->enter_occurrence_context( $request );
+
 		$rsvp_template = Rsvp_Template::get_instance();
 		$params        = $request->get_params();
 		$post_id       = intval( $params['post_id'] );
@@ -895,6 +1031,10 @@ final class Rest_Api {
 	public function handle_rsvp_form_submission( WP_REST_Request $request ): WP_REST_Response {
 		// Prevent caching of RSVP form submission responses.
 		nocache_headers();
+
+		// Scope the duplicate check, the written response and the returned
+		// counts to the occurrence the visitor is looking at.
+		$this->enter_occurrence_context( $request );
 
 		$params = $request->get_params();
 
@@ -1004,6 +1144,9 @@ final class Rest_Api {
 		if ( is_user_logged_in() || $rsvp_token ) {
 			nocache_headers();
 		}
+
+		// Scope the returned roster to the occurrence the caller named.
+		$this->enter_occurrence_context( $request );
 
 		$params    = $request->get_params();
 		$post_id   = intval( $params['post_id'] );

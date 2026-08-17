@@ -7,6 +7,7 @@ import { store, getContext, getElement } from '@wordpress/interactivity';
  * Internal dependencies
  */
 import { stripScriptsAndEventHandlers } from '../../helpers/globals';
+import { withRecurrenceId } from '../../helpers/interactivity';
 
 /**
  * Toggle a `.gatherpress--is-visible` / `.gatherpress--is-hidden` class
@@ -84,6 +85,7 @@ const { state } = store( 'gatherpress', {
 					limit_enabled:
 						'1' === rsvpResponseElement.dataset.limitEnabled,
 					limit: parseInt( rsvpResponseElement.dataset.limit, 10 ),
+					...withRecurrenceId(),
 				} ),
 			} )
 				.then( ( response ) => response.json() ) // Parse the JSON response.

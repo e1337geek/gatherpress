@@ -83,11 +83,6 @@ final class Setup {
 		Form::get_instance();
 		Query::get_instance();
 		Provider_Registry::get_instance();
-
-		// Owns the occurrence link on an RSVP comment, and with it the
-		// `delete_comment` cleanup that keeps all three RSVP comment
-		// taxonomies from orphaning relationship rows.
-		Rsvp_Occurrence::get_instance();
 	}
 
 	/**

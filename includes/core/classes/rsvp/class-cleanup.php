@@ -12,8 +12,13 @@ namespace GatherPress\Core\Rsvp;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
+use GatherPress\Core\Rsvp\Response\Provider\Base as Provider;
+use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Settings;
 use GatherPress\Core\Traits\Singleton;
+use WP_Comment;
 
 /**
  * Class Cleanup.
@@ -48,6 +53,49 @@ final class Cleanup {
 		add_action( 'init', array( $this, 'schedule_cleanup_cron' ) );
 		add_action( 'gatherpress_rsvp_cleanup', array( $this, 'rsvp_cleanup' ), 10, 0 );
 		add_action( 'update_option_gatherpress_settings', array( $this, 'reschedule_cleanup_cron' ), 10, 2 );
+		add_action( 'delete_comment', array( $this, 'delete_term_relationships' ), 10, 2 );
+	}
+
+	/**
+	 * Remove an RSVP's term relationships before its comment row disappears.
+	 *
+	 * `wp_delete_comment()` deletes the comment and its meta but never its term
+	 * relationships, so every hard delete has been leaving orphaned
+	 * `_gatherpress_rsvp_status` and `_gatherpress_rsvp_provider` rows behind —
+	 * rows that keep inflating term counts and that nothing will ever collect,
+	 * because the object ID they point at is gone. This predates recurrence
+	 * entirely; the occurrence taxonomy would simply have been the third
+	 * leaking one.
+	 *
+	 * `delete_comment` fires before the row is removed, which is what keeps the
+	 * object resolvable here. The three real hard-delete sites are the cleanup
+	 * cron above, the RSVP list table, and WordPress emptying its own trash —
+	 * `Rsvp\Storage::save()` calls `wp_delete_comment()` without the force
+	 * flag, so it trashes rather than deletes and never reaches this.
+	 *
+	 * The occurrence taxonomy is only named on a site that actually has
+	 * recurring events (REQ-16): elsewhere there is nothing to clean up and the
+	 * lookup would be pure cost.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string|int      $comment_id The comment ID, as WordPress passes it.
+	 * @param WP_Comment|null $comment    The comment being deleted.
+	 *
+	 * @return void
+	 */
+	public function delete_term_relationships( $comment_id, $comment = null ): void {
+		if ( ! $comment instanceof WP_Comment || Rsvp::COMMENT_TYPE !== $comment->comment_type ) {
+			return;
+		}
+
+		$taxonomies = array( Status::TAXONOMY, Provider::TAXONOMY );
+
+		if ( Recurrence_Query::site_has_recurring_events() ) {
+			$taxonomies[] = Rsvp_Occurrence::TAXONOMY;
+		}
+
+		wp_delete_object_term_relationships( (int) $comment_id, $taxonomies );
 	}
 
 	/**
