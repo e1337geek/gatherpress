@@ -798,6 +798,54 @@ class Test_Permalink extends Base {
 	}
 
 	/**
+	 * A term slug `term_slug()` did not produce resolves to no occurrence.
+	 *
+	 * `occurrence_for_comment()` refuses rather than composing a URL from half
+	 * a composite. Reachable in production because nothing stops a third party
+	 * from assigning its own term in this taxonomy, and a slug that parses to a
+	 * post ID of zero would otherwise send the responder a link built on
+	 * `get_permalink( 0 )`.
+	 *
+	 * Both arms of the guard are driven: a slug carrying no separator at all,
+	 * where neither half parses, and one carrying a separator with a
+	 * non-numeric prefix, where the identifier parses and the post ID does not.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_for_comment_refuses_a_slug_it_did_not_write(): void {
+		list( $post_id ) = $this->create_series();
+
+		$comment_id = (int) $this->factory->comment->create( array( 'comment_post_ID' => $post_id ) );
+
+		wp_set_object_terms( $comment_id, 'legacy', Rsvp_Occurrence::TAXONOMY );
+
+		$this->assertSame(
+			array( 'legacy' ),
+			wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) ),
+			'Failed to assert the foreign term was assigned; the guard is not what answers otherwise.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::occurrence_for_comment( $comment_id ),
+			'Failed to assert a slug with no separator resolves to no occurrence.'
+		);
+
+		wp_set_object_terms( $comment_id, 'a-20260903t180000', Rsvp_Occurrence::TAXONOMY );
+
+		$this->assertSame(
+			'20260903T180000',
+			Rsvp_Occurrence::recurrence_id_from_slug( 'a-20260903t180000' ),
+			'Failed to assert the identifier half of this slug does parse — without that, the null below'
+				. ' would be produced by the same arm as the case above rather than by the post-ID half.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::occurrence_for_comment( $comment_id ),
+			'Failed to assert a slug whose prefix is not a post ID resolves to no occurrence.'
+		);
+	}
+
+	/**
 	 * The series post ID is recovered from a term slug, and refused otherwise.
 	 *
 	 * Every return path of `series_post_id_from_slug()`, driven directly
