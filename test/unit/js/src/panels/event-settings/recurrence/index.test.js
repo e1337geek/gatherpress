@@ -10,6 +10,26 @@ import '@testing-library/jest-dom';
  */
 jest.mock( '@wordpress/i18n', () => ( {
 	__: ( str ) => str,
+	_n: ( single, plural, number ) => ( 1 === number ? single : plural ),
+	sprintf: ( format, ...args ) =>
+		format.replace( /%d/g, () => String( args.shift() ) ),
+} ) );
+
+// The two children that talk to the server are stubbed here and tested in
+// their own suites. They are asynchronous by nature, and leaving them live
+// would make every synchronous assertion in this file race a fetch.
+jest.mock( '@src/panels/event-settings/recurrence/apply-scope', () => ( {
+	__esModule: true,
+	default: ( { postId } ) => <div data-testid="apply-scope">{ postId }</div>,
+} ) );
+
+jest.mock( '@src/panels/event-settings/recurrence/rsvp-impact', () => ( {
+	__esModule: true,
+	default: ( { postId, rule } ) => (
+		<div data-testid="rsvp-impact" data-post-id={ postId }>
+			{ JSON.stringify( rule ) }
+		</div>
+	),
 } ) );
 
 jest.mock( '@wordpress/data', () => ( {
@@ -88,7 +108,7 @@ import RecurrencePanel from '@src/panels/event-settings/recurrence';
  *
  * @return {Function} A `select( storeName )` stand-in.
  */
-function makeSelect( recurrenceMeta, timezone = 'America/New_York', postId = 1 ) {
+function makeSelect( recurrenceMeta, timezone = 'America/New_York', postId = 42 ) {
 	return ( storeName ) => {
 		if ( 'core/editor' === storeName ) {
 			return {
@@ -1281,5 +1301,53 @@ describe( 'RecurrencePanel', () => {
 			expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
 			expect( lastPersistedBlob().frequency ).toBe( 'daily' );
 		} );
+
+	test( 'renders no apply-scope chooser or impact notice while recurrence is off', () => {
+		render( <RecurrencePanel /> );
+
+		expect( screen.queryByTestId( 'apply-scope' ) ).not.toBeInTheDocument();
+		expect( screen.queryByTestId( 'rsvp-impact' ) ).not.toBeInTheDocument();
+	} );
+
+	test( 'hands the current post and the live rule to the scope chooser and impact notice', () => {
+		const blob = JSON.stringify( {
+			frequency: 'weekly',
+			interval: 2,
+			weekdays: [ 2, 4 ],
+			monthly_mode: 'day_of_month',
+			monthly_day: 1,
+			monthly_ordinal: 1,
+			monthly_weekday: 1,
+			end_type: 'count',
+			until: '',
+			count: 6,
+		} );
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( blob ) ),
+		);
+
+		render( <RecurrencePanel /> );
+
+		expect( screen.getByTestId( 'apply-scope' ) ).toHaveTextContent( '42' );
+		expect( screen.getByTestId( 'rsvp-impact' ) ).toHaveAttribute(
+			'data-post-id',
+			'42',
+		);
+		expect(
+			JSON.parse( screen.getByTestId( 'rsvp-impact' ).textContent ).count,
+		).toBe( 6 );
+
+		// The impact notice must see the rule as it is being edited, not the
+		// rule as it was stored: an organizer shortening the series has to be
+		// told about the RSVPs *before* they save.
+		fireEvent.change( screen.getByLabelText( 'Repeat every' ), {
+			target: { value: '4' },
+		} );
+
+		expect(
+			JSON.parse( screen.getByTestId( 'rsvp-impact' ).textContent )
+				.interval,
+		).toBe( 4 );
 	} );
 } );
