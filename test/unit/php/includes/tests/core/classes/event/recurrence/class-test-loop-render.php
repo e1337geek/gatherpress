@@ -254,6 +254,73 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
+	 * Render the RSVP count block the way `core/post-template` renders it.
+	 *
+	 * No `postId` attribute, for the same reason `render_event_date()` supplies
+	 * none: a Query Loop supplies none either, so passing one would route around
+	 * the wiring under test.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $attrs Block attributes.
+	 *
+	 * @return string The rendered block markup.
+	 */
+	protected function render_rsvp_count( array $attrs = array() ): string {
+		return render_block(
+			array(
+				'blockName'    => 'gatherpress/rsvp-count',
+				'attrs'        => $attrs,
+				'innerBlocks'  => array(),
+				'innerHTML'    => '',
+				'innerContent' => array(),
+			)
+		);
+	}
+
+	/**
+	 * Read the interactivity block context out of rendered block markup.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $html Rendered block markup.
+	 *
+	 * @return array The decoded `data-wp-context` payload, or an empty array when the markup carries none.
+	 */
+	protected function block_context_from( string $html ): array {
+		if ( ! preg_match( '/data-wp-context=\'([^\']*)\'/', $html, $matches ) ) {
+			return array();
+		}
+
+		$decoded = json_decode( html_entity_decode( $matches[1] ), true );
+
+		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	/**
+	 * Walk a query's loop and render the RSVP count block once per iteration.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $query Executed query.
+	 *
+	 * @return array<int, array> One decoded block context per loop iteration.
+	 */
+	protected function loop_block_contexts( WP_Query $query ): array {
+		$contexts = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$contexts[] = $this->block_context_from( $this->render_rsvp_count() );
+		}
+
+		wp_reset_postdata();
+
+		return $contexts;
+	}
+
+	/**
 	 * Build the recurrence identifier of the nth occurrence of a daily series.
 	 *
 	 * @since 0.36.0
@@ -1424,6 +1491,204 @@ class Test_Loop_Render extends Base {
 			array( 0 ),
 			array_values( array_unique( $attending ) ),
 			'Failed to assert every other occurrence reports zero attendees rather than inheriting the series count.'
+		);
+	}
+
+	/**
+	 * Coverage for the per-row occurrence identity reaching the browser.
+	 *
+	 * The server half of this landed already: every row resolves its own
+	 * occurrence and renders its own counts. None of that survives the trip to
+	 * the client, because the interactivity block context each row emits carries
+	 * `postId` alone. One post rendered many times therefore collapses to a
+	 * single entry in `state.posts`, and RSVPing to one occurrence visually
+	 * applies to every row of the series.
+	 *
+	 * The assertion is on the whole per-row vector of emitted identities rather
+	 * than on one row (rule 3a anti-pattern #8): a single-row assertion passes
+	 * just as well when every row emits the same thing, which is precisely the
+	 * defect. The expected vector is the series' own occurrence identifiers, in
+	 * loop order, so the only mechanism that can produce it is the real one.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::current_recurrence_id
+	 *
+	 * @return void
+	 */
+	public function test_each_loop_row_emits_its_own_occurrence_in_the_block_context(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+
+		$contexts = $this->loop_block_contexts(
+			$this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) )
+		);
+
+		$this->assertCount(
+			4,
+			$contexts,
+			'Failed to assert the loop expanded the series to its four upcoming occurrences.'
+		);
+
+		$expected = array();
+
+		foreach ( array( 1, 2, 3, 4 ) as $index ) {
+			$expected[] = array(
+				'postId'       => $series_id,
+				'recurrenceId' => $this->occurrence_id( $anchor, $index ),
+			);
+		}
+
+		$this->assertSame(
+			$expected,
+			$contexts,
+			'Failed to assert every row published its own occurrence identity to the client. Four contexts'
+				. ' carrying the same post ID and no occurrence is the defect a browser measured: the client'
+				. ' store keys on the post alone, so all four rows share one RSVP state.'
+		);
+	}
+
+	/**
+	 * Coverage for the non-recurring arm of the emitted block context.
+	 *
+	 * An ordinary event must publish exactly what it published before this
+	 * existed -- `postId` and nothing else -- so its state key stays the bare
+	 * post ID and its request bodies stay byte-identical.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_a_plain_event_row_emits_a_post_id_only_block_context(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+
+		$plain_id = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
+
+		$contexts = $this->loop_block_contexts( $this->run_upcoming_query() );
+		$last     = end( $contexts );
+
+		$this->assertSame(
+			array( 'postId' => $plain_id ),
+			$last,
+			'Failed to assert a non-recurring row emits the post ID alone, with no occurrence key, even while'
+				. ' sharing a loop with a recurring series.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16 on the block-context entry point this adds.
+	 *
+	 * Named after the loop it drives rather than after the resolver, because
+	 * both REQ-16 defects this build shipped had a passing "performs no writes"
+	 * test that drove the body of the work and never the entry point.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_block_context_touches_no_occurrence_table_without_recurring_events(): void {
+		global $wpdb;
+
+		$now      = $this->now();
+		$plain_id = $this->create_event_at( $now->modify( '+2 hours' ), $now->modify( '+3 hours' ) );
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// Warm the RSVP response transient the count block has always written,
+		// so the capture below sees only what this render newly writes. Without
+		// it the assertion would be measuring a pre-existing cache fill rather
+		// than anything REQ-16 is about.
+		$this->loop_block_contexts( $this->run_upcoming_query() );
+
+		$wpdb->queries      = array();
+		$saved              = $wpdb->save_queries;
+		$wpdb->save_queries = true;
+
+		$contexts = $this->loop_block_contexts( $this->run_upcoming_query() );
+		$captured = $wpdb->queries;
+
+		$wpdb->save_queries = $saved;
+		$wpdb->queries      = array();
+
+		$occurrence_queries = array_values(
+			array_filter(
+				array_column( $captured, 0 ),
+				static function ( string $sql ) use ( $table ): bool {
+					return str_contains( $sql, $table );
+				}
+			)
+		);
+		$option_writes      = array_values(
+			array_filter(
+				array_column( $captured, 0 ),
+				static function ( string $sql ) use ( $wpdb ): bool {
+					return str_contains( $sql, $wpdb->options )
+						&& ( str_contains( $sql, 'INSERT' ) || str_contains( $sql, 'UPDATE' ) );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$occurrence_queries,
+			'Failed to assert emitting the block context on a site with no recurring events never reads the'
+				. ' occurrence table.'
+		);
+		$this->assertSame(
+			array(),
+			$option_writes,
+			'Failed to assert emitting the block context on a site with no recurring events writes no option.'
+		);
+		$this->assertSame(
+			array( array( 'postId' => $plain_id ) ),
+			$contexts,
+			'Failed to assert the ordinary event still emitted its unchanged block context.'
+		);
+	}
+
+	/**
+	 * Coverage for `block_context()` invoked directly, on both of its arms.
+	 *
+	 * xdebug does not trace a helper's body reliably when it is only ever
+	 * reached from a block render inside a loop, so each return path is driven
+	 * once through the public method as well.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_block_context_returns_both_shapes(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$plain_id  = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
+		$requested = $this->occurrence_id( $anchor, 3 );
+
+		$this->assertSame(
+			array( 'postId' => $plain_id ),
+			Rsvp_Occurrence::block_context( $plain_id ),
+			'Failed to assert a post with no occurrence in play gets the post ID alone.'
+		);
+
+		Context::get_instance()->set( $series_id, $requested );
+
+		$this->assertSame(
+			array(
+				'postId'       => $series_id,
+				'recurrenceId' => $requested,
+			),
+			Rsvp_Occurrence::block_context( $series_id ),
+			'Failed to assert a post rendering an occurrence gets that occurrence\'s identifier.'
 		);
 	}
 	/**
