@@ -783,12 +783,14 @@ class Test_Expander extends Base {
 	public function test_next_candidate_date_returns_null_for_unknown_frequency(): void {
 		$anchor = new DateTimeImmutable( '2026-09-03', new DateTimeZone( 'UTC' ) );
 
-		// 'yearly' is not a recognized frequency -- `is_valid()` rejects it at
-		// the `from_array()` boundary (REQ-11's other side; see
+		// 'fortnightly' is not a recognized frequency -- `is_valid()` rejects it
+		// at the `from_array()` boundary (see
 		// `Test_Rule::test_from_array_rejects_unrecognized_frequency()`), so
-		// this deliberately-invalid shape can only be built directly.
+		// this deliberately-invalid shape can only be built directly. The
+		// fixture used to be 'yearly', which stopped being unrecognized when
+		// REQ-11 landed the fourth frequency.
 		$rule = $this->build_rule_directly(
-			array( 'yearly', 1, array(), '', 0, 0, 0, Rule::END_TYPE_NEVER, null, 0 )
+			array( 'fortnightly', 1, array(), '', 0, 0, 0, Rule::END_TYPE_NEVER, null, 0 )
 		);
 
 		$expander = new Expander();
@@ -1473,6 +1475,643 @@ class Test_Expander extends Base {
 				)
 			),
 			'Failed to assert that a rule without an end date is never past one.'
+		);
+	}
+
+	/**
+	 * Get the yearly rule values used by the plain (non-leap) yearly fixtures.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $interval Repeat interval in years.
+	 *
+	 * @return array The rule values.
+	 */
+	protected function yearly_rule_values( int $interval = 1 ): array {
+		return array(
+			'frequency' => Rule::FREQUENCY_YEARLY,
+			'interval'  => $interval,
+			'end_type'  => Rule::END_TYPE_NEVER,
+		);
+	}
+
+	/**
+	 * Get the leap-day series anchor, 29 February 2024 at 18:00 in New York.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable The anchor.
+	 */
+	protected function leap_day_anchor(): DateTimeImmutable {
+		return new DateTimeImmutable( '2024-02-29 18:00:00', new DateTimeZone( 'America/New_York' ) );
+	}
+
+	/**
+	 * A yearly rule repeats on the anchor's own month and day.
+	 *
+	 * PRD section 2.1 and REQ-11: yearly is "every N years", with the month and
+	 * day taken from the series start. There is no mode switch and no `BYMONTH`.
+	 *
+	 * @covers ::expand
+	 * @covers ::next_candidate_date
+	 * @covers ::next_monthly_date
+	 * @covers ::month_step
+	 * @covers ::month_scan_steps
+	 * @covers ::monthly_date_for_offset
+	 * @covers ::day_of_month_date
+	 * @covers ::iteration_budget
+	 *
+	 * @return void
+	 */
+	public function test_yearly_interval_one_derives_month_and_day_from_the_anchor(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+
+		$this->assertSame(
+			array(
+				'2026-09-03 18:00:00',
+				'2027-09-03 18:00:00',
+				'2028-09-03 18:00:00',
+				'2029-09-03 18:00:00',
+			),
+			$this->to_local_strings(
+				( new Expander() )->expand(
+					$this->make_rule( $this->yearly_rule_values() ),
+					$this->reference_anchor(),
+					$timezone,
+					new DateTimeImmutable( '2029-12-31 23:59:59', $timezone )
+				)
+			),
+			'Failed to assert that a yearly rule repeats on the anchor month and day.'
+		);
+	}
+
+	/**
+	 * A yearly rule at interval three lands on every third year.
+	 *
+	 * @covers ::expand
+	 * @covers ::next_monthly_date
+	 * @covers ::month_step
+	 *
+	 * @return void
+	 */
+	public function test_yearly_interval_three_steps_every_third_year(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+
+		$this->assertSame(
+			array(
+				'2026-09-03 18:00:00',
+				'2029-09-03 18:00:00',
+				'2032-09-03 18:00:00',
+				'2035-09-03 18:00:00',
+			),
+			$this->to_local_strings(
+				( new Expander() )->expand(
+					$this->make_rule( $this->yearly_rule_values( 3 ) ),
+					$this->reference_anchor(),
+					$timezone,
+					new DateTimeImmutable( '2035-12-31 23:59:59', $timezone )
+				)
+			),
+			'Failed to assert that a yearly interval of three steps three years at a time.'
+		);
+	}
+
+	/**
+	 * A series anchored 29 February skips every year that has no 29 February.
+	 *
+	 * RFC 5545 section 3.3.10: "Recurrence rules may generate recurrence
+	 * instances with an invalid date ... Such recurrence instances MUST be
+	 * ignored and MUST NOT be counted as part of the recurrence set." So 2025,
+	 * 2026 and 2027 produce nothing at all -- not 1 March, not 28 February.
+	 *
+	 * The expected set is written out literally rather than computed, exactly
+	 * as REQ-11 requires: a computed expectation would agree with a rolling
+	 * implementation as readily as with a skipping one.
+	 *
+	 * @covers ::expand
+	 * @covers ::next_monthly_date
+	 * @covers ::monthly_date_for_offset
+	 * @covers ::day_of_month_date
+	 *
+	 * @return void
+	 */
+	public function test_yearly_leap_day_anchor_skips_non_leap_years(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+
+		$this->assertSame(
+			array(
+				'2024-02-29 18:00:00',
+				'2028-02-29 18:00:00',
+				'2032-02-29 18:00:00',
+			),
+			$this->to_local_strings(
+				( new Expander() )->expand(
+					$this->make_rule( $this->yearly_rule_values() ),
+					$this->leap_day_anchor(),
+					$timezone,
+					new DateTimeImmutable( '2035-12-31 23:59:59', $timezone )
+				)
+			),
+			'Failed to assert that a leap-day series skips the three non-leap years between occurrences.'
+		);
+	}
+
+	/**
+	 * A leap-day series bounded by `COUNT=3` yields exactly three occurrences.
+	 *
+	 * The F-1 conformance case. A skipped 29 February must not consume a count
+	 * budget, so a `COUNT=3` rule anchored on 2024-02-29 spans nine years and
+	 * still delivers three occurrences. The plausible wrong implementation --
+	 * decrement the budget per candidate year and filter the invalid dates
+	 * afterwards -- delivers one, and it looks entirely reasonable while doing
+	 * it. The horizon is deliberately set inside the first gap so a count-bounded
+	 * rule that leaked horizon logic would truncate here too.
+	 *
+	 * @covers ::expand
+	 * @covers ::next_monthly_date
+	 * @covers ::monthly_date_for_offset
+	 * @covers ::iteration_budget
+	 *
+	 * @return void
+	 */
+	public function test_yearly_leap_day_count_three_yields_exactly_three_occurrences(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$values   = $this->yearly_rule_values();
+
+		$values['end_type'] = Rule::END_TYPE_COUNT;
+		$values['count']    = 3;
+
+		$occurrences = ( new Expander() )->expand(
+			$this->make_rule( $values ),
+			$this->leap_day_anchor(),
+			$timezone,
+			new DateTimeImmutable( '2025-12-31 23:59:59', $timezone )
+		);
+
+		$this->assertCount(
+			3,
+			$occurrences,
+			'Failed to assert that skipped leap years do not consume the COUNT budget.'
+		);
+		$this->assertSame(
+			array(
+				'2024-02-29 18:00:00',
+				'2028-02-29 18:00:00',
+				'2032-02-29 18:00:00',
+			),
+			$this->to_local_strings( $occurrences ),
+			'Failed to assert the literal leap-day occurrence set under COUNT.'
+		);
+	}
+
+	/**
+	 * A count-bounded yearly rule yields exactly its count.
+	 *
+	 * @covers ::expand
+	 * @covers ::iteration_budget
+	 *
+	 * @return void
+	 */
+	public function test_yearly_count_yields_exactly_n(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$values   = $this->yearly_rule_values();
+
+		$values['end_type'] = Rule::END_TYPE_COUNT;
+		$values['count']    = 4;
+
+		$this->assertSame(
+			array(
+				'2026-09-03 18:00:00',
+				'2027-09-03 18:00:00',
+				'2028-09-03 18:00:00',
+				'2029-09-03 18:00:00',
+			),
+			$this->to_local_strings(
+				( new Expander() )->expand(
+					$this->make_rule( $values ),
+					$this->reference_anchor(),
+					$timezone,
+					new DateTimeImmutable( '2026-12-31 23:59:59', $timezone )
+				)
+			),
+			'Failed to assert that a count-bounded yearly rule yields exactly its count.'
+		);
+	}
+
+	/**
+	 * A yearly `UNTIL` includes an occurrence landing on the end date itself.
+	 *
+	 * Asserted from both sides: moving the end date one day earlier drops the
+	 * final occurrence, so the inclusive boundary cannot pass by accident.
+	 *
+	 * @covers ::expand
+	 * @covers ::past_until
+	 *
+	 * @return void
+	 */
+	public function test_yearly_until_is_inclusive_of_its_own_day(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$horizon  = new DateTimeImmutable( '2040-12-31 23:59:59', $timezone );
+		$values   = $this->yearly_rule_values();
+
+		$values['end_type'] = Rule::END_TYPE_UNTIL;
+		$values['until']    = '2029-09-03';
+
+		$this->assertSame(
+			array(
+				'2026-09-03 18:00:00',
+				'2027-09-03 18:00:00',
+				'2028-09-03 18:00:00',
+				'2029-09-03 18:00:00',
+			),
+			$this->to_local_strings(
+				( new Expander() )->expand(
+					$this->make_rule( $values ),
+					$this->reference_anchor(),
+					$timezone,
+					$horizon
+				)
+			),
+			'Failed to assert that UNTIL includes an occurrence on its own day.'
+		);
+
+		$values['until'] = '2029-09-02';
+
+		$this->assertSame(
+			array(
+				'2026-09-03 18:00:00',
+				'2027-09-03 18:00:00',
+				'2028-09-03 18:00:00',
+			),
+			$this->to_local_strings(
+				( new Expander() )->expand(
+					$this->make_rule( $values ),
+					$this->reference_anchor(),
+					$timezone,
+					$horizon
+				)
+			),
+			'Failed to assert that UNTIL excludes the day after it.'
+		);
+	}
+
+	/**
+	 * A yearly series keeps its wall clock while its UTC offset moves.
+	 *
+	 * 1 November is the date that makes this visible in `America/New_York`:
+	 * daylight saving ends on the first Sunday in November, which is 1 November
+	 * in 2026 and later in every following year in the window. So the same 18:00
+	 * wall clock is -05:00 in 2026 and -04:00 afterwards. PRD C-3 -- the time of
+	 * day belongs to the occurrence, and the offset is whatever the zone says on
+	 * that date.
+	 *
+	 * @covers ::expand
+	 * @covers ::materialize
+	 *
+	 * @return void
+	 */
+	public function test_yearly_preserves_wall_clock_across_dst(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$values   = $this->yearly_rule_values();
+
+		$values['end_type'] = Rule::END_TYPE_COUNT;
+		$values['count']    = 4;
+
+		$occurrences = ( new Expander() )->expand(
+			$this->make_rule( $values ),
+			new DateTimeImmutable( '2026-11-01 18:00:00', $timezone ),
+			$timezone,
+			new DateTimeImmutable( '2027-01-01 00:00:00', $timezone )
+		);
+
+		$this->assertSame(
+			array(
+				'2026-11-01 18:00:00 -05:00',
+				'2027-11-01 18:00:00 -04:00',
+				'2028-11-01 18:00:00 -04:00',
+				'2029-11-01 18:00:00 -04:00',
+			),
+			array_map(
+				static function ( DateTimeImmutable $occurrence ): string {
+					return $occurrence->format( 'Y-m-d H:i:s P' );
+				},
+				$occurrences
+			),
+			'Failed to assert that the wall clock holds while the UTC offset shifts.'
+		);
+	}
+
+	/**
+	 * The candidate step is the interval in months, or twelve times it for yearly.
+	 *
+	 * @covers ::month_step
+	 *
+	 * @return void
+	 */
+	public function test_month_step_is_the_interval_in_months(): void {
+		$expander = new Expander();
+
+		$this->assertSame(
+			3,
+			Utility::invoke_hidden_method(
+				$expander,
+				'month_step',
+				array(
+					$this->make_rule(
+						array(
+							'frequency'    => Rule::FREQUENCY_MONTHLY,
+							'interval'     => 3,
+							'monthly_mode' => Rule::MONTHLY_MODE_DAY_OF_MONTH,
+							'monthly_day'  => 15,
+							'end_type'     => Rule::END_TYPE_NEVER,
+						)
+					),
+				)
+			),
+			'Failed to assert that a monthly rule steps its interval in months.'
+		);
+		$this->assertSame(
+			36,
+			Utility::invoke_hidden_method(
+				$expander,
+				'month_step',
+				array( $this->make_rule( $this->yearly_rule_values( 3 ) ) )
+			),
+			'Failed to assert that a yearly rule steps twelve months per interval unit.'
+		);
+	}
+
+	/**
+	 * The scan bound is the monthly one, or the wider yearly one for yearly.
+	 *
+	 * @covers ::month_scan_steps
+	 *
+	 * @return void
+	 */
+	public function test_month_scan_steps_is_wider_for_yearly(): void {
+		$expander = new Expander();
+
+		$this->assertSame(
+			Expander::MONTH_SCAN_STEPS,
+			Utility::invoke_hidden_method(
+				$expander,
+				'month_scan_steps',
+				array(
+					$this->make_rule(
+						array(
+							'frequency'    => Rule::FREQUENCY_MONTHLY,
+							'interval'     => 1,
+							'monthly_mode' => Rule::MONTHLY_MODE_DAY_OF_MONTH,
+							'monthly_day'  => 31,
+							'end_type'     => Rule::END_TYPE_NEVER,
+						)
+					),
+				)
+			),
+			'Failed to assert that a monthly rule uses the monthly scan bound.'
+		);
+		$this->assertSame(
+			Expander::YEAR_SCAN_STEPS,
+			Utility::invoke_hidden_method(
+				$expander,
+				'month_scan_steps',
+				array( $this->make_rule( $this->yearly_rule_values() ) )
+			),
+			'Failed to assert that a yearly rule uses the yearly scan bound.'
+		);
+	}
+
+	/**
+	 * The yearly scan bound clears the worst run of unusable candidates.
+	 *
+	 * The bound is counted in candidate steps, not in absolute years, so a wide
+	 * interval cannot collapse it. Its worst case is a 29 February anchor whose
+	 * interval keeps landing on non-leap years: an exhaustive search over every
+	 * interval from 1 to `Rule::MAX_INTERVAL` and every leap-day anchor from
+	 * 1600 to 2400 puts that run at fifteen, at interval 25 from a 1600 anchor
+	 * crossing the 1700 / 1800 / 1900 non-leap centuries. This re-runs that
+	 * search rather than trusting the number, so a later change to
+	 * `Rule::MAX_INTERVAL` cannot silently invalidate the bound.
+	 *
+	 * @return void
+	 */
+	public function test_year_scan_steps_clears_the_measured_worst_case(): void {
+		$worst = 0;
+
+		for ( $interval = 1; $interval <= Rule::MAX_INTERVAL; $interval++ ) {
+			for ( $anchor = 1600; $anchor <= 2400; $anchor++ ) {
+				if ( ! checkdate( 2, 29, $anchor ) ) {
+					continue;
+				}
+
+				$run = 0;
+
+				for ( $step = 1; $step <= 400; $step++ ) {
+					if ( checkdate( 2, 29, $anchor + $interval * $step ) ) {
+						$worst = max( $worst, $run );
+						$run   = 0;
+					} else {
+						++$run;
+					}
+				}
+			}
+		}
+
+		$this->assertSame(
+			15,
+			$worst,
+			'Failed to assert the measured worst run of unusable yearly candidates.'
+		);
+		$this->assertGreaterThan(
+			$worst,
+			Expander::YEAR_SCAN_STEPS,
+			'Failed to assert that the yearly scan bound clears the worst measured run.'
+		);
+	}
+
+	/**
+	 * The month walk resolves a yearly rule by stepping whole years.
+	 *
+	 * @covers ::next_monthly_date
+	 * @covers ::month_step
+	 * @covers ::month_scan_steps
+	 *
+	 * @return void
+	 */
+	public function test_next_monthly_date_walks_years_for_a_yearly_rule(): void {
+		$utc    = new DateTimeZone( 'UTC' );
+		$anchor = new DateTimeImmutable( '2024-02-29', $utc );
+
+		$found = Utility::invoke_hidden_method(
+			new Expander(),
+			'next_monthly_date',
+			array(
+				$this->make_rule( $this->yearly_rule_values() ),
+				$anchor->modify( '+1 day' ),
+				$anchor,
+			)
+		);
+
+		$this->assertInstanceOf(
+			DateTimeImmutable::class,
+			$found,
+			'Failed to assert that the month walk resolves a yearly candidate.'
+		);
+		$this->assertSame(
+			'2028-02-29',
+			$found->format( 'Y-m-d' ),
+			'Failed to assert that the month walk skips past the non-leap years.'
+		);
+	}
+
+	/**
+	 * Resolving a month offset derives a yearly rule's day from the anchor.
+	 *
+	 * @covers ::monthly_date_for_offset
+	 * @covers ::day_of_month_date
+	 *
+	 * @return void
+	 */
+	public function test_monthly_date_for_offset_derives_the_day_from_a_yearly_anchor(): void {
+		$expander = new Expander();
+		$anchor   = new DateTimeImmutable( '2024-02-29', new DateTimeZone( 'UTC' ) );
+		$rule     = $this->make_rule( $this->yearly_rule_values() );
+
+		$found = Utility::invoke_hidden_method(
+			$expander,
+			'monthly_date_for_offset',
+			array( $rule, $anchor, 48 )
+		);
+
+		$this->assertInstanceOf(
+			DateTimeImmutable::class,
+			$found,
+			'Failed to assert that a leap year four years out resolves.'
+		);
+		$this->assertSame(
+			'2028-02-29',
+			$found->format( 'Y-m-d' ),
+			'Failed to assert that the yearly day comes from the anchor.'
+		);
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				$expander,
+				'monthly_date_for_offset',
+				array( $rule, $anchor, 12 )
+			),
+			'Failed to assert that a non-leap year resolves to nothing rather than rolling.'
+		);
+	}
+
+	/**
+	 * The month-walk predicate answers a yearly rule on both outcomes.
+	 *
+	 * @covers ::matches
+	 * @covers ::matches_monthly
+	 * @covers ::month_step
+	 * @covers ::months_apart
+	 *
+	 * @return void
+	 */
+	public function test_matches_monthly_covers_a_yearly_rule(): void {
+		$utc      = new DateTimeZone( 'UTC' );
+		$expander = new Expander();
+		$anchor   = new DateTimeImmutable( '2024-02-29', $utc );
+		$rule     = $this->make_rule( $this->yearly_rule_values() );
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$expander,
+				'matches',
+				array( $rule, new DateTimeImmutable( '2028-02-29', $utc ), $anchor )
+			),
+			'Failed to assert that matches() dispatches a yearly rule.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$expander,
+				'matches_monthly',
+				array( $rule, new DateTimeImmutable( '2025-02-28', $utc ), $anchor )
+			),
+			'Failed to assert that a non-leap anniversary does not fall back to 28 February.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$expander,
+				'matches_monthly',
+				array(
+					$this->make_rule( $this->yearly_rule_values( 3 ) ),
+					new DateTimeImmutable( '2026-02-28', $utc ),
+					$anchor,
+				)
+			),
+			'Failed to assert that an off-interval year does not match.'
+		);
+	}
+
+	/**
+	 * Dispatching a yearly rule returns the next anniversary.
+	 *
+	 * @covers ::next_candidate_date
+	 * @covers ::day_scan_limit
+	 *
+	 * @return void
+	 */
+	public function test_next_candidate_date_dispatches_yearly(): void {
+		$utc      = new DateTimeZone( 'UTC' );
+		$expander = new Expander();
+		$anchor   = new DateTimeImmutable( '2026-09-03', $utc );
+		$rule     = $this->make_rule( $this->yearly_rule_values() );
+
+		$candidate = Utility::invoke_hidden_method(
+			$expander,
+			'next_candidate_date',
+			array( $rule, $anchor->modify( '+1 day' ), $anchor )
+		);
+
+		$this->assertInstanceOf(
+			DateTimeImmutable::class,
+			$candidate,
+			'Failed to assert that a yearly rule yields a candidate.'
+		);
+		$this->assertSame(
+			'2027-09-03',
+			$candidate->format( 'Y-m-d' ),
+			'Failed to assert that the yearly candidate is the next anniversary.'
+		);
+		$this->assertSame(
+			0,
+			Utility::invoke_hidden_method( $expander, 'day_scan_limit', array( $rule ) ),
+			'Failed to assert that a yearly rule is month-walked rather than day-scanned.'
+		);
+	}
+
+	/**
+	 * A count-bounded yearly rule budgets 366 day-steps per occurrence.
+	 *
+	 * @covers ::iteration_budget
+	 *
+	 * @return void
+	 */
+	public function test_iteration_budget_for_a_count_bounded_yearly_rule(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$values   = $this->yearly_rule_values( 2 );
+
+		$values['end_type'] = Rule::END_TYPE_COUNT;
+		$values['count']    = 5;
+
+		$this->assertSame(
+			366 + ( 5 * 366 * 2 ),
+			Utility::invoke_hidden_method(
+				new Expander(),
+				'iteration_budget',
+				array(
+					$this->make_rule( $values ),
+					$this->reference_anchor(),
+					new DateTimeImmutable( '2026-09-13 18:00:00', $timezone ),
+				)
+			),
+			'Failed to assert that a yearly budget uses 366 days per occurrence.'
 		);
 	}
 }

@@ -10,6 +10,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use DateTimeImmutable;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Expander;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Tests\Base;
@@ -308,6 +309,12 @@ class Test_Rule extends Base {
 	 * this rule is actually supposed to be enforced at: `from_array()` never
 	 * lets an unrecognized frequency reach the expander in the first place.
 	 *
+	 * The fixture value used to be `yearly`, which was correct until REQ-11
+	 * landed the fourth frequency. It is now `fortnightly` -- a plausible but
+	 * genuinely unsupported frequency -- so the boundary stays covered from
+	 * the rejecting side while `test_from_array_accepts_yearly_frequency()`
+	 * covers the accepting side.
+	 *
 	 * @covers ::from_array
 	 * @covers ::is_valid
 	 *
@@ -316,7 +323,7 @@ class Test_Rule extends Base {
 	public function test_from_array_rejects_unrecognized_frequency(): void {
 		$rule = Rule::from_array(
 			array(
-				'frequency' => 'yearly',
+				'frequency' => 'fortnightly',
 				'interval'  => 1,
 				'end_type'  => 'never',
 			)
@@ -325,6 +332,186 @@ class Test_Rule extends Base {
 		$this->assertNull(
 			$rule,
 			'Failed to assert that an unrecognized frequency is rejected.'
+		);
+	}
+
+	/**
+	 * A yearly rule is accepted at the boundary and needs no monthly fields.
+	 *
+	 * PRD section 2.1 and REQ-11: yearly repeats every N years with the month
+	 * and day derived from the series start, so it carries no `monthly_mode`,
+	 * no weekday list and no mode switch of its own. `BYMONTH`, `BYYEARDAY`
+	 * and `BYWEEKNO` are permanent non-goals (PRD section 10 item 5).
+	 *
+	 * @covers ::from_array
+	 * @covers ::is_valid
+	 * @covers ::frequency
+	 * @covers ::interval
+	 *
+	 * @return void
+	 */
+	public function test_from_array_accepts_yearly_frequency(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'yearly',
+				'interval'  => 3,
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertInstanceOf(
+			Rule::class,
+			$rule,
+			'Failed to assert that a yearly rule is accepted at the boundary.'
+		);
+		$this->assertSame(
+			Rule::FREQUENCY_YEARLY,
+			$rule->frequency(),
+			'Failed to assert that the yearly frequency round-trips.'
+		);
+		$this->assertSame(
+			3,
+			$rule->interval(),
+			'Failed to assert that the yearly interval round-trips.'
+		);
+	}
+
+	/**
+	 * A yearly rule serializes to `FREQ=YEARLY` with no `BY*` part.
+	 *
+	 * @covers ::to_rrule_string
+	 *
+	 * @return void
+	 */
+	public function test_to_rrule_string_emits_freq_yearly(): void {
+		$fixtures = array(
+			// Yearly, never-ending, interval 1 -- interval is omitted at 1.
+			array(
+				'values'   => array(
+					'frequency' => 'yearly',
+					'interval'  => 1,
+					'end_type'  => 'never',
+				),
+				'expected' => 'FREQ=YEARLY',
+			),
+			// Yearly, count-bounded, interval 3.
+			array(
+				'values'   => array(
+					'frequency' => 'yearly',
+					'interval'  => 3,
+					'end_type'  => 'count',
+					'count'     => 5,
+				),
+				'expected' => 'FREQ=YEARLY;INTERVAL=3;COUNT=5',
+			),
+			// Yearly, until-bounded -- no BYMONTH, ever.
+			array(
+				'values'   => array(
+					'frequency' => 'yearly',
+					'interval'  => 1,
+					'end_type'  => 'until',
+					'until'     => '2031-02-28',
+				),
+				'expected' => 'FREQ=YEARLY;UNTIL=20310228',
+			),
+		);
+
+		foreach ( $fixtures as $fixture ) {
+			$rule = Rule::from_array( $fixture['values'] );
+
+			$this->assertInstanceOf(
+				Rule::class,
+				$rule,
+				'Fixture rule failed to build: ' . wp_json_encode( $fixture['values'] )
+			);
+			$this->assertSame( $fixture['expected'], $rule->to_rrule_string() );
+		}
+	}
+
+	/**
+	 * A yearly `COUNT` rule is rejected exactly where its budget crosses
+	 * `Expander::MAX_ITERATIONS`, using 366 days per occurrence.
+	 *
+	 * The budget arithmetic is `count * per_frequency * interval + 366`, so at
+	 * 366 days per yearly occurrence the largest accepted product of count and
+	 * interval is 545: `545 * 366 * 1 + 366 = 199,836` fits inside the 200,000
+	 * backstop, and one more occurrence -- `546 * 366 + 366 = 200,202` -- does
+	 * not. The interval side of the product is asserted independently so a
+	 * multiplier that ignored `interval` could not pass.
+	 *
+	 * @covers ::from_array
+	 * @covers ::is_valid
+	 *
+	 * @return void
+	 */
+	public function test_yearly_iteration_budget_is_enforced_at_the_meta_boundary(): void {
+		// Guard the arithmetic itself rather than trusting the literals: if
+		// MAX_ITERATIONS ever moves, this fails loudly instead of silently
+		// asserting the wrong boundary.
+		$this->assertSame(
+			199836,
+			( 545 * 366 * 1 ) + 366,
+			'Failed to assert the accepted-side budget arithmetic.'
+		);
+		$this->assertLessThanOrEqual(
+			Expander::MAX_ITERATIONS,
+			( 545 * 366 * 1 ) + 366,
+			'Failed to assert that the accepted-side budget fits the backstop.'
+		);
+		$this->assertGreaterThan(
+			Expander::MAX_ITERATIONS,
+			( 546 * 366 * 1 ) + 366,
+			'Failed to assert that the rejected-side budget exceeds the backstop.'
+		);
+
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_array(
+				array(
+					'frequency' => 'yearly',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 545,
+				)
+			),
+			'Failed to assert that a yearly rule inside the budget is accepted.'
+		);
+		$this->assertNull(
+			Rule::from_array(
+				array(
+					'frequency' => 'yearly',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 546,
+				)
+			),
+			'Failed to assert that a yearly rule over the budget is rejected.'
+		);
+
+		// The same count either side of the interval boundary: 100 occurrences
+		// at interval 5 fit, at interval 6 they do not.
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_array(
+				array(
+					'frequency' => 'yearly',
+					'interval'  => 5,
+					'end_type'  => 'count',
+					'count'     => 100,
+				)
+			),
+			'Failed to assert that interval widens the budget rather than being ignored.'
+		);
+		$this->assertNull(
+			Rule::from_array(
+				array(
+					'frequency' => 'yearly',
+					'interval'  => 6,
+					'end_type'  => 'count',
+					'count'     => 100,
+				)
+			),
+			'Failed to assert that a wider yearly interval is rejected on budget.'
 		);
 	}
 
