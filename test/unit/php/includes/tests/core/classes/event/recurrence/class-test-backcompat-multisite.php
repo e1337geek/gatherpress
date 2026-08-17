@@ -156,34 +156,22 @@ class Test_Backcompat_Multisite extends Base {
 	}
 
 	/**
-	 * (b) EMPIRICAL coverage for the true behavior of an occurrence-aware read
-	 * on a blog whose occurrence table is absent -- the exact "existing network
-	 * upgrading in place" hazard this file's class docblock describes.
+	 * (b) CF-9: a blog whose occurrence table is absent must show exactly what
+	 * it would show with no recurrence code present at all.
 	 *
-	 * The observed behavior (confirmed by running this scenario against the
-	 * real tree, not assumed): NEITHER a PHP fatal/exception NOR the "series
-	 * anchor row" fallback the task brief's own hypothesis offered as one
-	 * possibility. `$wpdb` swallows the missing-table error (it logs via
-	 * `wpdb::print_error()`, never throws), so:
+	 * The stated contract is graceful degradation, and "does not fatal" is not
+	 * the same thing. What was measured before this test existed in this shape:
+	 * `$wpdb` swallows the missing-table error and never throws, so nothing is
+	 * reported anywhere -- but the missing table is named in both the outer
+	 * `LEFT JOIN` and the `NOT EXISTS` subquery, so the whole statement fails
+	 * and the upcoming-events list came back EMPTY. An ordinary, non-recurring,
+	 * published event vanished from the site with no error surfaced. That is
+	 * worse than a crash, because a crash gets reported.
 	 *
-	 * - `Occurrences::select_for_series()` returns an empty array rather than
-	 *   fatal-ing. `$wpdb->get_results()` itself already degrades to `array()`
-	 *   (not `null`) on a failed query -- `wpdb::query()` leaves `$last_result`
-	 *   at its empty-array initial value rather than populating it -- so this
-	 *   method's own `null === $rows ? array() : $rows` fallback is dead code
-	 *   for this particular failure mode; it is exercised only if a future WP
-	 *   core version starts returning `null` here instead.
-	 * - The occurrence-aware `WP_Query` for the upcoming-events list returns
-	 *   ZERO posts, including for the plain, ordinary published event fixture
-	 *   this test creates -- not the row it would show if the join had never
-	 *   been attempted. The entire SQL statement fails (the missing table is
-	 *   referenced in both the `LEFT JOIN` and a `NOT EXISTS` subquery), so
-	 *   `$wpdb->get_results()` returns `array()` and `WP_Query` reports zero
-	 *   results for the whole request, not merely a degraded per-row fallback.
-	 *   A real, published event silently vanishes from the list. This is a
-	 *   narrower defect than a fatal error, but it is not the graceful
-	 *   per-row degradation the brief hypothesized either -- flagged here as
-	 *   the true empirical finding, not fixed (this is a test-only task).
+	 * Note also that `get_results()` returns `array()` rather than `null` on a
+	 * failed query, so `select_for_series()`'s `null === $rows` arm is
+	 * unreachable for this failure mode -- it must not be left in place as a
+	 * branch claiming to handle something it cannot.
 	 *
 	 * @group multisite
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_for_series
@@ -232,20 +220,47 @@ class Test_Backcompat_Multisite extends Base {
 			'Failed to assert select_for_series() degrades to an empty array when the occurrence table is absent.'
 		);
 
+		$args = array(
+			'post_type'                    => Event::POST_TYPE,
+			Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+			'posts_per_page'               => 20,
+		);
+
 		$exception = null;
 		$query     = null;
+		$captured  = array();
+		$capture   = static function ( array $pieces ) use ( &$captured ): array {
+			$captured[] = $pieces;
+
+			return $pieces;
+		};
+
+		// Priority 12 runs after Recurrence\Query's own priority-11 filter, so
+		// what is captured is the clause set the query actually executes.
+		add_filter( 'posts_clauses', $capture, 12 );
 
 		try {
-			$query = new WP_Query(
-				array(
-					'post_type'                    => Event::POST_TYPE,
-					Event_Query::EVENT_QUERY_PARAM => 'upcoming',
-					'posts_per_page'               => 20,
-				)
-			);
+			$query = new WP_Query( $args );
 		} catch ( Throwable $e ) {
 			$exception = $e;
 		}
+
+		remove_filter( 'posts_clauses', $capture, 12 );
+
+		$with_recurrence = $captured;
+		$captured        = array();
+
+		remove_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11 );
+		add_filter( 'posts_clauses', $capture, 12 );
+
+		$baseline = new WP_Query( $args );
+
+		remove_filter( 'posts_clauses', $capture, 12 );
+		add_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11, 2 );
+
+		$without_recurrence = $captured;
+		$baseline_posts     = wp_list_pluck( $baseline->posts, 'ID' );
+		$query_posts        = wp_list_pluck( $query->posts, 'ID' );
 
 		restore_current_blog();
 
@@ -254,10 +269,21 @@ class Test_Backcompat_Multisite extends Base {
 			'Failed to assert the upcoming-events WP_Query does not throw/fatal when the occurrence table is absent.'
 		);
 		$this->assertSame(
-			array(),
-			$query->posts,
-			'Failed to assert the query returns zero posts (the true, empirically observed degradation) rather'
-				. ' than the series anchor row -- see this file\'s class docblock and the report this task produced.'
+			array( $post_id ),
+			$baseline_posts,
+			'Failed to assert the fixture event is what the list shows with no recurrence code present at all.'
+		);
+		$this->assertSame(
+			$baseline_posts,
+			$query_posts,
+			'Failed to assert a subsite missing the occurrence table shows exactly what it would show with no'
+				. ' recurrence code present -- an empty list here is CF-9: an ordinary published event silently'
+				. ' vanishing with no error surfaced anywhere.'
+		);
+		$this->assertSame(
+			$without_recurrence,
+			$with_recurrence,
+			'Failed to assert the clauses are byte-identical when the occurrence table is absent.'
 		);
 	}
 
