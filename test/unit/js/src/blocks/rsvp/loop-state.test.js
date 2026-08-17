@@ -213,16 +213,21 @@ describe( 'RSVP state across many occurrence rows of one series', () => {
 				} );
 			}
 
-			requestBodies.push( JSON.parse( options.body ) );
+			const body = JSON.parse( options.body );
 
+			requestBodies.push( body );
+
+			// Echo the submitted guest count and anonymity back, as the real
+			// route does — the merge below writes the response, not the request,
+			// so a fixed payload would silently undo what the visitor sent.
 			return Promise.resolve( {
 				status: 200,
 				json: () =>
 					Promise.resolve( {
 						success: true,
 						status: 'attending',
-						guests: 0,
-						anonymous: 0,
+						guests: body.guests ?? 0,
+						anonymous: body.anonymous ?? 0,
 						responses: {
 							attending: { count: 1 },
 							waiting_list: { count: 0 },
@@ -342,5 +347,194 @@ describe( 'RSVP state across many occurrence rows of one series', () => {
 			PLAIN_POST_IDS.map( String )
 		);
 		expect( requestBodies[ 0 ] ).not.toHaveProperty( 'recurrence_id' );
+	} );
+
+	it( 'scopes a guest-count change to the row it was made on', async () => {
+		const contexts = OCCURRENCES.map( ( recurrenceId ) => ( {
+			postId: SERIES_POST_ID,
+			recurrenceId,
+		} ) );
+		const inputs = contexts.map( () => {
+			const input = document.createElement( 'input' );
+
+			input.value = '0';
+			document.body.append( input );
+
+			return input;
+		} );
+
+		inputs[ 1 ].value = '3';
+
+		// Guests are only editable once attending, and `sendRsvpApiRequest`
+		// refuses to send a `no_status` change — so the fixture starts from the
+		// state the control is actually reachable in.
+		state.posts = {};
+		contexts.forEach( ( context ) => {
+			state.posts[ `${ SERIES_POST_ID }:${ context.recurrenceId }` ] = {
+				currentUser: {
+					status: 'attending',
+					guests: 0,
+					anonymous: 0,
+				},
+			};
+		} );
+
+		getElement.mockReturnValue( { ref: inputs[ 1 ] } );
+		getContext.mockReturnValue( contexts[ 1 ] );
+		actions.updateGuestCount();
+
+		await flushRsvpFlow();
+
+		// Read every row back through the callback that renders the number,
+		// so the vector is what a visitor would count on screen.
+		const displays = contexts.map( ( context ) => {
+			const output = document.createElement( 'span' );
+
+			output.dataset.guestSingular = '%d guest';
+			output.dataset.guestPlural = '%d guests';
+
+			getElement.mockReturnValue( { ref: output } );
+			getContext.mockReturnValue( context );
+			callbacks.updateGuestCountDisplay();
+
+			return output.textContent;
+		} );
+
+		expect( displays ).toEqual( [ '', '3 guests', '' ] );
+		expect( requestBodies[ 0 ].recurrence_id ).toBe( OCCURRENCES[ 1 ] );
+	} );
+
+	it( 'scopes an anonymity change to the row it was made on', async () => {
+		const contexts = OCCURRENCES.map( ( recurrenceId ) => ( {
+			postId: SERIES_POST_ID,
+			recurrenceId,
+		} ) );
+		const boxes = contexts.map( () => {
+			const box = document.createElement( 'input' );
+
+			box.type = 'checkbox';
+			document.body.append( box );
+
+			return box;
+		} );
+
+		boxes[ 1 ].checked = true;
+
+		getElement.mockReturnValue( { ref: boxes[ 1 ] } );
+		getContext.mockReturnValue( contexts[ 1 ] );
+		actions.updateAnonymous();
+
+		await flushRsvpFlow();
+
+		// Every checkbox is unchecked again before the watch pass, so the
+		// vector reports what the store says rather than what the DOM kept.
+		boxes.forEach( ( box ) => {
+			box.checked = false;
+		} );
+
+		const checked = contexts.map( ( context, index ) => {
+			getElement.mockReturnValue( { ref: boxes[ index ] } );
+			getContext.mockReturnValue( context );
+			callbacks.monitorAnonymousStatus();
+
+			return boxes[ index ].checked;
+		} );
+
+		expect( checked ).toEqual( [ false, true, false ] );
+	} );
+
+	it( 'restores each row guest input from that row own slice', () => {
+		const contexts = OCCURRENCES.map( ( recurrenceId ) => ( {
+			postId: SERIES_POST_ID,
+			recurrenceId,
+		} ) );
+
+		state.posts = {};
+		contexts.forEach( ( context, index ) => {
+			state.posts[ `${ SERIES_POST_ID }:${ context.recurrenceId }` ] = {
+				currentUser: { status: 'attending', guests: index, anonymous: 0 },
+			};
+		} );
+
+		const values = contexts.map( ( context ) => {
+			const input = document.createElement( 'input' );
+
+			getElement.mockReturnValue( { ref: input } );
+			getContext.mockReturnValue( context );
+			callbacks.setGuestCount();
+
+			return input.value;
+		} );
+
+		expect( values ).toEqual( [ '0', '1', '2' ] );
+	} );
+
+	it( 'declines to key a guest count off a row that carries no post', () => {
+		const output = document.createElement( 'span' );
+
+		output.dataset.guestSingular = '%d guest';
+		output.dataset.guestPlural = '%d guests';
+
+		state.posts = {};
+
+		getElement.mockReturnValue( { ref: output } );
+		getContext.mockReturnValue( {} );
+		callbacks.updateGuestCountDisplay();
+
+		// `getPostKey( 0, undefined )` is `0`, which `initPostContext` refuses,
+		// so a context-less block leaves the store untouched rather than
+		// creating one slice every such block would then share.
+		expect( state.posts ).toEqual( {} );
+		expect( output.textContent ).toBe( '' );
+	} );
+
+	it( 'still renders a status block whose row carries no post', () => {
+		const row = renderPage( 1 )[ 0 ];
+
+		state.posts = {};
+
+		getElement.mockReturnValue( { ref: row } );
+		getContext.mockReturnValue( {} );
+		callbacks.renderRsvpBlock();
+
+		// The server-rendered `data-user-details` is what the block falls back
+		// to, so a context-less block still shows the visitor their own status.
+		expect( visibleStatus( row ) ).toBe( 'no_status' );
+	} );
+
+	it( 'renders the singular guest label and hides an empty count', () => {
+		const context = {
+			postId: SERIES_POST_ID,
+			recurrenceId: OCCURRENCES[ 0 ],
+		};
+		const output = document.createElement( 'span' );
+
+		output.dataset.guestSingular = '%d guest';
+		output.dataset.guestPlural = '%d guests';
+
+		state.posts = {
+			[ `${ SERIES_POST_ID }:${ OCCURRENCES[ 0 ] }` ]: {
+				currentUser: { status: 'attending', guests: 1, anonymous: 0 },
+			},
+		};
+
+		getElement.mockReturnValue( { ref: output } );
+		getContext.mockReturnValue( context );
+		callbacks.updateGuestCountDisplay();
+
+		expect( output.textContent ).toBe( '1 guest' );
+		expect(
+			output.classList.contains( 'gatherpress--is-hidden' )
+		).toBe( false );
+
+		state.posts[
+			`${ SERIES_POST_ID }:${ OCCURRENCES[ 0 ] }`
+		].currentUser.guests = 0;
+		callbacks.updateGuestCountDisplay();
+
+		expect( output.textContent ).toBe( '' );
+		expect( output.classList.contains( 'gatherpress--is-hidden' ) ).toBe(
+			true
+		);
 	} );
 } );

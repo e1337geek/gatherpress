@@ -68,7 +68,6 @@ describe( 'rsvp-template view renderBlocks', () => {
 
 		state.eventApiUrl = 'https://example.test/wp-json/gatherpress/v1';
 		state.posts = {};
-		delete state.recurrenceId;
 
 		document.body.innerHTML = `
 			<div class="wp-block-gatherpress-rsvp-response"
@@ -103,8 +102,11 @@ describe( 'rsvp-template view renderBlocks', () => {
 	const requestBody = () =>
 		JSON.parse( global.fetch.mock.calls[ 0 ][ 1 ].body );
 
-	it( 'sends the occurrence identifier when the page is rendering one', async () => {
-		state.recurrenceId = '20260917T180000';
+	it( 'sends the occurrence identifier the row is rendering', async () => {
+		getContext.mockReturnValue( {
+			postId: 42,
+			recurrenceId: '20260917T180000',
+		} );
 
 		await callbacks.renderBlocks();
 
@@ -114,15 +116,63 @@ describe( 'rsvp-template view renderBlocks', () => {
 		} );
 	} );
 
-	it( 'omits the occurrence identifier off an occurrence page', async () => {
+	it( 'omits the occurrence identifier for a row with no occurrence', async () => {
 		await callbacks.renderBlocks();
 
 		expect( requestBody() ).not.toHaveProperty( 'recurrence_id' );
 		expect( requestBody() ).toMatchObject( { post_id: 42 } );
 	} );
 
+	it( 'reads the row own filter selection when rendering the response list', async () => {
+		global.fetch = jest.fn( () =>
+			Promise.resolve( {
+				json: () =>
+					Promise.resolve( {
+						success: true,
+						content: '<div data-id="1">Ada</div>',
+						responses: { attending: { count: 0 } },
+					} ),
+			} )
+		);
+
+		state.posts = {
+			'42:20260917T180000': { rsvpSelection: 'waiting_list' },
+		};
+
+		getContext.mockReturnValue( {
+			postId: 42,
+			recurrenceId: '20260917T180000',
+		} );
+
+		await callbacks.renderBlocks();
+		await Promise.resolve();
+
+		expect( requestBody().status ).toBe( 'waiting_list' );
+	} );
+
+	it( 'defaults to the attending filter for a row with no selection', async () => {
+		global.fetch = jest.fn( () =>
+			Promise.resolve( {
+				json: () =>
+					Promise.resolve( {
+						success: true,
+						content: '<div data-id="1">Ada</div>',
+						responses: { attending: { count: 0 } },
+					} ),
+			} )
+		);
+
+		await callbacks.renderBlocks();
+		await Promise.resolve();
+
+		expect( requestBody().status ).toBe( 'attending' );
+	} );
+
 	it( 'still sends the limit fields it has always sent', async () => {
-		state.recurrenceId = '20260917T180000';
+		getContext.mockReturnValue( {
+			postId: 42,
+			recurrenceId: '20260917T180000',
+		} );
 
 		await callbacks.renderBlocks();
 

@@ -19,6 +19,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 use GatherPress\Core\Blocks\Form_Field;
 use GatherPress\Core\Blocks\General_Block;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Rsvp;
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
@@ -153,7 +154,7 @@ final class Rsvp_Form {
 		$tag->set_attribute( 'data-wp-interactive', 'gatherpress' );
 		$tag->set_attribute( 'data-wp-init', 'callbacks.initRsvpForm' );
 		$tag->set_attribute( 'data-wp-on--submit', 'actions.handleRsvpFormSubmit' );
-		$tag->set_attribute( 'data-wp-context', wp_json_encode( array( 'postId' => $post_id ) ) );
+		$tag->set_attribute( 'data-wp-context', wp_json_encode( Rsvp_Occurrence::block_context( $post_id ) ) );
 
 		$event = new Event( $post_id );
 

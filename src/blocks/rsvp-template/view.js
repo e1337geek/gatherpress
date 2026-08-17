@@ -7,7 +7,7 @@ import { store, getContext, getElement } from '@wordpress/interactivity';
  * Internal dependencies
  */
 import { stripScriptsAndEventHandlers } from '../../helpers/globals';
-import { withRecurrenceId } from '../../helpers/interactivity';
+import { getPostKey, withRecurrenceId } from '../../helpers/interactivity';
 
 /**
  * Toggle a `.gatherpress--is-visible` / `.gatherpress--is-hidden` class
@@ -67,6 +67,7 @@ const { state } = store( 'gatherpress', {
 	callbacks: {
 		renderBlocks() {
 			const context = getContext();
+			const postKey = getPostKey( context.postId, context?.recurrenceId );
 			const element = getElement();
 			const rsvpResponseElement = element.ref.closest(
 				'.wp-block-gatherpress-rsvp-response',
@@ -78,14 +79,14 @@ const { state } = store( 'gatherpress', {
 				},
 				body: JSON.stringify( {
 					status:
-						state.posts[ context.postId ]?.rsvpSelection ||
+						state.posts[ postKey ]?.rsvpSelection ||
 						'attending',
 					post_id: context.postId,
 					block_data: element.ref.dataset.blockTemplate,
 					limit_enabled:
 						'1' === rsvpResponseElement.dataset.limitEnabled,
 					limit: parseInt( rsvpResponseElement.dataset.limit, 10 ),
-					...withRecurrenceId(),
+					...withRecurrenceId( context?.recurrenceId ),
 				} ),
 			} )
 				.then( ( response ) => response.json() ) // Parse the JSON response.
@@ -107,7 +108,7 @@ const { state } = store( 'gatherpress', {
 
 					updateEmptyResponseMessages(
 						parent.parentElement,
-						state.posts[ context.postId ]?.rsvpSelection ||
+						state.posts[ postKey ]?.rsvpSelection ||
 							'attending',
 						res.responses.attending.count,
 					);

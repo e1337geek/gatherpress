@@ -2165,6 +2165,20 @@ class Test_Context extends Base {
 			'Failed to assert a non-recurring site never queries the occurrence table to resolve one.'
 		);
 	}
+	/**
+	 * Outside occurrence context there is no occurrence to report, and the
+	 * frozen stub is always outside it.
+	 *
+	 * @covers ::current
+	 *
+	 * @return void
+	 */
+	public function test_current_returns_null_outside_occurrence_context(): void {
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert that current returns null when no occurrence is set.'
+		);
+	}
 
 	/**
 	 * The occurrence is emitted to the front end only on an occurrence page.
@@ -2203,20 +2217,6 @@ class Test_Context extends Base {
 			self::SECOND_ID,
 			wp_interactivity_state( 'gatherpress' )['recurrenceId'],
 			'Failed to assert the occurrence being rendered is emitted to the front end.'
-		);
-	}
-	/**
-	 * Outside occurrence context there is no occurrence to report, and the
-	 * frozen stub is always outside it.
-	 *
-	 * @covers ::current
-	 *
-	 * @return void
-	 */
-	public function test_current_returns_null_outside_occurrence_context(): void {
-		$this->assertNull(
-			Context::get_instance()->current(),
-			'Failed to assert that current returns null when no occurrence is set.'
 		);
 	}
 

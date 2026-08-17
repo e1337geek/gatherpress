@@ -57,6 +57,7 @@ import {
 	activateOnSpace,
 	sendRsvpApiRequest,
 	getNonce,
+	getPostKey,
 	withRecurrenceId,
 } from '@src/helpers/interactivity';
 
@@ -545,26 +546,45 @@ describe( 'activateOnSpace', () => {
 } );
 
 describe( 'withRecurrenceId', () => {
-	afterEach( () => {
-		delete mockInteractivityState.recurrenceId;
-	} );
-
-	it( 'contributes nothing when the page is not rendering an occurrence', () => {
-		expect( withRecurrenceId() ).toEqual( {} );
+	it( 'contributes nothing when the row is not rendering an occurrence', () => {
+		expect( withRecurrenceId( undefined ) ).toEqual( {} );
 	} );
 
 	it( 'contributes nothing when the emitted identifier is empty', () => {
-		mockInteractivityState.recurrenceId = '';
-
-		expect( withRecurrenceId() ).toEqual( {} );
+		expect( withRecurrenceId( '' ) ).toEqual( {} );
 	} );
 
-	it( 'carries the occurrence the page is rendering', () => {
-		mockInteractivityState.recurrenceId = '20260903T180000';
-
-		expect( withRecurrenceId() ).toEqual( {
+	it( 'carries the occurrence the row is rendering', () => {
+		expect( withRecurrenceId( '20260903T180000' ) ).toEqual( {
 			recurrence_id: '20260903T180000',
 		} );
+	} );
+} );
+
+/**
+ * The store key is the whole of PRD C-1 on the client: one post rendered many
+ * times must not share one entry in `state.posts`.
+ */
+describe( 'getPostKey', () => {
+	it( 'returns the bare post ID for a row with no occurrence', () => {
+		expect( getPostKey( 123, undefined ) ).toBe( 123 );
+	} );
+
+	it( 'returns the bare post ID when the emitted identifier is empty', () => {
+		expect( getPostKey( 123, '' ) ).toBe( 123 );
+	} );
+
+	it( 'composes post and occurrence into one key', () => {
+		expect( getPostKey( 123, '20260903T180000' ) ).toBe(
+			'123:20260903T180000'
+		);
+	} );
+
+	it( 'cannot collide with a bare post-ID key', () => {
+		// A bare key is all digits; a composite one always carries the
+		// separator, so no occurrence identifier can forge another post's key.
+		expect( String( getPostKey( 123, undefined ) ) ).toMatch( /^\d+$/ );
+		expect( getPostKey( 123, '20260903T180000' ) ).toContain( ':' );
 	} );
 } );
 
@@ -602,7 +622,6 @@ describe( 'sendRsvpApiRequest occurrence scoping', () => {
 	afterEach( () => {
 		jest.restoreAllMocks();
 		delete global.fetch;
-		delete mockInteractivityState.recurrenceId;
 	} );
 
 	const rsvpRequestBody = () => {
@@ -613,16 +632,40 @@ describe( 'sendRsvpApiRequest occurrence scoping', () => {
 		return JSON.parse( call[ 1 ].body );
 	};
 
-	it( 'sends the occurrence identifier the page is rendering', async () => {
-		mockInteractivityState.recurrenceId = '20260903T180000';
-
+	it( 'sends the occurrence identifier the row is rendering', async () => {
 		await sendRsvpApiRequest(
 			123,
-			{ status: 'attending', guests: 0, anonymous: false },
+			{
+				status: 'attending',
+				guests: 0,
+				anonymous: false,
+				recurrenceId: '20260903T180000',
+			},
 			state
 		);
 
 		expect( rsvpRequestBody().recurrence_id ).toBe( '20260903T180000' );
+	} );
+
+	it( 'writes the response into that occurrence own state slice', async () => {
+		await sendRsvpApiRequest(
+			123,
+			{
+				status: 'attending',
+				guests: 0,
+				anonymous: false,
+				recurrenceId: '20260903T180000',
+			},
+			state
+		);
+
+		// The bare post key must be left exactly as it was found: a sibling row
+		// of the same series reads through it, and updating it here is the
+		// collapse this whole change exists to prevent.
+		expect( state.posts[ '123:20260903T180000' ].currentUser.status ).toBe(
+			'attending'
+		);
+		expect( state.posts[ 123 ] ).toEqual( {} );
 	} );
 
 	it( 'leaves the request body untouched off an occurrence page', async () => {

@@ -1658,9 +1658,10 @@ class Test_Loop_Render extends Base {
 	/**
 	 * Coverage for `block_context()` invoked directly, on both of its arms.
 	 *
-	 * xdebug does not trace a helper's body reliably when it is only ever
-	 * reached from a block render inside a loop, so each return path is driven
-	 * once through the public method as well.
+	 * Coverage tracing is the reason this exists alongside the rendered-output
+	 * tests above: xdebug does not trace a helper's body reliably when it is
+	 * only ever reached from a block render inside a loop, so each return path
+	 * is driven once through the public method as well.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
 	 *

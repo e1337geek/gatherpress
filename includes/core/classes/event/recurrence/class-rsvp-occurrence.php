@@ -187,6 +187,47 @@ final class Rsvp_Occurrence {
 	}
 
 	/**
+	 * Build the interactivity block context one rendered row publishes to the client.
+	 *
+	 * The single source of truth for that payload, and the reason it exists is
+	 * PRD C-1: occurrence identity is `(post_id, recurrence_id)`, and until this
+	 * method every block emitted `postId` alone. On an archive or Query Loop the
+	 * whole point is that one post appears many times, so a client store keyed
+	 * on the post ID collapsed every row of a series into one entry -- an RSVP
+	 * on one date visibly applied to all of them, over server markup that was
+	 * already correct per row.
+	 *
+	 * A post with no occurrence in play -- every ordinary event, and every post
+	 * on a site that has never authored a recurring series -- gets back exactly
+	 * what it got before: `array( 'postId' => $post_id )`, byte-identical JSON,
+	 * so its state key stays the bare post ID and its request bodies do not
+	 * change. The two key shapes cannot collide, either: a bare key is
+	 * `/^\d+$/` and a composite one always carries a `:` separator.
+	 *
+	 * Resolution goes through `current_recurrence_id()` rather than through
+	 * `Context::cache_key()` so the identity the client is handed is the same
+	 * one the server scoped this row's RSVP reads by, widened-series admission
+	 * included. REQ-16 rides along on that call's first guard: on a site with no
+	 * recurring events it returns before touching the occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID the block instance is rendering.
+	 *
+	 * @return array{postId: int, recurrenceId?: string} The block's `data-wp-context` payload.
+	 */
+	public static function block_context( int $post_id ): array {
+		$context       = array( 'postId' => $post_id );
+		$recurrence_id = self::current_recurrence_id( $post_id );
+
+		if ( null !== $recurrence_id ) {
+			$context['recurrenceId'] = $recurrence_id;
+		}
+
+		return $context;
+	}
+
+	/**
 	 * Resolve the occurrence an already-stored RSVP belongs to.
 	 *
 	 * Reads the comment's own `_gatherpress_occurrence` term rather than the
