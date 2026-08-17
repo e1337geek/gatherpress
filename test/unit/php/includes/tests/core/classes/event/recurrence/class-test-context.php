@@ -1997,6 +1997,108 @@ class Test_Context extends Base {
 	}
 
 	/**
+	 * Resolving the same occurrence twice costs one query, not two.
+	 *
+	 * A REST dispatch resolves the same `(post_id, recurrence_id)` pair twice:
+	 * once in the validate callback and once on entry. The two stay separate
+	 * deliberately — WordPress runs validate callbacks inside
+	 * `has_valid_params()`, before `permission_callback`, so resolving as a side
+	 * effect of validation would enter context on requests that then 403 with no
+	 * teardown filter registered. The memo removes the duplicated query without
+	 * collapsing that separation.
+	 *
+	 * A miss is memoized too, so a fabricated identifier also costs one query
+	 * per request rather than one per lookup — asserted, because remembering
+	 * only hits is the easy half to get wrong.
+	 *
+	 * @covers ::resolve_in_series
+	 * @covers ::flush_resolved
+	 *
+	 * @return void
+	 */
+	public function test_resolve_in_series_memoizes_within_the_request(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		/**
+		 * Count the occurrence-table queries a callable performs.
+		 *
+		 * @param callable $run The work to measure.
+		 *
+		 * @return int Occurrence-table queries issued.
+		 */
+		$queries_during = static function ( callable $run ) use ( $wpdb, $table ): int {
+			$before = count( $wpdb->queries );
+
+			$run();
+
+			return count(
+				array_filter(
+					array_slice( $wpdb->queries, $before ),
+					static function ( array $query ) use ( $table ): bool {
+						return str_contains( $query[0], $table );
+					}
+				)
+			);
+		};
+
+		Context::flush_resolved();
+
+		$first = $queries_during(
+			static function () use ( $post_id ): void {
+				Context::resolve_in_series( $post_id, self::SECOND_ID );
+			}
+		);
+
+		$second = $queries_during(
+			static function () use ( $post_id ): void {
+				Context::resolve_in_series( $post_id, self::SECOND_ID );
+			}
+		);
+
+		$this->assertSame(
+			1,
+			$first,
+			'Failed to assert the first resolution reaches the occurrence table exactly once.'
+		);
+		$this->assertSame(
+			0,
+			$second,
+			'Failed to assert a repeat resolution of the same pair is served from the memo.'
+		);
+
+		// A miss is remembered as cheaply as a hit.
+		Context::flush_resolved();
+
+		$this->assertSame(
+			1,
+			$queries_during(
+				static function () use ( $post_id ): void {
+					Context::resolve_in_series( $post_id, '20991231T235959' );
+					Context::resolve_in_series( $post_id, '20991231T235959' );
+				}
+			),
+			'Failed to assert an unresolvable identifier is queried once and then remembered.'
+		);
+
+		// And flushing really discards it, or the memo would outlive storage
+		// changes inside a single test process.
+		Context::flush_resolved();
+
+		$this->assertSame(
+			1,
+			$queries_during(
+				static function () use ( $post_id ): void {
+					Context::resolve_in_series( $post_id, self::SECOND_ID );
+				}
+			),
+			'Failed to assert flush_resolved() discards the memo.'
+		);
+	}
+
+	/**
 	 * `set_for_series()` refuses anything that does not resolve to a row.
 	 *
 	 * @covers ::set_for_series

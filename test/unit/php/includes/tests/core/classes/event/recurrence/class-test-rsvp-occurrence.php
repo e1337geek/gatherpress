@@ -619,12 +619,32 @@ class Test_Rsvp_Occurrence extends Base {
 			)
 		);
 
-		// Warm both keys, then leave occurrence context — the token handler
-		// runs on `init`, where no context has been established.
+		// Leave occurrence context *first*, then warm both keys. The token
+		// handler runs on `init`, where no context has been established, so
+		// this is also the production shape. Warming while context was still
+		// set made `Cache::set( $post_id, … )` resolve to the occurrence key
+		// rather than the series one, so both writes landed on the same key and
+		// the second silently overwrote the first — which the pre-assertions
+		// below now catch.
+		Context::get_instance()->clear();
+
 		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ) );
 		Cache::set( $post_id, array( 'all' => array( 'count' => 42 ) ), self::OCCURRENCE_A );
 
-		Context::get_instance()->clear();
+		// Both keys must exist independently before the approval, exactly as in
+		// the sibling test above. Without these, "both were invalidated" is
+		// satisfied by there never having been anything to invalidate — and the
+		// occurrence key is the one this test is actually about.
+		$this->assertSame(
+			array( 'all' => array( 'count' => 99 ) ),
+			Cache::get( $post_id ),
+			'Failed to assert the series-wide cache entry was warmed before the approval.'
+		);
+		$this->assertSame(
+			array( 'all' => array( 'count' => 42 ) ),
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to assert the occurrence cache entry was warmed before the approval.'
+		);
 
 		( new Token( $comment_id ) )->approve_comment();
 
@@ -764,6 +784,15 @@ class Test_Rsvp_Occurrence extends Base {
 		// empty) constructor directly is the documented way to trace it from
 		// the test that is actually about it.
 		Utility::invoke_hidden_method( Rsvp_Occurrence::get_instance(), '__construct' );
+
+		// The constructor is empty but not pointless, and this is the assertion
+		// that says so: `Traits\Singleton` declares no constructor, so deleting
+		// this one hands the class PHP's implicit *public* one and `new
+		// Rsvp_Occurrence()` becomes legal — two instances of a singleton.
+		$this->assertTrue(
+			( new \ReflectionClass( Rsvp_Occurrence::class ) )->getConstructor()->isProtected(),
+			'Failed to assert the constructor stays protected so get_instance() is the only way to build one.'
+		);
 
 		$this->assertSame(
 			10,
@@ -1173,7 +1202,14 @@ class Test_Rsvp_Occurrence extends Base {
 	/**
 	 * A context on another post does not scope this post's RSVPs.
 	 *
+	 * The mismatch is resolved through `Series::resolve_post_ids()` rather than
+	 * refused outright (PRD C-2), so this pins the other side of that: a post
+	 * that is genuinely not in the series still resolves to nothing. Without it,
+	 * "resolve through the series" would be indistinguishable from "accept any
+	 * post at all", and an occurrence of one event could scope another's RSVPs.
+	 *
 	 * @covers ::current_recurrence_id
+	 * @covers ::current_occurrence
 	 *
 	 * @return void
 	 */
@@ -1187,9 +1223,21 @@ class Test_Rsvp_Occurrence extends Base {
 			Rsvp_Occurrence::current_recurrence_id( $post_id ),
 			'Failed to assert the current occurrence resolves for its own series post.'
 		);
+		$this->assertSame(
+			array(
+				'series_post_id' => $post_id,
+				'recurrence_id'  => self::OCCURRENCE_A,
+			),
+			Rsvp_Occurrence::current_occurrence( $post_id ),
+			'Failed to assert the resolved occurrence carries the post its row lives on.'
+		);
 		$this->assertNull(
 			Rsvp_Occurrence::current_recurrence_id( $post_id + 1000 ),
 			'Failed to assert the current occurrence does not resolve for an unrelated post.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::current_occurrence( $post_id + 1000 ),
+			'Failed to assert an unrelated post is refused rather than silently widened.'
 		);
 	}
 
@@ -1210,6 +1258,120 @@ class Test_Rsvp_Occurrence extends Base {
 		$this->assertNull(
 			Rsvp_Occurrence::current_recurrence_id( $post_id ),
 			'Failed to assert the REQ-16 guard short-circuits occurrence resolution.'
+		);
+	}
+
+	/**
+	 * Removing an attendee invalidates the caches their removal changed.
+	 *
+	 * `Rsvp::save()` invalidated *after* bailing on a null `process()` result,
+	 * and the `no_status` path — the one that trashes the comment — is exactly
+	 * the path that returns null. So the single save that removes an attendee
+	 * was the single save that skipped invalidation, leaving them visible in
+	 * warm counts for the length of `Cache::CACHE_EXPIRATION` and, under a
+	 * persistent object cache, visible to every visitor at once.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Rsvp::save
+	 * @covers \GatherPress\Core\Rsvp\Cache::delete
+	 *
+	 * @return void
+	 */
+	public function test_removing_an_rsvp_invalidates_the_cache(): void {
+		$post_id = $this->create_and_project();
+		$user_id = $this->factory->user->create();
+
+		$this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id );
+
+		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ), self::OCCURRENCE_A );
+
+		$this->assertSame(
+			array( 'all' => array( 'count' => 99 ) ),
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to warm the occurrence cache entry the removal must invalidate.'
+		);
+
+		// The removal itself. `no_status` trashes the stored comment and makes
+		// `process()` return null.
+		$this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id, 'no_status' );
+
+		$this->assertNull(
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to assert removing an attendee invalidated the occurrence cache key.'
+		);
+	}
+
+	/**
+	 * The occurrence read path gets a scope-varying comment-query cache domain.
+	 *
+	 * `WP_Comment_Query::get_comments()` hashes its cache key from its declared
+	 * query vars, and `tax_query` is not one of them — it reaches the SQL only
+	 * through a `comments_clauses` filter. Two reads differing solely by
+	 * occurrence would hash identically and the second would be served the
+	 * first one's comment IDs.
+	 *
+	 * `Rsvp\Query::ensure_cache_domain()` is the single mechanism that prevents
+	 * that, for every taxonomy-scoped read rather than only the ones that
+	 * remember to set a domain. `Storage::scope_to_occurrence()` used to set one
+	 * of its own, which short-circuited the derivation and left two mechanisms
+	 * where the local one was the weaker — keyed on the identifier alone where
+	 * the derived key covers the series post too.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Query::ensure_cache_domain
+	 * @covers \GatherPress\Core\Rsvp\Storage::scope_to_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_two_occurrences_do_not_share_a_comment_query_cache_key(): void {
+		$post_id = $this->create_and_project();
+		$user_id = $this->factory->user->create();
+		$domains = array();
+		$capture = static function ( $clauses, $query ) use ( &$domains ) {
+			$domains[] = (string) $query->query_vars['cache_domain'];
+
+			return $clauses;
+		};
+
+		$this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id );
+
+		// An editor bypasses the response transient (`Rsvp::responses()` only
+		// caches the public variant), so both reads below reach the comment
+		// query this test is about rather than the second being served a
+		// transient and never producing a cache domain at all.
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		// The save above already ran occurrence A's comment query, so without
+		// this the A read below is served from `WP_Comment_Query`'s own object
+		// cache and never reaches `comments_clauses` — leaving one domain
+		// observed and the comparison vacuous.
+		wp_cache_flush();
+
+		add_filter( 'comments_clauses', $capture, 99, 2 );
+
+		Context::get_instance()->set( $post_id, self::OCCURRENCE_A );
+		( new Rsvp( $post_id ) )->responses();
+
+		Context::get_instance()->set( $post_id, self::OCCURRENCE_B );
+		( new Rsvp( $post_id ) )->responses();
+
+		remove_filter( 'comments_clauses', $capture, 99 );
+
+		$scoped = array_values(
+			array_filter(
+				$domains,
+				static function ( string $domain ): bool {
+					return '' !== $domain && 'core' !== $domain;
+				}
+			)
+		);
+
+		$this->assertNotEmpty(
+			$scoped,
+			'Failed to assert an occurrence-scoped read carries a cache domain at all.'
+		);
+		$this->assertCount(
+			2,
+			array_unique( $scoped ),
+			'Failed to assert two occurrences of one series produce two distinct comment-query cache domains.'
 		);
 	}
 	/**

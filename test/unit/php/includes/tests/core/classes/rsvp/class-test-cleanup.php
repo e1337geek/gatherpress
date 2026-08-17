@@ -232,4 +232,77 @@ class Test_Cleanup extends Base {
 
 		$this->assertCount( 0, $rsvps );
 	}
+
+	/**
+	 * The cleanup sweep defers term counting across its delete loop.
+	 *
+	 * Every hard delete now drops term relationships in up to three taxonomies
+	 * via `delete_term_relationships()`, and each of those recounts its terms
+	 * immediately — so a sweep clearing n stale RSVPs paid on the order of 3n
+	 * recount queries. Deferring collapses them into one recount per taxonomy at
+	 * the end, which is what core's own bulk paths do.
+	 *
+	 * Asserted by observing the deferral flag from inside the loop, via the
+	 * `delete_comment` hook the sweep fires — the only place the state is
+	 * visible while it matters. Checking it afterwards would prove nothing,
+	 * since the sweep restores it before returning.
+	 *
+	 * @covers ::rsvp_cleanup
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_cleanup_defers_term_counting_across_the_delete_loop(): void {
+		$instance = Cleanup::get_instance();
+		$post     = $this->mock->post(
+			array(
+				'post_type' => Event::POST_TYPE,
+			)
+		)->get();
+
+		$deferred = array();
+		$observe  = static function () use ( &$deferred ): void {
+			$deferred[] = wp_defer_term_counting();
+		};
+
+		// Two stale RSVPs, so "deferred across the loop" is distinguishable
+		// from "deferred around a single delete".
+		foreach ( array( 1, 2 ) as $ignored ) {
+			$comment_id = $this->factory->comment->create(
+				array(
+					'comment_post_ID'  => $post->ID,
+					'comment_type'     => Rsvp::COMMENT_TYPE,
+					'comment_approved' => 0,
+				)
+			);
+
+			wp_update_comment(
+				array(
+					'comment_ID'       => $comment_id,
+					'comment_date'     => '2023-12-25 10:00:00',
+					'comment_date_gmt' => '2023-12-25 10:00:00',
+				)
+			);
+		}
+
+		add_action( 'delete_comment', $observe, 1 );
+
+		$instance->rsvp_cleanup();
+
+		remove_action( 'delete_comment', $observe, 1 );
+
+		$this->assertCount(
+			2,
+			$deferred,
+			'Failed to arrange two hard deletes for the sweep to batch.'
+		);
+		$this->assertSame(
+			array( true, true ),
+			$deferred,
+			'Failed to assert term counting stays deferred for every delete in the cleanup loop.'
+		);
+		$this->assertFalse(
+			wp_defer_term_counting(),
+			'Failed to assert the sweep restores term counting before it returns.'
+		);
+	}
 }

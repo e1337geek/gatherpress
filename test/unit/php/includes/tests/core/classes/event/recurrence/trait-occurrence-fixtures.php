@@ -13,7 +13,10 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use DateTimeImmutable;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Meta;
+use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use ReflectionClass;
@@ -93,6 +96,66 @@ trait Occurrence_Fixtures {
 		Event_Setup::get_instance()->set_datetimes( $post_id );
 
 		add_post_meta( $post_id, 'gatherpress_recurrence', wp_json_encode( $rule ) );
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * Create and project a recurring event anchored relative to "now".
+	 *
+	 * The counterpart to `create_recurring_event()` for every test whose
+	 * subject compares an occurrence against `current_time()` rather than
+	 * against a stated calendar expectation. `select_upcoming()` /
+	 * `select_past()` do it directly; so, less obviously, does anything driving
+	 * an RSVP write, because `Rest_Api::update_rsvp()` gates on
+	 * `! $event->has_event_past()` and `Rsvp\Form` bails 400 on the same check.
+	 *
+	 * Pinning a fixture date and comparing it against the wall clock is a date
+	 * bomb: it passes until real time crosses the anchor and then fails for a
+	 * reader with no context (rule 3a #7). The fixed-anchor
+	 * `$reference_anchor_start` above is correct for the expander and
+	 * persistence suites, which assert a *stated* occurrence set where the exact
+	 * calendar dates are the specification and WKST week buckets depend on
+	 * them — those must not move. Anything time-relative uses this instead.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array             $rule     Recurrence rule values.
+	 * @param DateTimeImmutable $start    Anchor start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Anchor end, in `$timezone`.
+	 * @param string            $timezone Named tz-database identifier for the series.
+	 *
+	 * @return int The projected post ID.
+	 */
+	public function create_relative_recurring_event(
+		array $rule,
+		DateTimeImmutable $start,
+		DateTimeImmutable $end,
+		string $timezone = 'America/New_York'
+	): int {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
+					'timezone'      => $timezone,
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $rule ) );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
 
 		return (int) $post_id;
 	}
