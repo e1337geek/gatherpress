@@ -46,6 +46,35 @@ async function dismissEditorModals( page ) {
 }
 
 /**
+ * Navigate to `/wp-admin/` and confirm the page is usable for REST seeding.
+ *
+ * Every spec in this suite starts by loading an admin page so
+ * `window.wp.apiFetch` exists with a valid REST nonce. If that load ever
+ * comes back without the admin's script bundle, the very next `page.evaluate`
+ * dies on `Cannot read properties of undefined (reading 'apiFetch')` — a
+ * broken test rather than a red one, reported against whichever seeding call
+ * happened to run first. Asserting the precondition here turns that into a
+ * named failure at the point the precondition was violated.
+ *
+ * @since 0.36.0
+ *
+ * @param {import('@playwright/test').Page} page Playwright page object.
+ *
+ * @return {Promise<void>}
+ */
+async function gotoAdmin( page ) {
+	await page.goto( '/wp-admin/' );
+	await page.waitForLoadState( 'load' );
+
+	const hasApiFetch = await page.evaluate( () => 'function' === typeof window.wp?.apiFetch );
+
+	expect(
+		hasApiFetch,
+		'/wp-admin/ loaded with window.wp.apiFetch available for REST seeding'
+	).toBe( true );
+}
+
+/**
  * Ensure the "Event settings" sidebar panel is expanded.
  *
  * @since 0.36.0
@@ -198,8 +227,14 @@ async function openEventEditor( page, eventId ) {
  * @return {Promise<void>}
  */
 async function setEventTimezone( page, label ) {
-	await page.getByLabel( 'Time Zone' ).selectOption( { label } );
-	await page.waitForTimeout( 300 );
+	const control = page.getByLabel( 'Time Zone' );
+	const [ value ] = await control.selectOption( { label } );
+
+	// Wait on the control actually holding the new value rather than on a
+	// fixed delay. Anything downstream that depends on the panel re-rendering
+	// off this change is asserted by a retrying web-first assertion at the
+	// call site, so no sleep is needed here either.
+	await expect( control ).toHaveValue( value );
 }
 
 /**
@@ -235,11 +270,17 @@ async function enableRecurrence( page ) {
  */
 async function setFrequency( page, { frequency, interval } = {} ) {
 	if ( frequency ) {
-		await page.getByLabel( 'Frequency' ).selectOption( frequency );
+		const control = page.getByLabel( 'Frequency' );
+
+		await control.selectOption( frequency );
+
 		// Switching frequency conditionally mounts/unmounts the weekday and
-		// monthly controls below it; give React a moment to settle before a
-		// caller reaches for one of them.
-		await page.waitForTimeout( 300 );
+		// monthly controls below it. Wait on the select committing the new
+		// value; the helpers that reach for those conditional controls
+		// (`setWeekdays`, `setMonthly`) each wait for their own control to be
+		// visible, so React's mount is covered by a real condition rather
+		// than by a fixed delay.
+		await expect( control ).toHaveValue( frequency );
 	}
 
 	if ( interval ) {
@@ -285,14 +326,25 @@ async function setWeekdays( page, days ) {
  * @return {Promise<void>}
  */
 async function setMonthly( page, { mode, day, ordinal, weekday } = {} ) {
-	await page.getByLabel( 'Repeat by' ).selectOption(
+	const repeatBy = page.getByLabel( 'Repeat by' );
+
+	// The monthly controls only mount once `Frequency` is monthly (or
+	// yearly); waiting for this one proves that mount landed.
+	await expect( repeatBy ).toBeVisible();
+	await repeatBy.selectOption(
 		'day_of_month' === mode
 			? { label: 'Day of the month' }
 			: { label: 'Day of the week' }
 	);
+
 	// Switching mode conditionally swaps the day-of-month field for the
-	// week/day ordinal pair; give React a moment to settle first.
-	await page.waitForTimeout( 300 );
+	// week/day ordinal pair. Wait for the field that mode actually mounts,
+	// rather than sleeping and hoping.
+	await expect(
+		'day_of_month' === mode
+			? page.getByLabel( 'Day of the month' )
+			: page.getByLabel( 'Week' )
+	).toBeVisible();
 
 	if ( 'day_of_month' === mode && day ) {
 		await page.getByLabel( 'Day of the month' ).fill( String( day ) );
@@ -371,11 +423,38 @@ async function saveEvent( page ) {
 	await page.waitForSelector( '.components-snackbar', { timeout: 20000 } );
 
 	// The snackbar confirms the save request resolved, but the editor's own
-	// entity-record resolution can still land a moment later and briefly
+	// entity-record save can still be settling a moment later and briefly
 	// re-sync the Recurrence panel's local state to what was just saved.
 	// Editing again before that settles can race a subsequent change to
-	// arrive first and get clobbered by the delayed resync. Give it a beat.
-	await page.waitForTimeout( 800 );
+	// arrive first and get clobbered by the delayed resync.
+	//
+	// Wait on the store's own save state rather than on a fixed delay: a
+	// sleep long enough to hide the race today is a sleep that stops hiding
+	// it on a slower machine, and `retries` in CI would then mask the
+	// resulting flake instead of surfacing it.
+	await page.waitForFunction(
+		() => {
+			const editor = window.wp?.data?.select( 'core/editor' );
+			const core = window.wp?.data?.select( 'core' );
+
+			if ( ! editor || ! core ) {
+				return false;
+			}
+
+			return (
+				! editor.isSavingPost() &&
+				! editor.isAutosavingPost() &&
+				! editor.isEditedPostDirty() &&
+				! core.isSavingEntityRecord(
+					'postType',
+					editor.getCurrentPostType(),
+					editor.getCurrentPostId()
+				)
+			);
+		},
+		undefined,
+		{ timeout: 20000 }
+	);
 }
 
 /**
@@ -506,26 +585,24 @@ async function setSiteTimezone( page, tz ) {
 }
 
 /**
- * Set the site timezone to a manual UTC offset through the real wp-admin
- * "Settings > General" form — the three-click path an organizer actually
- * reaches, and the one that exercises WordPress core's own
- * `timezone_string`/`gmt_offset` conversion (a REST write of a `UTC±N`
- * string does not trigger that conversion; only the admin form does).
+ * Read the site's currently configured timezone via the REST settings
+ * endpoint, so a spec that changes it can put it back.
+ *
+ * Several specs in this suite must run under a named timezone (REQ-3), and
+ * other e2e files share this WordPress install — leaving the site on
+ * whatever the last recurrence spec set is a cross-file side effect.
  *
  * @since 0.36.0
  *
- * @param {import('@playwright/test').Page} page        Playwright page object.
- * @param {string}                          offsetLabel Visible option label, e.g. `UTC-5`.
+ * @param {import('@playwright/test').Page} page Playwright page object, already on an admin page.
  *
- * @return {Promise<void>}
+ * @return {Promise<string>} The site's `timezone` setting.
  */
-async function setManualUtcOffsetViaAdmin( page, offsetLabel ) {
-	await page.goto( '/wp-admin/options-general.php' );
-	await page.waitForLoadState( 'load' );
-
-	await page.locator( '#timezone_string' ).selectOption( { label: offsetLabel } );
-	await page.locator( '#submit' ).click();
-	await page.waitForLoadState( 'load' );
+async function getSiteTimezone( page ) {
+	return page.evaluate( async () => {
+		const settings = await window.wp.apiFetch( { path: '/wp/v2/settings' } );
+		return settings.timezone;
+	} );
 }
 
 /**
@@ -676,6 +753,7 @@ function toRecurrenceId( date, hhmmss ) {
 
 module.exports = {
 	dismissEditorModals,
+	gotoAdmin,
 	openEventSettingsPanel,
 	seedEventWithDatetime,
 	openEventEditor,
@@ -691,7 +769,7 @@ module.exports = {
 	getUpcomingRows,
 	deletePost,
 	setSiteTimezone,
-	setManualUtcOffsetViaAdmin,
+	getSiteTimezone,
 	dateOnly,
 	daysUntilUtcWeekday,
 	nextMatchingWeekday,
