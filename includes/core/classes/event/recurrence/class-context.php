@@ -471,9 +471,28 @@ final class Context {
 		}
 
 		$occurrence = $this->resolve( $post_id );
-		$url        = ( null === $occurrence )
-			? ''
-			: Rewrite::get_occurrence_url( $post_id, (string) $occurrence['recurrence_id'] );
+
+		if ( null === $occurrence ) {
+			return (string) $permalink;
+		}
+
+		// Suppression has to cover the WHOLE occurrence-URL composition, not
+		// just the bare permalink read nested inside it.
+		// `Rewrite::get_occurrence_url()` applies the
+		// `gatherpress_recurrence_id_format` filter *after*
+		// `series_permalink()` has already restored the previous value, so an
+		// integration whose format filter calls `get_permalink()` for this
+		// same post would re-enter this method unsuppressed and recurse until
+		// the stack is exhausted. Saving and restoring rather than clearing
+		// keeps a nested build for a *different* post working.
+		$previous      = $this->linking;
+		$this->linking = $post_id;
+
+		try {
+			$url = Rewrite::get_occurrence_url( $post_id, (string) $occurrence['recurrence_id'] );
+		} finally {
+			$this->linking = $previous;
+		}
 
 		// An occurrence URL is composed on top of the series permalink, so it is
 		// empty when the post has none. The permalink core already had is a

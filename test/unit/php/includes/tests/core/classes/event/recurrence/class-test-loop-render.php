@@ -104,12 +104,17 @@ class Test_Loop_Render extends Base {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param DateTimeImmutable $start Event start in UTC.
-	 * @param DateTimeImmutable $end   Event end in UTC.
+	 * @param DateTimeImmutable $start    Event start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Event end, in `$timezone`.
+	 * @param string            $timezone Series timezone name.
 	 *
 	 * @return int The created post ID.
 	 */
-	protected function create_event_at( DateTimeImmutable $start, DateTimeImmutable $end ): int {
+	protected function create_event_at(
+		DateTimeImmutable $start,
+		DateTimeImmutable $end,
+		string $timezone = 'UTC'
+	): int {
 		$post_id = $this->factory->post->create(
 			array(
 				'post_type'   => Event::POST_TYPE,
@@ -124,7 +129,7 @@ class Test_Loop_Render extends Base {
 				array(
 					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
 					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
-					'timezone'      => 'UTC',
+					'timezone'      => $timezone,
 				)
 			)
 		);
@@ -143,18 +148,20 @@ class Test_Loop_Render extends Base {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param DateTimeImmutable $start Anchor start in UTC.
-	 * @param DateTimeImmutable $end   Anchor end in UTC.
-	 * @param array             $rule  Recurrence rule values.
+	 * @param DateTimeImmutable $start    Anchor start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Anchor end, in `$timezone`.
+	 * @param array             $rule     Recurrence rule values.
+	 * @param string            $timezone Series timezone name.
 	 *
 	 * @return int The created post ID.
 	 */
 	protected function create_series_at(
 		DateTimeImmutable $start,
 		DateTimeImmutable $end,
-		array $rule = self::DAILY_RULE
+		array $rule = self::DAILY_RULE,
+		string $timezone = 'UTC'
 	): int {
-		$post_id = $this->create_event_at( $start, $end );
+		$post_id = $this->create_event_at( $start, $end, $timezone );
 
 		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $rule ) );
 		Meta::get_instance()->set_recurrence( $post_id );
@@ -296,24 +303,101 @@ class Test_Loop_Render extends Base {
 		);
 
 		foreach ( array( 1, 2, 3, 4 ) as $offset => $index ) {
-			$expected = $anchor->modify( sprintf( '+%d days', $index ) )->format( 'g:i a' );
-
 			$this->assertStringContainsString(
 				$anchor->modify( sprintf( '+%d days', $index ) )->format( 'F j, Y' ),
 				$html[ $offset ],
 				'Failed to assert row ' . $offset . ' rendered its own occurrence date.'
 			);
-			$this->assertStringContainsString(
-				$expected,
+			$this->assertStringNotContainsString(
+				$anchor->format( 'F j, Y' ),
 				$html[ $offset ],
-				'Failed to assert row ' . $offset . ' rendered the occurrence record\'s own time of day.'
+				'Failed to assert row ' . $offset . ' did not render the series anchor\'s date.'
 			);
 		}
 	}
 
 	/**
-	 * Coverage for the render path's second half: the permalink of a loop row
-	 * is the occurrence URL, not the bare series URL.
+	 * Coverage for PRD C-3 inside a loop: an occurrence's time of day is read
+	 * from the occurrence record, never computed by applying the anchor's time
+	 * to the occurrence's date.
+	 *
+	 * The discriminating fixture is a direct row update, and it has to be:
+	 * under preamble rule 8 the expander holds the wall-clock time constant
+	 * across every occurrence, including across a DST transition, so for a
+	 * rule-generated series "the record's time" and "the anchor's time applied
+	 * to the record's date" are the *same* local time and no assertion on the
+	 * rendered wall clock can separate them. Rewriting one row's own datetime
+	 * columns is what makes the two answers differ (preamble rule 3a #8), and
+	 * it is the same technique
+	 * `Test_Context::test_occurrence_time_of_day_comes_from_the_record_not_the_anchor`
+	 * uses on the singular path -- this is its loop counterpart.
+	 *
+	 * @covers ::metadata
+	 * @covers ::occurrence_value
+	 * @covers ::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_a_loop_row_renders_the_records_time_of_day_not_the_anchors(): void {
+		global $wpdb;
+
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$moved     = $this->occurrence_id( $anchor, 2 );
+		$start     = $anchor->modify( '+2 days' )->modify( '-3 hours' );
+		$table     = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i SET datetime_start = %s, datetime_start_gmt = %s,'
+					. ' datetime_end = %s, datetime_end_gmt = %s'
+					. ' WHERE series_post_id = %d AND recurrence_id = %s',
+				$table,
+				$start->format( 'Y-m-d H:i:s' ),
+				$start->format( 'Y-m-d H:i:s' ),
+				$start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+				$start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+				$series_id,
+				$moved
+			)
+		);
+
+		$rendered = $this->render_loop(
+			$this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) ),
+			array(
+				'displayType'     => 'start',
+				'startDateFormat' => 'Y-m-d H:i',
+			)
+		);
+		$html     = wp_list_pluck( $rendered, 'html' );
+
+		$this->assertCount(
+			4,
+			$html,
+			'Failed to assert the loop still expanded the series to its four upcoming occurrences.'
+		);
+
+		$moved_row = $html[1];
+
+		$this->assertStringContainsString(
+			$start->format( 'Y-m-d H:i' ),
+			$moved_row,
+			'Failed to assert the moved occurrence rendered its own record\'s time of day (PRD C-3).'
+		);
+		$this->assertStringNotContainsString(
+			$anchor->modify( '+2 days' )->format( 'Y-m-d H:i' ),
+			$moved_row,
+			'Failed to assert the anchor\'s time of day was not applied to the occurrence\'s date -- that is'
+				. ' precisely the C-3 violation, and it renders a plausible-looking wrong time.'
+		);
+	}
+
+	/**
+	 * Coverage for CF-8's second half: the permalink of a loop row is the
+	 * occurrence URL, not the bare series URL.
 	 *
 	 * Asserted through the block's own `isLink` markup rather than by calling
 	 * `get_permalink()` in the test, so the assertion covers what a visitor
@@ -418,6 +502,24 @@ class Test_Loop_Render extends Base {
 	 * placed after a nested loop already read the main query's post in stock
 	 * WordPress. This test therefore renders each outer row before its nested
 	 * loop, which is the arrangement core itself produces.
+	 *
+	 * The limitation that arrangement leaves behind is recorded here because of
+	 * *how it presents*, which is the part that will cost someone a day. An
+	 * outer row rendered **after** a nested loop reads the wrong occurrence.
+	 * Measured, rendering the outer row after the inner loop instead of before:
+	 *
+	 *     befores = ["2026-08-18 ...","2026-08-19 ...","2026-08-20 ...","2026-08-21 ..."]
+	 *     afters  = ["2026-08-21 ...","2026-08-21 ...","2026-08-21 ...","2026-08-21 ..."]
+	 *
+	 * In stock WordPress this class of bug is *visible*: the post identity
+	 * changes, so the title and the link visibly jump to some other event and
+	 * the reporter says "the wrong post is showing." Here the post ID is
+	 * unchanged -- only which occurrence of it is in play is wrong -- so the
+	 * title, the link and the venue all still look right and **only the date is
+	 * wrong**. Nothing in the output announces the failure. There is nothing to
+	 * fix from this class's side: `wp_reset_postdata()` fires no action and
+	 * restores from `$wp_query`, so there is no hook to re-establish the outer
+	 * iteration's occurrence from and nothing to restore it out of.
 	 *
 	 * @covers ::metadata
 	 *
@@ -889,40 +991,244 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for `permalink()`'s third pass-through: an occurrence whose post
-	 * has no permalink to compose one on top of.
+	 * Coverage for the isolation rule through a rendered block rather than a
+	 * direct invoke.
 	 *
-	 * `Rewrite::get_occurrence_url()` builds the occurrence URL from the series
-	 * permalink and answers with an empty string when there is none, which is
-	 * what `get_permalink()` returns for a post that is no longer there.
-	 * Returning that to the `post_link` filter publishes `href=""`, which
-	 * resolves to the current page. Reachability is narrow, because a resolved
-	 * occurrence normally implies a live post, but an empty href is a worse
-	 * answer than the permalink core already had.
+	 * `test_loop_occurrence_returns_null_for_another_post()` above pins the same
+	 * rule, but it reaches `loop_occurrence()` through
+	 * `Utility::invoke_hidden_method()`. Dropping
+	 * `|| (int) $post->ID !== $post_id` from that method failed exactly that one
+	 * test out of the file, and no rendered-output test at all -- because
+	 * `test_inner_loop_over_a_different_post_does_not_inherit_the_occurrence()`
+	 * moves the *global* post to the inner post before rendering, so the two IDs
+	 * agree and the mismatch arm is never exercised.
 	 *
+	 * A block carrying an explicit `postId` for a different post is the shape
+	 * that does exercise it: `Blocks\Setup::get_post_id()` honors the attribute,
+	 * so the block reads another post's meta while the global post is still the
+	 * occurrence row. Without the ID comparison the other post inherits this
+	 * iteration's occurrence -- its date and its permalink both.
+	 *
+	 * @covers ::metadata
 	 * @covers ::permalink
+	 * @covers ::loop_occurrence
 	 *
 	 * @return void
 	 */
-	public function test_permalink_falls_back_when_the_post_has_no_permalink(): void {
+	public function test_a_block_pinned_to_another_post_mid_iteration_renders_that_posts_own_values(): void {
 		$now    = $this->now();
 		$anchor = $now->modify( '-1 hour' );
 
 		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
-		$post      = get_post( $series_id );
+		$other_id  = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
 
-		Context::get_instance()->set( $series_id, $this->occurrence_id( $anchor, 1 ) );
+		$other_link = sprintf( 'href="%s"', get_permalink( $other_id ) );
+		$other_date = $now->modify( '+400 hours' )->format( 'F j, Y' );
 
-		wp_delete_post( $series_id, true );
+		$query      = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+		$own_html   = array();
+		$other_html = array();
 
-		$result = Context::get_instance()->permalink( 'https://example.test/original/', $post );
+		while ( $query->have_posts() ) {
+			$query->the_post();
 
-		Context::get_instance()->clear();
+			$own_html[]   = $this->render_event_date( array( 'isLink' => true ) );
+			$other_html[] = $this->render_event_date(
+				array(
+					'isLink' => true,
+					'postId' => $other_id,
+				)
+			);
+		}
+
+		wp_reset_postdata();
+
+		$this->assertCount(
+			4,
+			array_unique( $own_html ),
+			'Failed to assert every outer occurrence row still rendered its own date and permalink.'
+		);
+		$this->assertSame(
+			array( $other_html[0] ),
+			array_values( array_unique( $other_html ) ),
+			'Failed to assert the pinned block rendered the same thing on every iteration rather than drifting'
+				. ' with the outer occurrence.'
+		);
+		$this->assertStringContainsString(
+			$other_link,
+			$other_html[0],
+			'Failed to assert a block pinned to another post keeps that post\'s bare permalink mid-iteration.'
+		);
+		$this->assertStringContainsString(
+			$other_date,
+			$other_html[0],
+			'Failed to assert a block pinned to another post renders that post\'s own date mid-iteration.'
+		);
+	}
+
+	/**
+	 * Coverage for the `timezone` column travelling on the result object.
+	 *
+	 * `timezone` is one of C-3's five columns and, unlike the four datetime
+	 * columns, it has a fallback that normally agrees with it: when the
+	 * occurrence row's nullable `timezone` is empty, `occurrence_value()` reads
+	 * the series' own `gatherpress_timezone` meta. Every other fixture in this
+	 * suite gives the series and its occurrences the same timezone, so the
+	 * right answer and the fallback answer coincide and nothing discriminates
+	 * between them -- mutating `stamp_occurrence()` to stamp `null` for this one
+	 * column left the whole recurrence suite green.
+	 *
+	 * This fixture makes the two differ (preamble rule 3a #8): the occurrence
+	 * rows are projected in `America/New_York`, then the *series'* own timezone
+	 * meta is poisoned to `Asia/Tokyo` afterwards. Inside a loop iteration the
+	 * read must produce the occurrence record's zone; outside it, the series'.
+	 *
+	 * @covers ::metadata
+	 * @covers ::occurrence_value
+	 * @covers ::get_datetime
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_a_loop_row_reads_the_occurrence_records_timezone_not_the_series_meta(): void {
+		$zone   = new DateTimeZone( 'America/New_York' );
+		$now    = new DateTimeImmutable( 'now', $zone );
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at(
+			$anchor,
+			$now->modify( '-30 minutes' ),
+			self::DAILY_RULE,
+			'America/New_York'
+		);
+
+		update_post_meta( $series_id, 'gatherpress_timezone', 'Asia/Tokyo' );
 
 		$this->assertSame(
-			'https://example.test/original/',
-			$result,
-			'Failed to assert permalink() degrades to the permalink it was handed rather than to an empty href.'
+			'Asia/Tokyo',
+			get_post_meta( $series_id, 'gatherpress_timezone', true ),
+			'Failed to assert the fixture poisoned the series\' own timezone meta, so the occurrence rows and'
+				. ' the series genuinely disagree.'
+		);
+
+		$query     = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+		$from_meta = array();
+		$from_api  = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$from_meta[] = get_post_meta( $series_id, 'gatherpress_timezone', true );
+			$from_api[]  = Context::get_instance()->get_datetime( $series_id )['timezone'];
+		}
+
+		wp_reset_postdata();
+
+		// `wp_reset_postdata()` restores from the *main* query, which has no
+		// post in this harness, so the last stamped loop row would otherwise
+		// still be the global post and the read below would prove nothing.
+		$this->go_to( home_url( '/' ) );
+
+		$this->assertSame(
+			array_fill( 0, 4, 'America/New_York' ),
+			$from_meta,
+			'Failed to assert every loop iteration read the occurrence record\'s own timezone through the'
+				. ' get_post_metadata filter, rather than falling back to the series\' meta.'
+		);
+		$this->assertSame(
+			array_fill( 0, 4, 'America/New_York' ),
+			$from_api,
+			'Failed to assert Context::get_datetime() reports the occurrence record\'s own timezone in a loop.'
+		);
+		$this->assertSame(
+			'Asia/Tokyo',
+			get_post_meta( $series_id, 'gatherpress_timezone', true ),
+			'Failed to assert the series\' own timezone is read again once the loop is over -- without this the'
+				. ' fixture would prove nothing, since a substitution that never lifted would look the same.'
+		);
+	}
+
+	/**
+	 * Coverage for the permalink recursion guard across the whole occurrence-URL
+	 * composition, not merely across the `get_permalink()` call inside it.
+	 *
+	 * `Rewrite::get_occurrence_url()` applies `gatherpress_recurrence_id_format`
+	 * *after* reading the series permalink. With suppression restored on the
+	 * way out of that read, an integration whose format filter calls
+	 * `get_permalink()` for the same post re-enters `Context::permalink()`
+	 * unsuppressed, which composes another occurrence URL, which fires the
+	 * filter again -- unbounded recursion ending in a fatal.
+	 *
+	 * The filter below counts its own re-entrancy and stops recursing at depth
+	 * three, so the defect presents as a clean assertion failure on the depth
+	 * rather than as a stack overflow that reports nothing useful.
+	 *
+	 * @covers ::permalink
+	 * @covers ::series_permalink
+	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::get_occurrence_url
+	 *
+	 * @return void
+	 */
+	public function test_a_recurrence_id_format_filter_may_read_the_same_posts_permalink(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$bare      = get_permalink( $series_id );
+
+		$depth   = 0;
+		$deepest = 0;
+		$seen    = array();
+
+		$format = static function ( string $segment, int $post_id ) use ( &$depth, &$deepest, &$seen ): string {
+			++$depth;
+
+			$deepest = max( $deepest, $depth );
+
+			if ( 3 > $depth ) {
+				$seen[] = get_permalink( $post_id );
+			}
+
+			--$depth;
+
+			return $segment;
+		};
+
+		add_filter( 'gatherpress_recurrence_id_format', $format, 10, 2 );
+
+		$rendered = $this->render_loop( $this->run_upcoming_query(), array( 'isLink' => true ) );
+
+		remove_filter( 'gatherpress_recurrence_id_format', $format, 10 );
+
+		$hrefs = array();
+
+		foreach ( $rendered as $row ) {
+			preg_match( '/href="([^"]+)"/', $row['html'], $matches );
+
+			$hrefs[] = $matches[1] ?? '';
+		}
+
+		$this->assertSame(
+			1,
+			$deepest,
+			'Failed to assert the format filter never re-entered itself. Suppression is lifted before the'
+				. ' filter runs, so an integration reading the same post\'s permalink from inside it recurses'
+				. ' without bound and takes the request down with it.'
+		);
+		$this->assertNotSame(
+			array(),
+			$seen,
+			'Failed to assert the format filter actually ran and read a permalink.'
+		);
+		$this->assertSame(
+			array( $bare ),
+			array_values( array_unique( $seen ) ),
+			'Failed to assert the filter read the bare series permalink, not a doubled occurrence URL.'
+		);
+		$this->assertCount(
+			4,
+			array_unique( $hrefs ),
+			'Failed to assert each row still linked to its own occurrence URL while the filter was installed.'
 		);
 	}
 
@@ -1041,4 +1347,42 @@ class Test_Loop_Render extends Base {
 			'Failed to assert the real table still answers true once the prefix is restored.'
 		);
 	}
+	/**
+	 * Coverage for `permalink()`'s third pass-through: an occurrence whose post
+	 * has no permalink to compose one on top of.
+	 *
+	 * `Rewrite::get_occurrence_url()` builds the occurrence URL from the series
+	 * permalink and answers with an empty string when there is none, which is
+	 * what `get_permalink()` returns for a post that is no longer there.
+	 * Returning that to the `post_link` filter publishes `href=""`, which
+	 * resolves to the current page. Reachability is narrow, because a resolved
+	 * occurrence normally implies a live post, but an empty href is a worse
+	 * answer than the permalink core already had.
+	 *
+	 * @covers ::permalink
+	 *
+	 * @return void
+	 */
+	public function test_permalink_falls_back_when_the_post_has_no_permalink(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$post      = get_post( $series_id );
+
+		Context::get_instance()->set( $series_id, $this->occurrence_id( $anchor, 1 ) );
+
+		wp_delete_post( $series_id, true );
+
+		$result = Context::get_instance()->permalink( 'https://example.test/original/', $post );
+
+		Context::get_instance()->clear();
+
+		$this->assertSame(
+			'https://example.test/original/',
+			$result,
+			'Failed to assert permalink() degrades to the permalink it was handed rather than to an empty href.'
+		);
+	}
+
 }

@@ -16,6 +16,8 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Query as Event_Query;
 use GatherPress\Core\Event\Recurrence\Meta;
@@ -66,17 +68,48 @@ class Test_Backcompat extends Base {
 	}
 
 	/**
-	 * Create a published, non-recurring event with a datetime range.
+	 * Build "now" in UTC.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param string $start Local start, `Y-m-d H:i:s`.
-	 * @param string $end   Local end, `Y-m-d H:i:s`.
-	 * @param array  $args  Extra factory args, e.g. `post_name`.
+	 * @return DateTimeImmutable Current time in UTC.
+	 */
+	protected function now(): DateTimeImmutable {
+		return new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+	}
+
+	/**
+	 * The anchor start every fixture in this file is built from.
+	 *
+	 * Relative to now rather than a literal calendar date, and comfortably
+	 * ahead of it: several tests in this file put the fixture into an
+	 * `upcoming` bucket and then assert it is what the list shows, which is a
+	 * comparison against the clock. A pinned anchor would pass until the date
+	 * arrived and then fail for a reader with no context. `Test_Loop_Render`
+	 * is the model. `test_the_fixture_series_is_never_in_the_past()` fails by
+	 * name if this is ever re-pinned.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable The fixture anchor start in UTC.
+	 */
+	protected function anchor(): DateTimeImmutable {
+		return $this->now()->modify( '+2 hours' );
+	}
+
+	/**
+	 * Create a published, non-recurring, upcoming event with a datetime range.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $args Extra factory args, e.g. `post_name`.
 	 *
 	 * @return int The created post ID.
 	 */
-	protected function create_event( string $start, string $end, array $args = array() ): int {
+	protected function create_event( array $args = array() ): int {
+		$start = $this->anchor();
+		$end   = $start->modify( '+2 hours' );
+
 		$post_id = $this->factory->post->create(
 			array_merge(
 				array(
@@ -92,8 +125,8 @@ class Test_Backcompat extends Base {
 			'gatherpress_datetime',
 			wp_json_encode(
 				array(
-					'dateTimeStart' => $start,
-					'dateTimeEnd'   => $end,
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
 					'timezone'      => 'UTC',
 				)
 			)
@@ -228,7 +261,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_no_recurring_events_means_zero_additional_queries(): void {
-		$this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+		$this->create_event();
 
 		$this->assertFalse(
 			Query::site_has_recurring_events(),
@@ -292,7 +325,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_posts_clauses_and_the_posts_do_not_touch_occurrence_table(): void {
-		$this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+		$this->create_event();
 
 		$args = $this->upcoming_events_args();
 
@@ -320,11 +353,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_parse_request_bare_series_branch_does_not_touch_occurrence_table(): void {
-		$post_id = $this->create_event(
-			'2026-09-03 18:00:00',
-			'2026-09-03 20:00:00',
-			array( 'post_name' => 'plain-event' )
-		);
+		$post_id = $this->create_event( array( 'post_name' => 'plain-event' ) );
 
 		$this->enable_pretty_permalinks();
 
@@ -366,11 +395,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_parse_request_occurrence_segment_branch_pays_one_read_and_404s(): void {
-		$post_id = $this->create_event(
-			'2026-09-03 18:00:00',
-			'2026-09-03 20:00:00',
-			array( 'post_name' => 'plain-event-occurrence-segment' )
-		);
+		$post_id = $this->create_event( array( 'post_name' => 'plain-event-occurrence-segment' ) );
 
 		$this->enable_pretty_permalinks();
 
@@ -486,11 +511,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_no_options_are_written_across_read_entry_points_when_option_is_zero(): void {
-		$post_id = $this->create_event(
-			'2026-09-03 18:00:00',
-			'2026-09-03 20:00:00',
-			array( 'post_name' => 'plain-event-options' )
-		);
+		$post_id = $this->create_event( array( 'post_name' => 'plain-event-options' ) );
 
 		$this->enable_pretty_permalinks();
 
@@ -543,7 +564,7 @@ class Test_Backcompat extends Base {
 	public function test_upgrade_writes_no_data_and_creates_no_occurrence_rows(): void {
 		global $wpdb;
 
-		$this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+		$this->create_event();
 
 		$table = $this->occurrence_table();
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- simulating a pre-upgrade site.
@@ -590,11 +611,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_enabling_recurrence_preserves_post_id_permalink_and_rsvps(): void {
-		$post_id = $this->create_event(
-			'2026-09-03 18:00:00',
-			'2026-09-03 20:00:00',
-			array( 'post_name' => 'convert-to-recurring' )
-		);
+		$post_id = $this->create_event( array( 'post_name' => 'convert-to-recurring' ) );
 
 		$this->enable_pretty_permalinks();
 
@@ -648,7 +665,7 @@ class Test_Backcompat extends Base {
 	 * @return void
 	 */
 	public function test_disabling_recurrence_removes_occurrences_and_restores_plain_behavior(): void {
-		$post_id = $this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+		$post_id = $this->create_event();
 
 		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( self::DAILY_RULE ) );
 		Meta::get_instance()->set_recurrence( $post_id );
@@ -687,6 +704,168 @@ class Test_Backcompat extends Base {
 		$this->assertFalse(
 			property_exists( $query->posts[0], 'gatherpress_recurrence_id' ),
 			'Failed to assert the disabled series carries no occurrence identity, matching plain-event behavior.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16 on `Occurrences::select_upcoming()`.
+	 *
+	 * `select_by_horizon()` is the shared body behind both `select_upcoming()`
+	 * and `select_past()`, and this class's own docblocks name it as *the*
+	 * occurrence-aware read API for GatherPress's own lists -- so it is what a
+	 * third-party consumer calls, and it is a public entry point in exactly the
+	 * sense preamble rule 6a means. On a site whose
+	 * `gatherpress_has_recurring_events` option is `'0'` it must not name the
+	 * occurrence table in any SQL it issues, and it must still return the
+	 * site's ordinary events.
+	 *
+	 * Measured with a `$wpdb->queries` capture across the real entry point
+	 * rather than against the guard in isolation, because the two REQ-16
+	 * defects this build already shipped both had a passing "performs no
+	 * writes" test that drove the body of the work and never the entry point.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_upcoming
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_select_upcoming_does_not_touch_occurrence_table_when_option_is_zero(): void {
+		$post_id = $this->create_event();
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$refs = array();
+		$sql  = $this->capture_sql(
+			static function () use ( &$refs ): void {
+				$refs = Occurrences::get_instance()->select_upcoming( 50 );
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert select_upcoming() issues no query naming the occurrence table on a site with no'
+				. ' recurring events -- that is REQ-16, and this method is the read API a third party calls.'
+		);
+		$this->assertSame(
+			array( $post_id ),
+			wp_list_pluck( $refs, 'post_id' ),
+			'Failed to assert the anchor-only fallback still returns the site\'s ordinary events.'
+		);
+		$this->assertNull(
+			$refs[0]->recurrence_id,
+			'Failed to assert a non-recurring entry carries no occurrence identity.'
+		);
+	}
+
+	/**
+	 * Coverage for the same guard on `select_past()`, the descending arm.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_past
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_select_past_does_not_touch_occurrence_table_when_option_is_zero(): void {
+		$this->create_event();
+
+		$sql = $this->capture_sql(
+			static function (): void {
+				Occurrences::get_instance()->select_past( 50 );
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert select_past() issues no query naming the occurrence table on a site with no'
+				. ' recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for the guard's other side: once the site does have recurring
+	 * events, `select_upcoming()` expands the series.
+	 *
+	 * Without this, the REQ-16 guard above could be satisfied by a method that
+	 * never reads the occurrence table at all.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_upcoming
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_select_upcoming_expands_a_series_once_the_site_has_recurring_events(): void {
+		$post_id = $this->create_event();
+
+		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( self::DAILY_RULE ) );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site reports recurring events.'
+		);
+
+		$refs = array();
+		$sql  = $this->capture_sql(
+			static function () use ( &$refs ): void {
+				$refs = Occurrences::get_instance()->select_upcoming( 50 );
+			}
+		);
+
+		$this->assertNotSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert select_upcoming() does read the occurrence table once the site has recurring events.'
+		);
+		$this->assertCount(
+			5,
+			$refs,
+			'Failed to assert select_upcoming() returns one entry per projected occurrence.'
+		);
+		$this->assertCount(
+			5,
+			array_unique( wp_list_pluck( $refs, 'recurrence_id' ) ),
+			'Failed to assert every entry carries its own occurrence identity.'
+		);
+	}
+
+	/**
+	 * The date-bomb guard for this file, and it fails by name.
+	 *
+	 * Several tests here put the fixture into an `upcoming` bucket and then
+	 * assert it is what the list shows. A fixture pinned to a literal calendar
+	 * date passes until that date arrives and then fails with a message about
+	 * query expansion, debugged by someone with no context. This asserts the
+	 * one property that makes those tests honest: the shared anchor is always
+	 * ahead of the clock.
+	 *
+	 * If you are reading this because it failed, someone re-pinned
+	 * `anchor()` to a literal date. Make it relative to `now()` again.
+	 *
+	 * @return void
+	 */
+	public function test_the_fixture_series_is_never_in_the_past(): void {
+		$anchor = $this->anchor();
+		$now    = $this->now();
+
+		$this->assertGreaterThan(
+			$now->getTimestamp(),
+			$anchor->getTimestamp(),
+			'Failed to assert this file\'s shared fixture anchor is still ahead of the clock. Someone re-pinned'
+				. ' anchor() to a literal date; make it relative to now() again.'
+		);
+
+		$post_id = $this->create_event();
+		$event   = new Event( $post_id );
+
+		$this->assertFalse(
+			$event->has_event_past(),
+			'Failed to assert an event built from the shared anchor is upcoming rather than past.'
 		);
 	}
 }

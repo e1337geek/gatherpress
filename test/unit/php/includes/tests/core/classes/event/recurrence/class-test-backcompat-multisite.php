@@ -30,6 +30,8 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Query as Event_Query;
 use GatherPress\Core\Event\Recurrence\Context;
@@ -68,14 +70,47 @@ class Test_Backcompat_Multisite extends Base {
 	);
 
 	/**
-	 * Create a published, non-recurring event with a datetime range on the
-	 * currently active blog.
+	 * Build "now" in UTC.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable Current time in UTC.
+	 */
+	protected function now(): DateTimeImmutable {
+		return new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+	}
+
+	/**
+	 * The anchor start every fixture in this file is built from.
+	 *
+	 * Relative to now rather than a literal calendar date:
+	 * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` puts
+	 * the fixture into an `upcoming` bucket and then asserts it is what the
+	 * list shows, which is a comparison against the clock -- a pinned anchor
+	 * would pass until that date arrived and then report the CF-9 regression
+	 * instead of a stale fixture. `test_the_fixture_series_is_never_in_the_past()`
+	 * fails by name if this is ever re-pinned.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable The fixture anchor start in UTC.
+	 */
+	protected function anchor(): DateTimeImmutable {
+		return $this->now()->modify( '+2 hours' );
+	}
+
+	/**
+	 * Create a published, non-recurring, upcoming event on the currently active
+	 * blog.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @return int The created post ID.
 	 */
 	protected function create_event(): int {
+		$start = $this->anchor();
+		$end   = $start->modify( '+2 hours' );
+
 		$post_id = $this->factory->post->create(
 			array(
 				'post_type'   => Event::POST_TYPE,
@@ -88,8 +123,8 @@ class Test_Backcompat_Multisite extends Base {
 			'gatherpress_datetime',
 			wp_json_encode(
 				array(
-					'dateTimeStart' => '2026-09-03 18:00:00',
-					'dateTimeEnd'   => '2026-09-03 20:00:00',
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
 					'timezone'      => 'UTC',
 				)
 			)
@@ -499,5 +534,123 @@ class Test_Backcompat_Multisite extends Base {
 		);
 
 		restore_current_blog();
+	}
+
+	/**
+	 * (d) CF-9 on the one read API the original CF-9 fix did not cover.
+	 *
+	 * `Occurrences::select_upcoming()` shares its body with `select_past()` via
+	 * `select_by_horizon()`, and that body names the occurrence table in both a
+	 * `LEFT JOIN` and a `NOT EXISTS` subquery. On a blog whose
+	 * `gatherpress_has_recurring_events` option is stale at `'1'` while its own
+	 * table has not been created yet, the whole statement fails; `$wpdb`
+	 * swallows the missing-table error and `get_results()` returns `array()`,
+	 * so an ordinary, non-recurring, published event silently disappears from
+	 * this read API with nothing reported anywhere. That is the same shape as
+	 * CF-9, in the method CF-9 did not reach.
+	 *
+	 * The contract asserted here is graceful degradation, not merely "does not
+	 * fatal": the blog must show exactly what it would show with no recurrence
+	 * code present at all, which for an ordinary event is the event itself.
+	 *
+	 * @group multisite
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_upcoming
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_by_horizon
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::table_exists
+	 *
+	 * @return void
+	 */
+	public function test_select_upcoming_degrades_to_anchor_only_when_table_is_absent(): void {
+		global $wpdb;
+
+		$new_site_id = $this->factory()->blog->create();
+
+		switch_to_blog( $new_site_id );
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- simulating the lazy-creation hazard.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		Occurrences::get_instance()->forget_table_exists();
+
+		$post_id = $this->create_event();
+
+		// The hazard is specific to a blog reporting recurring events while its
+		// own table is missing; with the option at '0' REQ-16's guard already
+		// keeps this code path unreached, which is the safe case.
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		$saved              = $wpdb->save_queries;
+		$wpdb->save_queries = true;
+		$wpdb->queries      = array();
+
+		$exception = null;
+		$refs      = array();
+
+		try {
+			$refs = Occurrences::get_instance()->select_upcoming( 50 );
+		} catch ( Throwable $e ) {
+			$exception = $e;
+		}
+
+		$captured = array_column( $wpdb->queries, 0 );
+
+		$wpdb->save_queries = $saved;
+		$wpdb->queries      = array();
+
+		$occurrence_reads = array_values(
+			array_filter(
+				$captured,
+				static function ( string $sql ) use ( $table ): bool {
+					return str_contains( $sql, $table ) && ! str_contains( $sql, 'SHOW TABLES' );
+				}
+			)
+		);
+
+		restore_current_blog();
+
+		$this->assertNull(
+			$exception,
+			'Failed to assert select_upcoming() does not throw when the occurrence table is absent.'
+		);
+		$this->assertSame(
+			array( $post_id ),
+			wp_list_pluck( $refs, 'post_id' ),
+			'Failed to assert a blog missing the occurrence table still sees its ordinary published event --'
+				. ' an empty list here is CF-9: the event silently vanishing with no error surfaced anywhere.'
+		);
+		$this->assertSame(
+			array(),
+			$occurrence_reads,
+			'Failed to assert the anchor-only fallback issues no read against the absent occurrence table.'
+		);
+	}
+
+	/**
+	 * The date-bomb guard for this file, and it fails by name.
+	 *
+	 * If you are reading this because it failed, someone re-pinned `anchor()`
+	 * to a literal date. Make it relative to `now()` again.
+	 *
+	 * @group multisite
+	 *
+	 * @return void
+	 */
+	public function test_the_fixture_series_is_never_in_the_past(): void {
+		$this->assertGreaterThan(
+			$this->now()->getTimestamp(),
+			$this->anchor()->getTimestamp(),
+			'Failed to assert this file\'s shared fixture anchor is still ahead of the clock. Someone re-pinned'
+				. ' anchor() to a literal date; make it relative to now() again.'
+		);
+
+		$post_id = $this->create_event();
+
+		$this->assertFalse(
+			( new Event( $post_id ) )->has_event_past(),
+			'Failed to assert an event built from the shared anchor is upcoming rather than past.'
+		);
 	}
 }

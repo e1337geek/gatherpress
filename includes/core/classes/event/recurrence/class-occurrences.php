@@ -529,6 +529,58 @@ final class Occurrences {
 		$comparison        = $upcoming ? '>=' : '<';
 		$order             = $upcoming ? 'ASC' : 'DESC';
 
+		// REQ-16 and the table-less-blog contract, on this read API as well as
+		// on the `posts_clauses` filter. Both arms must be checked here and not
+		// only in `Query::expand_event_clauses()`: this method is the public
+		// occurrence-aware read entry point, so a caller reaching it directly
+		// would otherwise emit SQL naming the occurrence table on a site with
+		// no recurring events, and would return an empty set -- rather than the
+		// anchor rows -- on a blog where the table is absent, because the
+		// missing table poisons the `LEFT JOIN` / `NOT EXISTS` pair below.
+		//
+		// The fallback keeps the same projection and ordering with the
+		// occurrence join removed entirely, so non-recurring events are
+		// returned exactly as they would be with none of this code present.
+		if ( ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
+			$sql = 'SELECT %i.ID AS post_id, NULL AS recurrence_id,'
+				. ' %i.datetime_start_gmt AS effective_start_gmt'
+				. ' FROM %i'
+				. ' LEFT JOIN %i ON %i.ID = %i.post_id'
+				. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
+				. " HAVING effective_start_gmt {$comparison} %s"
+				. " ORDER BY effective_start_gmt {$order}"
+				. ' LIMIT %d';
+
+			$values = array_merge(
+				array(
+					$wpdb->posts,
+					$events_table,
+					$wpdb->posts,
+					$events_table,
+					$wpdb->posts,
+					$events_table,
+					$wpdb->posts,
+				),
+				$post_types,
+				array(
+					$wpdb->posts,
+					'publish',
+					current_time( 'mysql', true ),
+					$limit,
+				)
+			);
+
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from %i/%s/%d placeholders only.
+			$anchor_rows = $wpdb->get_results( $wpdb->prepare( $sql, $values ), ARRAY_A );
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+			// No lazy repair on this arm: there are no occurrence rows to be
+			// stale, and REQ-16 forbids the write it would attempt.
+			return array_map( array( $this, 'row_to_ref' ), $anchor_rows );
+		}
+
 		$sql = 'SELECT %i.ID AS post_id, scheduled_occurrence.recurrence_id AS recurrence_id,'
 			. ' COALESCE( scheduled_occurrence.datetime_start_gmt, %i.datetime_start_gmt ) AS effective_start_gmt,'
 			. ' COALESCE( scheduled_occurrence.datetime_end_gmt, %i.datetime_end_gmt ) AS effective_end_gmt'
