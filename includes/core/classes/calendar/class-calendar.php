@@ -21,9 +21,17 @@ namespace GatherPress\Core\Calendar;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use DateTimeImmutable;
+use DateTimeZone;
 use Exception;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
+use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
+use GatherPress\Core\Event\Recurrence\Rule;
+use GatherPress\Core\Event\Recurrence\Series;
+use GatherPress\Core\Event\Recurrence\Timezone_Guard;
+use GatherPress\Core\Utility;
 
 /**
  * Per-event calendar wrapper.
@@ -242,12 +250,8 @@ final class Calendar {
 	 * @throws Exception If reading event data fails.
 	 */
 	public function get_ical_event_string(): string {
-		$date_start     = $this->event->get_formatted_datetime( 'Ymd', 'start', false );
-		$time_start     = $this->event->get_formatted_datetime( 'His', 'start', false );
-		$date_end       = $this->event->get_formatted_datetime( 'Ymd', 'end', false );
-		$time_end       = $this->event->get_formatted_datetime( 'His', 'end', false );
-		$datetime_start = sprintf( '%sT%sZ', $date_start, $time_start );
-		$datetime_end   = sprintf( '%sT%sZ', $date_end, $time_end );
+		$timezone       = $this->series_timezone();
+		$occurrence     = $this->current_occurrence();
 		$modified_gmt   = strtotime( $this->event->event->post_modified_gmt );
 		$datetime_stamp = sprintf( '%sT%sZ', gmdate( 'Ymd', $modified_gmt ), gmdate( 'His', $modified_gmt ) );
 		$last_modified  = $datetime_stamp;
@@ -264,22 +268,237 @@ final class Calendar {
 		$description = $this->fold_ical_text( $this->escape_ical_text( $description ) );
 		$location    = $this->fold_ical_text( $this->escape_ical_text( $location ) );
 
-		$args = array(
-			'BEGIN:VEVENT',
-			sprintf( 'URL:%s', esc_url_raw( get_permalink( $this->event->event->ID ) ) ),
-			sprintf( 'DTSTART:%s', sanitize_text_field( $datetime_start ) ),
-			sprintf( 'DTEND:%s', sanitize_text_field( $datetime_end ) ),
-			sprintf( 'DTSTAMP:%s', sanitize_text_field( $datetime_stamp ) ),
-			sprintf( 'LAST-MODIFIED:%s', sanitize_text_field( $last_modified ) ),
-			sprintf( 'SEQUENCE:%d', $sequence ),
-			sprintf( 'SUMMARY:%s', $summary ),
-			sprintf( 'DESCRIPTION:%s', $description ),
-			sprintf( 'LOCATION:%s', $location ),
-			'UID:gatherpress_' . intval( $this->event->event->ID ),
-			'END:VEVENT',
+		$args = array_merge(
+			array(
+				'BEGIN:VEVENT',
+				sprintf( 'URL:%s', esc_url_raw( get_permalink( $this->event->event->ID ) ) ),
+			),
+			$this->datetime_lines( $timezone ),
+			array(
+				sprintf( 'DTSTAMP:%s', sanitize_text_field( $datetime_stamp ) ),
+				sprintf( 'LAST-MODIFIED:%s', sanitize_text_field( $last_modified ) ),
+				sprintf( 'SEQUENCE:%d', $sequence ),
+				sprintf( 'SUMMARY:%s', $summary ),
+				sprintf( 'DESCRIPTION:%s', $description ),
+				sprintf( 'LOCATION:%s', $location ),
+			),
+			$this->recurrence_lines( $timezone, $occurrence ),
+			array(
+				sprintf( 'UID:%s', $this->uid( $occurrence ) ),
+				'END:VEVENT',
+			)
 		);
 
 		return implode( "\r\n", $args );
+	}
+
+	/**
+	 * The event's timezone, when it is one a `TZID` parameter may name.
+	 *
+	 * GatherPress accepts a fixed UTC offset (`UTC+5:30`) where a tz-database
+	 * identifier belongs, and RFC 5545 has no way to express one as a `TZID`.
+	 * An empty string is the signal that this component keeps the bare UTC form
+	 * the plugin has always emitted.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string A named tz-database identifier, or '' when the event has none.
+	 */
+	private function series_timezone(): string {
+		$timezone = Utility::maybe_convert_utc_offset(
+			(string) $this->event->get_datetime()['timezone']
+		);
+
+		return Timezone_Guard::is_named( $timezone ) ? $timezone : '';
+	}
+
+	/**
+	 * The `DTSTART` and `DTEND` properties for this component.
+	 *
+	 * A named timezone produces the `TZID`-qualified local wall clock RFC 5545
+	 * requires before an `RRULE` may be attached; anything else keeps the bare
+	 * UTC form, which is what a fixed-offset event has always emitted and is
+	 * still correct for a component carrying no rule.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $timezone A named tz-database identifier, or '' for none.
+	 *
+	 * @return string[] The two property lines, in order.
+	 */
+	private function datetime_lines( string $timezone ): array {
+		if ( '' === $timezone ) {
+			return array(
+				sprintf(
+					'DTSTART:%sT%sZ',
+					$this->event->get_formatted_datetime( 'Ymd', 'start', false ),
+					$this->event->get_formatted_datetime( 'His', 'start', false )
+				),
+				sprintf(
+					'DTEND:%sT%sZ',
+					$this->event->get_formatted_datetime( 'Ymd', 'end', false ),
+					$this->event->get_formatted_datetime( 'His', 'end', false )
+				),
+			);
+		}
+
+		return array(
+			sprintf(
+				'DTSTART;TZID=%s:%sT%s',
+				$timezone,
+				$this->event->get_formatted_datetime( 'Ymd', 'start', true ),
+				$this->event->get_formatted_datetime( 'His', 'start', true )
+			),
+			sprintf(
+				'DTEND;TZID=%s:%sT%s',
+				$timezone,
+				$this->event->get_formatted_datetime( 'Ymd', 'end', true ),
+				$this->event->get_formatted_datetime( 'His', 'end', true )
+			),
+		);
+	}
+
+	/**
+	 * The occurrence this component describes, when the request named one.
+	 *
+	 * Identity is compared by post ID rather than taken on trust, mirroring
+	 * `Context::resolve()`: one response can render several posts, and only the
+	 * one the occurrence belongs to may claim it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array|null The occurrence row, or null for a series component.
+	 */
+	private function current_occurrence(): ?array {
+		$occurrence = Context::get_instance()->current();
+
+		if ( null === $occurrence
+			|| (int) $occurrence['series_post_id'] !== (int) $this->event->event->ID
+		) {
+			return null;
+		}
+
+		return $occurrence;
+	}
+
+	/**
+	 * The recurrence properties for this component, if it has any.
+	 *
+	 * Two shapes, per REQ-14. A component describing one named occurrence
+	 * carries a `RECURRENCE-ID` referring back to the series and no rule of its
+	 * own. A component describing the series carries the rule and the
+	 * exclusions **derived** from its cancelled occurrence rows -- the stored
+	 * rule is never mutated to express a cancellation (PRD C-5).
+	 *
+	 * Neither shape is emitted without a named timezone: an `RRULE` cannot be
+	 * correctly attached to a UTC-anchored start for anything but a
+	 * fixed-offset series, and a `RECURRENCE-ID` must match `DTSTART`'s value
+	 * type. REQ-3 keeps every recurring event on a named timezone, so this arm
+	 * is a guard rather than an authored case.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string     $timezone   A named tz-database identifier, or '' for none.
+	 * @param array|null $occurrence The occurrence this component describes, or null.
+	 *
+	 * @return string[] The recurrence property lines, possibly empty.
+	 *
+	 * @throws Exception If reading the event's datetime fails.
+	 */
+	private function recurrence_lines( string $timezone, ?array $occurrence ): array {
+		if ( '' === $timezone ) {
+			return array();
+		}
+
+		if ( null !== $occurrence ) {
+			return array(
+				sprintf( 'RECURRENCE-ID;TZID=%s:%s', $timezone, $occurrence['recurrence_id'] ),
+			);
+		}
+
+		// REQ-16: a site with no recurring events reads neither the rule
+		// mirrors nor the occurrence table on any calendar request.
+		if ( ! Recurrence_Query::site_has_recurring_events() ) {
+			return array();
+		}
+
+		$rule = Rule::from_post( $this->event->event->ID );
+
+		if ( null === $rule ) {
+			return array();
+		}
+
+		$zone   = new DateTimeZone( $timezone );
+		$lines  = array(
+			sprintf(
+				'RRULE:%s',
+				$rule->to_rrule_string(
+					new DateTimeImmutable(
+						$this->event->get_formatted_datetime( 'Y-m-d H:i:s', 'start', true ),
+						$zone
+					),
+					$zone
+				)
+			),
+		);
+		$exdate = $this->exdate_line( $timezone );
+
+		if ( '' !== $exdate ) {
+			$lines[] = $exdate;
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * The `EXDATE` property derived from this series' cancelled occurrences.
+	 *
+	 * Read through `Series::resolve_post_ids()` (PRD C-2), so a series a
+	 * forward split has spread across several posts still excludes every date
+	 * it cancelled.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $timezone A named tz-database identifier.
+	 *
+	 * @return string The `EXDATE` line, or '' when nothing is cancelled.
+	 */
+	private function exdate_line( string $timezone ): string {
+		$rows = Occurrences::get_instance()->select_for_series(
+			Series::get_instance()->resolve_post_ids( $this->event->event->ID ),
+			array( 'status' => Occurrences::STATUS_CANCELLED )
+		);
+
+		if ( array() === $rows ) {
+			return '';
+		}
+
+		return sprintf(
+			'EXDATE;TZID=%s:%s',
+			$timezone,
+			implode( ',', array_column( $rows, 'recurrence_id' ) )
+		);
+	}
+
+	/**
+	 * The unique identifier for this component.
+	 *
+	 * RFC 5545 requires a distinct `UID` per component. A series and each of
+	 * its individually downloaded occurrences are distinct components, so the
+	 * occurrence identifier joins the post ID whenever one is in play --
+	 * without it every occurrence of a series collides on the series' own
+	 * identifier and a calendar client keeps only the last one it saw.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array|null $occurrence The occurrence this component describes, or null.
+	 *
+	 * @return string The `UID` value.
+	 */
+	private function uid( ?array $occurrence ): string {
+		$uid = 'gatherpress_' . intval( $this->event->event->ID );
+
+		return null === $occurrence ? $uid : $uid . '_' . $occurrence['recurrence_id'];
 	}
 
 	/**

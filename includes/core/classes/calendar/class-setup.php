@@ -21,6 +21,7 @@ namespace GatherPress\Core\Calendar;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Event\Query;
+use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Shadow_Source;
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
@@ -48,6 +49,21 @@ final class Setup {
 
 	const QUERY_VAR = 'gatherpress_calendar';
 	const ICAL_SLUG = 'ical'; // Hardcoded ical slug — must not be translated or renamed.
+
+	/**
+	 * Endpoint slugs that serve an iCalendar body rather than an off-site redirect.
+	 *
+	 * The single source of truth for "this request is asking for `.ics`", read
+	 * both here and by `Recurrence\Rewrite::maybe_resolve_bare_series()`, which
+	 * must not narrow a series export to one date. The Google and Yahoo
+	 * redirects are deliberately absent: they are single-datetime query strings
+	 * that cannot express recurrence, and REQ-14 accepts them carrying whatever
+	 * occurrence the request resolved to.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	const ICS_SLUGS = array( self::ICAL_SLUG, 'outlook' );
 
 	/**
 	 * Class constructor.
@@ -141,12 +157,18 @@ final class Setup {
 			self::QUERY_VAR,
 			$post_type
 		) )->init();
+		$ics_templates = array_map(
+			fn( string $slug ): Template => new Template( $slug, array( $this, 'get_ical_file_template' ) ),
+			self::ICS_SLUGS
+		);
+
 		( new Post_Type_Single(
-			array(
-				new Template( self::ICAL_SLUG, array( $this, 'get_ical_file_template' ) ),
-				new Template( 'outlook', array( $this, 'get_ical_file_template' ) ),
-				new Redirect( 'google-calendar', array( $this, 'queried_event_google_url' ) ),
-				new Redirect( 'yahoo-calendar', array( $this, 'queried_event_yahoo_url' ) ),
+			array_merge(
+				$ics_templates,
+				array(
+					new Redirect( 'google-calendar', array( $this, 'queried_event_google_url' ) ),
+					new Redirect( 'yahoo-calendar', array( $this, 'queried_event_yahoo_url' ) ),
+				)
 			),
 			self::QUERY_VAR,
 			$post_type
@@ -856,11 +878,16 @@ final class Setup {
 	 */
 	public function get_ics_cache_key(): string {
 		$queried_object = get_queried_object();
+		$occurrence     = Context::get_instance()->current();
 		$scope          = array(
-			'feed'   => is_feed() ? 1 : 0,
-			'paged'  => (int) get_query_var( 'paged' ),
-			'object' => 0,
-			'type'   => '',
+			'feed'       => is_feed() ? 1 : 0,
+			'paged'      => (int) get_query_var( 'paged' ),
+			'object'     => 0,
+			'type'       => '',
+			// A single-occurrence download and its series' own export share a
+			// queried object, so without this the first of the two requested
+			// would be served for the other.
+			'occurrence' => (string) ( $occurrence['recurrence_id'] ?? '' ),
 		);
 
 		if ( $queried_object instanceof WP_Post ) {
