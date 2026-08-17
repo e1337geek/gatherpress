@@ -261,14 +261,32 @@ describe( 'rsvp-response view per-occurrence keying', () => {
 			recurrenceId,
 		} ) );
 
-		rows.forEach( ( { items }, index ) => {
-			getContext.mockReturnValue( contexts[ index ] );
+		/**
+		 * Runs the watch callback over every item of every row, as the runtime
+		 * re-runs it on each element carrying the directive.
+		 */
+		function pass() {
+			rows.forEach( ( { items }, index ) => {
+				getContext.mockReturnValue( contexts[ index ] );
 
-			items.forEach( ( item ) => {
-				getElement.mockReturnValue( { ref: item } );
-				callbacks.processRsvpDropdown();
+				items.forEach( ( item ) => {
+					getElement.mockReturnValue( { ref: item } );
+					callbacks.processRsvpDropdown();
+				} );
 			} );
-		} );
+		}
+
+		// Two passes, and the second is the whole test. On the first,
+		// `processRsvpDropdown` reads the row's own `data-counts`, writes it
+		// into the store, and reads it straight back in the same invocation --
+		// so the per-row vector comes from the DOM read and holds even when
+		// every row shares one store key. The first pass then *deletes* that
+		// attribute, so every later re-run renders from
+		// `state.posts[ postKey ].eventResponses` alone. The Interactivity
+		// runtime performs those re-runs on any store change, which means any
+		// RSVP anywhere on the page.
+		pass();
+		pass();
 
 		expect(
 			rows.map( ( { items } ) => items[ 0 ].textContent.trim() )

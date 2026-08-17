@@ -323,6 +323,57 @@ describe( 'RSVP state across many occurrence rows of one series', () => {
 		expect( requestBodies[ 0 ].recurrence_id ).toBe( OCCURRENCES[ 1 ] );
 	} );
 
+	it( 'sends the guests and anonymity held in the RSVPd row own slice', async () => {
+		const rows = renderPage( OCCURRENCES.length );
+		const contexts = OCCURRENCES.map( ( recurrenceId ) => ( {
+			postId: SERIES_POST_ID,
+			recurrenceId,
+		} ) );
+
+		// The visitor is already attending the second occurrence, with three
+		// guests, anonymously. Only that row's slice carries those values, so a
+		// read keyed on the bare post ID finds nothing, `initPostContext` seeds
+		// a fresh slice, and the toggle silently zeroes both — the visitor is
+		// removed from a date they never touched and their guests vanish.
+		state.posts = {};
+		state.posts[ `${ SERIES_POST_ID }:${ OCCURRENCES[ 1 ] }` ] = {
+			currentUser: { status: 'attending', guests: 3, anonymous: 1 },
+		};
+
+		const trigger = rows[ 1 ].querySelector(
+			'[data-rsvp-status="attending"] .gatherpress-rsvp--trigger-update'
+		);
+
+		getElement.mockReturnValue( { ref: trigger } );
+		getContext.mockReturnValue( contexts[ 1 ] );
+
+		// The post-success branch this trigger takes closes the modal outright,
+		// and the modal manager it reaches for lives outside a bare row. Its own
+		// suite covers that; here only the request body matters, so the two
+		// modal actions are stood in for and put back.
+		const { openModal, closeModal } = actions;
+
+		actions.openModal = jest.fn();
+		actions.closeModal = jest.fn();
+
+		try {
+			actions.updateRsvp( { preventDefault: jest.fn() } );
+
+			await flushRsvpFlow();
+		} finally {
+			actions.openModal = openModal;
+			actions.closeModal = closeModal;
+		}
+
+		expect( requestBodies ).toHaveLength( 1 );
+		expect( requestBodies[ 0 ] ).toMatchObject( {
+			status: 'not_attending',
+			guests: 3,
+			anonymous: 1,
+			recurrence_id: OCCURRENCES[ 1 ],
+		} );
+	} );
+
 	it( 'leaves ordinary non-recurring events keyed and requested exactly as before', async () => {
 		const rows = renderPage( PLAIN_POST_IDS.length );
 		const contexts = PLAIN_POST_IDS.map( ( postId ) => ( { postId } ) );
