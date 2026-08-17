@@ -887,4 +887,71 @@ class Test_Calendar_Recurrence extends Base {
 			'No calendar entry point may write an autoloaded option on a site with no recurring events.'
 		);
 	}
+
+	/**
+	 * The flag, not the absence of a rule, is what keeps a calendar request off
+	 * the occurrence table.
+	 *
+	 * The sibling REQ-16 test above drives a plain event, which has no rule
+	 * mirrors -- so it stays off the occurrence table whether or not the guard
+	 * exists, and deleting the guard leaves it green. Removing that coincidence
+	 * takes an event that *does* carry rule mirrors while the flag says the
+	 * site has none: the option is recomputed from storage on every lifecycle
+	 * event, so the two being out of step is a bug state rather than an
+	 * authored one, and it is exactly the state the guard is there for.
+	 *
+	 * @covers ::recurrence_lines
+	 * @covers ::exdate_line
+	 *
+	 * @return void
+	 */
+	public function test_the_flag_is_what_keeps_a_recurring_event_off_the_occurrence_table(): void {
+		global $wpdb;
+
+		// Both requests below are for the same URL, so the response cache would
+		// serve the first body for the second and there would be no second
+		// request to measure. Turning the cache off makes both of them real.
+		add_filter( 'gatherpress_calendar_max_age', '__return_zero' );
+
+		$post_id = $this->create_weekly_series();
+
+		$this->enable_pretty_permalinks();
+
+		Occurrences::get_instance()->set_status(
+			$post_id,
+			$this->occurrence_id( 1 ),
+			Occurrences::STATUS_CANCELLED
+		);
+
+		$url = $this->series_ical_url( $post_id );
+
+		$this->assertSame(
+			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 1 ) ) ),
+			$this->lines_for( $this->body_for( $url ), 'EXDATE' ),
+			'The fixture must reach the occurrence table while the flag is on, or the guard test proves nothing.'
+		);
+
+		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '0', true );
+
+		$before = count( $wpdb->queries );
+		$body   = $this->body_for( $url );
+
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					array_column( array_slice( $wpdb->queries, $before ), 0 ),
+					static function ( string $sql ) use ( $wpdb ): bool {
+						return str_contains( $sql, $wpdb->prefix . 'gatherpress_event_occurrences' );
+					}
+				)
+			),
+			'A calendar request must not reach the occurrence table while the flag says the site has none.'
+		);
+		$this->assertSame(
+			array(),
+			$this->lines_for( $body, 'RRULE' ),
+			'And it must not read the rule mirrors either.'
+		);
+	}
 }
