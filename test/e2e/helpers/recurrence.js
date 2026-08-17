@@ -20,6 +20,22 @@ const { expect } = require( '@playwright/test' );
  */
 
 /**
+ * Default post content for a seeded event.
+ *
+ * Non-empty so the editor's pattern-picker start page never covers the sidebar
+ * controls a later step interacts with. Includes a linked event-date block so
+ * specs can read the resolved occurrence date straight off the single event
+ * page (bare series URL or a direct occurrence URL).
+ *
+ * @since 0.36.0
+ *
+ * @type {string}
+ */
+const DEFAULT_EVENT_CONTENT =
+	'<!-- wp:gatherpress/event-date {"isLink":true} /-->' +
+	'<!-- wp:paragraph --><p>Seeded by the recurring-events e2e suite.</p><!-- /wp:paragraph -->';
+
+/**
  * Dismiss any modal overlay blocking the block editor (welcome guide,
  * pattern picker, etc). Waits for the overlay to actually detach rather than
  * a fixed timeout, and loops to cover modals that stack.
@@ -167,6 +183,8 @@ async function openEventSettingsPanel( page ) {
  * @param {number}                          [options.durationHours] Event duration in hours.
  * @param {string}                          [options.timezone]      IANA timezone string.
  * @param {string}                          [options.status]        Post status ('publish' or 'draft').
+ * @param {string}                          [options.content]       Post content, defaulting to an event-date block
+ *                                                                  plus a paragraph.
  *
  * @return {Promise<{eventId: number, link: string}>} The created event's ID and permalink.
  */
@@ -177,6 +195,7 @@ async function seedEventWithDatetime( page, {
 	durationHours = 2,
 	timezone = 'America/New_York',
 	status = 'publish',
+	content = DEFAULT_EVENT_CONTENT,
 } = {} ) {
 	// Built entirely from UTC fields, deliberately: `gatherpress_datetime`
 	// wants a naive "local wall clock" string paired with the `timezone`
@@ -204,13 +223,7 @@ async function seedEventWithDatetime( page, {
 		data: {
 			title,
 			status,
-			// Non-empty content so the editor's pattern-picker start page never
-			// covers the sidebar controls a later step interacts with. Includes a
-			// linked event-date block so specs can read the resolved occurrence
-			// date straight off the single event page (bare series URL or a
-			// direct occurrence URL).
-			content: '<!-- wp:gatherpress/event-date {"isLink":true} /-->' +
-				'<!-- wp:paragraph --><p>Seeded by the recurring-events e2e suite.</p><!-- /wp:paragraph -->',
+			content,
 			meta: {
 				gatherpress_datetime: JSON.stringify( {
 					dateTimeStart: fmt( start ),
@@ -526,18 +539,44 @@ async function getEventMeta( page, eventId ) {
  *
  * @since 0.36.0
  *
- * @param {import('@playwright/test').Page} page  Playwright page object, already on an admin page.
- * @param {string}                          title Page title.
+ * @param {import('@playwright/test').Page} page                      Playwright page object, already on an
+ *                                                                    admin page.
+ * @param {string}                          title                     Page title.
+ * @param {Object}                          [options]                 List options.
+ * @param {number}                          [options.perPage]         Rows per page for the loop's query.
+ * @param {boolean}                         [options.withPostContent] Whether each row also renders the event's
+ *                                                                    own content blocks.
+ * @param {string}                          [options.search]          Search term scoping the loop to one series.
  *
  * @return {Promise<{pageId: number, link: string}>} The created page's ID and permalink.
  */
-async function createUpcomingEventsListPage( page, title ) {
-	const content = '<!-- wp:query {"queryId":1,"query":{"perPage":20,"pages":0,"offset":0,' +
+async function createUpcomingEventsListPage(
+	page,
+	title,
+	{ perPage = 20, withPostContent = false, search = '' } = {}
+) {
+	// `core/post-content` is what pulls each row's own blocks -- the RSVP
+	// block and the online-event link among them -- into the loop, which is
+	// the surface beat 5 needs: one post rendered many times, each row
+	// carrying its own occurrence identity.
+	// The event's own content already opens with an `event-date` block, so the
+	// row adds one only when it is not pulling the content in -- two of them in
+	// one row would leave every date lookup ambiguous.
+	const rowBlocks = '<!-- wp:post-title {"isLink":true} /-->' +
+		( withPostContent ? '<!-- wp:post-content /-->' : '<!-- wp:gatherpress/event-date {"isLink":true} /-->' );
+
+	// A `search` term scopes the loop to one series. Without it the list is
+	// every upcoming event on the site, so a spec asserting the *exact* row
+	// vector of one series is at the mercy of how many rows other events push
+	// past `perPage` -- which makes it fail for a reason that has nothing to do
+	// with what it is named for.
+	const content = `<!-- wp:query {"queryId":1,"query":{"perPage":${ perPage },"pages":0,"offset":0,` +
+		`"search":${ JSON.stringify( search ) },` +
 		'"postType":"gatherpress_event","gatherpress_event_query":"upcoming",' +
 		'"include_unfinished":1,"order":"asc","orderBy":"datetime","inherit":false},' +
 		'"namespace":"gatherpress-event-query","className":"gatherpress-event-query"} -->' +
 		'<div class="wp-block-query gatherpress-event-query"><!-- wp:post-template -->' +
-		'<!-- wp:post-title {"isLink":true} /--><!-- wp:gatherpress/event-date {"isLink":true} /-->' +
+		rowBlocks +
 		'<!-- /wp:post-template --></div><!-- /wp:query -->';
 
 	const res = await restRequest( page, {
@@ -547,6 +586,108 @@ async function createUpcomingEventsListPage( page, title ) {
 	} );
 
 	return { pageId: res.id, link: res.link };
+}
+
+/**
+ * Locate every rendered loop row belonging to one series, by its title.
+ *
+ * Returned as a Playwright `Locator` rather than as read values, because
+ * beat 5 has to re-read the same rows after a client-side state change without
+ * reloading the page.
+ *
+ * @since 0.36.0
+ *
+ * @param {import('@playwright/test').Page} page  Playwright page object, already on the list page.
+ * @param {string}                          title The series' post title.
+ *
+ * @return {import('@playwright/test').Locator} The matching rows, in rendered order.
+ */
+function getSeriesRows( page, title ) {
+	return page
+		.locator( '.wp-block-post-template > li, .wp-block-post-template > .wp-block-post' )
+		.filter( { has: page.locator( '.wp-block-post-title', { hasText: title } ) } );
+}
+
+/**
+ * Read the whole per-row vector off a set of loop rows.
+ *
+ * The vector, not one row, is the point. A single-row assertion about an
+ * occurrence's RSVP state passes just as happily when *every* row is
+ * attending — which is precisely the collapsed-store defect (CF-14) beat 5
+ * exists to catch. Reading every row lets a spec assert "this one, and not the
+ * others."
+ *
+ * @since 0.36.0
+ *
+ * @param {import('@playwright/test').Locator} rows Rows returned by `getSeriesRows()`.
+ *
+ * @return {Promise<Array<{dateText: string, href: string|null, recurrenceId: string|undefined,
+ *                         onlineTag: string|null, onlineHref: string|null,
+ *                         rsvpStatus: string|null}>>} One entry per row.
+ */
+async function readSeriesRowVector( rows ) {
+	// Read in one `evaluateAll` round trip rather than a locator per field per
+	// row. Locator-per-field is not just slower: on a row that carries no
+	// online-event block at all, every miss waits out the full action timeout
+	// before it can be caught, so a twelve-row list spends minutes proving
+	// that nothing is there.
+	return rows.evaluateAll( ( elements ) =>
+		elements.map( ( row ) => {
+			const wrapper = row.querySelector( '.gatherpress-online-event__link' );
+			const text = row.querySelector( '.gatherpress-online-event__text' );
+			const rawContext = wrapper ? wrapper.getAttribute( 'data-wp-context' ) : null;
+			// The RSVP block renders every status' inner blocks and hides all
+			// but the current one, so the visible `data-rsvp-status` wrapper is
+			// this row's RSVP state -- server-rendered on load, and swapped by
+			// `callbacks.renderRsvpBlock` after an in-page RSVP.
+			const activeStatus = Array.from( row.querySelectorAll( '[data-rsvp-status]' ) ).find(
+				( node ) => ! node.classList.contains( 'gatherpress--is-hidden' )
+			);
+			const dateEl = row.querySelector( '.wp-block-gatherpress-event-date' );
+			const titleLink = row.querySelector( '.wp-block-post-title a' );
+
+			return {
+				dateText: dateEl ? dateEl.innerText.trim() : '',
+				href: titleLink ? titleLink.getAttribute( 'href' ) : null,
+				recurrenceId: rawContext ? JSON.parse( rawContext ).recurrenceId : undefined,
+				onlineTag: text ? text.tagName : null,
+				onlineHref: text ? text.getAttribute( 'href' ) : null,
+				rsvpStatus: activeStatus ? activeStatus.dataset.rsvpStatus : null,
+			};
+		} )
+	);
+}
+
+/**
+ * Give an event an online-event link and the `online-event` venue term.
+ *
+ * Both are required before `gatherpress/online-event-link` renders anything:
+ * the wrapping `gatherpress/online-event` block returns an empty string unless
+ * the event carries the term, and the link itself comes from the meta. The
+ * term is a real, pre-existing term in the shadow venue taxonomy, looked up by
+ * its slug rather than created here.
+ *
+ * @since 0.36.0
+ *
+ * @param {import('@playwright/test').Page} page    Playwright page object, already on an admin page.
+ * @param {number}                          eventId Event post ID.
+ * @param {string}                          url     The private meeting URL to store.
+ *
+ * @return {Promise<void>}
+ */
+async function makeEventOnline( page, eventId, url ) {
+	const terms = await restRequest( page, { path: '/wp/v2/_gatherpress_venue?slug=online-event' } );
+
+	expect( terms, 'the online-event venue term exists on this site' ).toHaveLength( 1 );
+
+	await restRequest( page, {
+		path: `/wp/v2/gatherpress_events/${ eventId }`,
+		method: 'POST',
+		data: {
+			meta: { gatherpress_online_event_link: url },
+			_gatherpress_venue: [ terms[ 0 ].id ],
+		},
+	} );
 }
 
 /**
@@ -763,6 +904,110 @@ function firstLastWeekdayOnOrAfter( anchor, weekday ) {
 }
 
 /**
+ * Get the Monday-start week bucket a date falls in.
+ *
+ * Mirrors `Expander::week_index()`. PRD D-8: a weekly rule's interval is
+ * counted in Monday-start week buckets, never in seven-day deltas from the
+ * anchor.
+ *
+ * @since 0.36.0
+ *
+ * @param {Date} date Date to bucket.
+ *
+ * @return {number} The bucket index, monotonically increasing with the date.
+ */
+function weekIndex( date ) {
+	const day = dateOnly( date );
+	// Days since a Monday epoch. `getDay()` is Sunday-start, so shift it.
+	const mondayOffset = ( day.getDay() + 6 ) % 7;
+
+	day.setDate( day.getDate() - mondayOffset );
+
+	return Math.round( day.getTime() / ( 24 * 60 * 60 * 1000 ) );
+}
+
+/**
+ * Project the occurrence dates of a weekly rule, independently of the server.
+ *
+ * Mirrors `Expander::matches_weekly()` composed with the day scan: an
+ * occurrence is a date on or after the anchor, on one of the rule's weekdays,
+ * in a week bucket an exact multiple of `interval` from the anchor's own.
+ *
+ * Computed here rather than read back from anything the application produced,
+ * so an assertion built on it is a specification rather than a transcript of
+ * current behavior.
+ *
+ * @since 0.36.0
+ *
+ * @param {Date}     anchor   Series anchor date.
+ * @param {number[]} weekdays Day-of-week numbers, 0 (Sunday) through 6 (Saturday).
+ * @param {number}   interval Week-bucket interval.
+ * @param {number}   count    How many occurrence dates to project.
+ *
+ * @return {Date[]} The projected occurrence dates, in ascending order.
+ */
+function weeklyOccurrences( anchor, weekdays, interval, count ) {
+	const start = dateOnly( anchor );
+	const anchorBucket = weekIndex( start );
+	const dates = [];
+	const cursor = new Date( start.getTime() );
+
+	// A generous scan bound: at the widest interval this suite uses, `count`
+	// occurrences never need more than this many days, and a bounded loop
+	// fails loudly rather than hanging if that assumption ever breaks.
+	for ( let step = 0; ( count * interval * 7 ) + 7 >= step && dates.length < count; step++ ) {
+		if (
+			weekdays.includes( cursor.getDay() ) &&
+			0 === ( weekIndex( cursor ) - anchorBucket ) % interval
+		) {
+			dates.push( new Date( cursor.getTime() ) );
+		}
+
+		cursor.setDate( cursor.getDate() + 1 );
+	}
+
+	expect( dates, `projected ${ count } weekly occurrence dates` ).toHaveLength( count );
+
+	return dates;
+}
+
+/**
+ * Format a date the way the `event-date` block's rendered row leads with it.
+ *
+ * The block renders a full range ("August 25, 2026 6:00 pm to 8:00 pm EDT");
+ * the leading calendar date is the part a projection can predict without
+ * duplicating the site's time formatting.
+ *
+ * @since 0.36.0
+ *
+ * @param {Date} date Date to format.
+ *
+ * @return {string} The date as `Month D, YYYY`.
+ */
+function dateText( date ) {
+	return date.toLocaleDateString( 'en-US', {
+		month: 'long',
+		day: 'numeric',
+		year: 'numeric',
+	} );
+}
+
+/**
+ * Extract the leading `Month D, YYYY` from a rendered event-date row.
+ *
+ * @since 0.36.0
+ *
+ * @param {string} rendered The row's rendered date text.
+ *
+ * @return {string} The leading calendar date, or the whole string when it does not lead with one.
+ */
+function leadingDateText( rendered ) {
+	const match = /^[A-Z][a-z]+ \d{1,2}, \d{4}/.exec( rendered );
+
+	return match ? match[ 0 ] : rendered;
+}
+
+/**
  * Build the `Ymd\THis` recurrence ID for a date at a fixed wall-clock time.
  *
  * `Occurrences::recurrence_id()` formats the occurrence's own local start
@@ -803,12 +1048,19 @@ module.exports = {
 	getEventMeta,
 	createUpcomingEventsListPage,
 	getUpcomingRows,
+	getSeriesRows,
+	readSeriesRowVector,
+	makeEventOnline,
 	deletePost,
 	setSiteTimezone,
 	getSiteTimezone,
 	dateOnly,
 	daysUntilUtcWeekday,
 	nextMatchingWeekday,
+	weekIndex,
+	weeklyOccurrences,
+	dateText,
+	leadingDateText,
 	lastWeekdayOfMonth,
 	firstLastWeekdayOnOrAfter,
 	toRecurrenceId,

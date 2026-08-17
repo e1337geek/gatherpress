@@ -14,40 +14,72 @@ const {
 	seedEventWithDatetime,
 	createUpcomingEventsListPage,
 	getUpcomingRows,
+	getSeriesRows,
+	readSeriesRowVector,
+	makeEventOnline,
 	deletePost,
 	setSiteTimezone,
 	getSiteTimezone,
-	nextMatchingWeekday,
+	weeklyOccurrences,
+	dateText,
+	leadingDateText,
 	firstLastWeekdayOnOrAfter,
 	toRecurrenceId,
 	daysUntilUtcWeekday,
 } = require( '../helpers/recurrence' );
 
 /**
+ * Post content for a series whose rows carry an RSVP block and an
+ * attendee-only online-event link.
+ *
+ * The online-event link is the highest-consequence consumer of occurrence
+ * identity on the front end: it reveals a private meeting URL to attendees
+ * only, so under a store keyed on post ID alone, attending **one** date
+ * surfaced that URL on **every** date of the series.
+ *
+ * @since 0.36.0
+ *
+ * @type {string}
+ */
+const RSVP_EVENT_CONTENT =
+	'<!-- wp:gatherpress/event-date {"isLink":true} /-->' +
+	'<!-- wp:gatherpress/online-event -->' +
+	'<div class="wp-block-gatherpress-online-event"></div>' +
+	'<!-- /wp:gatherpress/online-event -->' +
+	'<!-- wp:gatherpress/rsvp {"patternPicked":true} -->' +
+	'<div class="wp-block-gatherpress-rsvp"></div>' +
+	'<!-- /wp:gatherpress/rsvp -->';
+
+/**
+ * The private meeting URL beat 5 watches for.
+ *
+ * @since 0.36.0
+ *
+ * @type {string}
+ */
+const ONLINE_EVENT_URL = 'https://example.test/private-meeting-room';
+
+/**
  * End-to-end coverage for the recurring-events feature (#80).
  *
- * Covers beats 1-4 of the authoring/browsing journey (authoring a rule and
- * publishing, switching the rule and watching dates change, seeing multiple
- * occurrences in the upcoming list, and following a series link to see a
- * real occurrence's date) plus two specs the build has earned: the
- * recurrence-aware `posts_clauses` leaving an ordinary event alone, and REQ-3
- * (a fixed-offset timezone visibly refuses recurrence).
+ * Covers all six beats of the authoring/browsing journey — authoring a rule
+ * and publishing, switching the rule and watching the dates change, seeing
+ * one row per occurrence in the upcoming list, following a row to that
+ * occurrence's own page, RSVPing to one occurrence without it following to
+ * the next, and cancelling one occurrence (REQ-12) — plus two specs the build
+ * has earned: the recurrence-aware `posts_clauses` leaving an ordinary event
+ * alone, and REQ-3 (a fixed-offset timezone visibly refuses recurrence).
  *
- * RSVP-per-occurrence and cancel-an-occurrence (beats 5-6) are deliberately
- * out of scope — other lanes are still building that surface.
- *
- * Known follow-up, deliberately not written here: occurrence identity is
- * stamped onto the cloned `WP_Post` an occurrence row is rendered from, but
- * nothing reads it back, so every row in the upcoming list renders the
- * series' anchor date and links to the bare series URL. That is being fixed
- * in another lane. Once it lands, two assertions here get to tighten:
- *
- * 1. "Beats 3-4" asserts only `matching.length > 1` for the list. It should
- *    assert the exact projected occurrence dates, in order, against
- *    `nextMatchingWeekday()` — the rows carry `dateText` for exactly that.
- * 2. "Beats 3-4" reaches the occurrence URL by constructing it. It should
- *    instead follow a row's own `href` (also already collected) and land on
- *    that occurrence, which is the journey a reader actually performs.
+ * Beat 5 is the load-bearing one, and it is worth saying why. Three defects
+ * found by hand-testing shared a shape: occurrence identity reached the row
+ * and a consumer did not read it. One of the three — the interactivity store
+ * keyed on post ID alone (CF-14) — was visible **only** in a browser: the
+ * server rendered every row correctly and JavaScript then flattened them to a
+ * single status. PHP tests could not see it, and Jest could prove the key was
+ * right without proving the page was. Beat 5 is the check that catches that
+ * class as a user experiences it, and it asserts the **whole per-row vector**
+ * rather than one row, because a single-row assertion passes just as happily
+ * when every row is attending — which is exactly the bug.
  *
  * Every seeded post — events *and* the list pages — is deleted in a `finally`
  * block so repeated local runs don't accumulate orphans, the site timezone is
@@ -332,6 +364,11 @@ test.describe( 'Recurring events', () => {
 		await gotoAdmin( page );
 		await setSiteTimezone( page, 'America/New_York' );
 
+		// A full editor round trip plus five front-end navigations; give it
+		// room on a loaded CI runner rather than letting a timeout read as a
+		// product failure.
+		test.slow();
+
 		const title = `List expansion ${ Date.now() }`;
 		// Anchored on a Monday, deliberately outside the Tuesday/Thursday
 		// rule below — the anchor date and the rule's first occurrence must
@@ -360,49 +397,70 @@ test.describe( 'Recurring events', () => {
 
 			const { pageId, link: listUrl } = await createUpcomingEventsListPage(
 				page,
-				`Beats 3-4 upcoming list ${ Date.now() }`
+				`Beats 3-4 upcoming list ${ Date.now() }`,
+				{ perPage: 50, search: title }
 			);
 
 			listPageId = pageId;
 
-			const rows = await getUpcomingRows( page, listUrl );
-			const matching = rows.filter( ( row ) => row.title === title );
+			await page.goto( listUrl );
+			await page.waitForLoadState( 'load' );
 
-			// Beat 3: the series shows up as several individual entries in
-			// the upcoming list, not collapsed to a single row at its
-			// anchor date — a 12-occurrence, twice-a-week series easily
-			// clears "more than one" inside the list's default window.
-			//
-			// Deliberately only a count, for now: see the file docblock's
-			// follow-up note. Per-row dates and hrefs are collected but not
-			// asserted because occurrence identity is not yet read back off
-			// the stamped post clone, so every row currently renders the
-			// anchor date. Tightening this before that fix lands would be
-			// writing against a moving target.
-			expect(
-				matching.length,
-				'a recurring series produces more than one entry in the upcoming list'
-			).toBeGreaterThan( 1 );
+			const matching = await readSeriesRowVector( getSeriesRows( page, title ) );
 
 			// The expected occurrence dates are computed independently in JS
-			// (mirroring `Expander::next_scanned_date()` for a weekly rule —
-			// interval only affects which *week* a later occurrence falls in,
-			// not which weekday it lands on, and both dates below sit in the
-			// anchor's own week, at interval offset 0), never read back from
-			// anything the app produced.
+			// (`weeklyOccurrences()` mirrors `Expander::matches_weekly()`
+			// composed with the day scan, Monday-start week buckets and all),
+			// never read back from anything the app produced.
 			const anchorDate = new Date( anchor.year, anchor.month, anchor.day );
-			const firstOccurrence = nextMatchingWeekday( anchorDate, [ 2, 4 ] );
-			const secondOccurrence = nextMatchingWeekday(
-				new Date( firstOccurrence.getTime() + ( 24 * 60 * 60 * 1000 ) ),
-				[ 2, 4 ]
-			);
+			const expected = weeklyOccurrences( anchorDate, [ 2, 4 ], 2, 12 );
+			const [ firstOccurrence, secondOccurrence ] = expected;
 			const seriesBase = seriesLink.replace( /\/$/, '' );
-			const dateText = ( date ) =>
-				date.toLocaleDateString( 'en-US', {
-					month: 'long',
-					day: 'numeric',
-					year: 'numeric',
-				} );
+
+			// Beat 3: the series shows up as one row per occurrence, at the
+			// occurrence's own date, in occurrence order.
+			//
+			// This asserts the exact projected dates rather than
+			// `length > 1`, because `length > 1` is weaker than the property
+			// it is named for: a query that expanded to the right *number* of
+			// rows and rendered the anchor's date into every one of them —
+			// which is precisely what CF-8 measured in a browser — satisfies
+			// a count and fails the requirement.
+			expect(
+				matching.map( ( row ) => leadingDateText( row.dateText ) ),
+				'the upcoming list shows exactly the projected occurrence dates, in order'
+			).toEqual( expected.map( dateText ) );
+
+			// Beat 4, part zero — the journey a reader actually performs:
+			// click a row and land on that row's occurrence. Nothing else in
+			// this file exercises the row's *own* href; every other assertion
+			// below builds the URL itself, so a row that linked to the bare
+			// series (CF-8, measured in a browser) would leave them all green.
+			//
+			// A later row, not the first: the bare-series fallback resolves to
+			// the next-upcoming occurrence, so a row whose href had lost its
+			// occurrence segment entirely would still land on the *first*
+			// occurrence's date and satisfy an assertion aimed at it. The third
+			// row sits in a different interval bucket, and only a preserved
+			// occurrence segment can reach it.
+			const followed = matching[ 2 ];
+			const followedResponse = await page.goto( followed.href );
+			await page.waitForLoadState( 'load' );
+
+			expect(
+				followedResponse.status(),
+				"a row's own link resolves"
+			).toBe( 200 );
+
+			await expect(
+				page.locator( 'body' ),
+				"following a row's own link lands on that row's occurrence date"
+			).toContainText( leadingDateText( followed.dateText ) );
+
+			expect(
+				leadingDateText( followed.dateText ),
+				'and that row is a later occurrence, not the one a bare-series fallback would resolve to'
+			).toBe( dateText( expected[ 2 ] ) );
 
 			// Beat 4, part one: the exact occurrence URL REQ-8 defines
 			// (`{permalink}{Ymd}T{His}/`) resolves and shows that specific
@@ -478,6 +536,349 @@ test.describe( 'Recurring events', () => {
 				page.locator( 'body' ),
 				"the bare series URL does not render the series' own anchor date"
 			).not.toContainText( dateText( anchorDate ) );
+		} finally {
+			await gotoAdmin( page );
+			await deletePost( page, eventId );
+
+			if ( listPageId ) {
+				await deletePost( page, listPageId, 'pages' );
+			}
+		}
+	} );
+
+	test( 'Beat 5: an RSVP on one occurrence does not follow to the next, and neither does the attendee-only link', async ( {
+		page,
+	} ) => {
+		// An editor round trip, a six-row loop rendering each occurrence's own
+		// RSVP block and online-event link, an in-page RSVP and a reload. The
+		// heaviest spec in the file; give it room on a loaded CI runner rather
+		// than letting a timeout read as a product failure.
+		test.slow();
+
+		await gotoAdmin( page );
+		await setSiteTimezone( page, 'America/New_York' );
+
+		const title = `Per-occurrence RSVP ${ Date.now() }`;
+		// Anchored on a Monday, outside the Tuesday/Thursday rule, so the
+		// anchor and the first occurrence are never the same date.
+		const { eventId, anchor } = await seedEventWithDatetime( page, {
+			title,
+			daysFromNow: daysUntilUtcWeekday( 1 ),
+			hour: 18,
+			content: RSVP_EVENT_CONTENT,
+		} );
+
+		let listPageId;
+
+		try {
+			await makeEventOnline( page, eventId, ONLINE_EVENT_URL );
+
+			await openEventEditor( page, eventId );
+			await enableRecurrence( page );
+			await setFrequency( page, { frequency: 'weekly' } );
+			await setWeekdays( page, [ 'Tuesday', 'Thursday' ] );
+			await setEndCondition( page, { endType: 'count', count: 6 } );
+			// Saving from the editor is also what seeds the RSVP block's inner
+			// blocks: the starter markup carries an empty wrapper, and the
+			// block's edit component fills its template in at runtime. A
+			// REST-only fixture would render an RSVP block with nothing in it.
+			await saveEvent( page );
+
+			await gotoAdmin( page );
+
+			const { pageId, link: listUrl } = await createUpcomingEventsListPage(
+				page,
+				`Beat 5 upcoming list ${ Date.now() }`,
+				{ perPage: 50, withPostContent: true, search: title }
+			);
+
+			listPageId = pageId;
+
+			await page.goto( listUrl );
+			await page.waitForLoadState( 'load' );
+
+			const rows = getSeriesRows( page, title );
+			const anchorDate = new Date( anchor.year, anchor.month, anchor.day );
+			const expected = weeklyOccurrences( anchorDate, [ 2, 4 ], 1, 6 );
+			const before = await readSeriesRowVector( rows );
+
+			expect(
+				before.map( ( row ) => leadingDateText( row.dateText ) ),
+				'the list opens on one row per occurrence, in occurrence order'
+			).toEqual( expected.map( dateText ) );
+
+			// Baseline: nobody is attending anything, so the private meeting
+			// URL is withheld on every row. Asserting the vector here is what
+			// makes the vector after the RSVP mean something — without it, a
+			// page that rendered the link everywhere from the start would still
+			// "show the link on the row we RSVPed to".
+			expect(
+				before.map( ( row ) => row.onlineTag ),
+				'before any RSVP, no row exposes the private meeting URL'
+			).toEqual( expected.map( () => 'SPAN' ) );
+
+			expect(
+				before.map( ( row ) => row.onlineHref ),
+				'and no row carries the URL as an href'
+			).toEqual( expected.map( () => null ) );
+
+			// RSVP to the SECOND occurrence, deliberately.
+			//
+			// Rule 3a #8: never pick a fixture where the right answer and the
+			// fallback answer coincide. Every fallback in this subsystem
+			// resolves to the series' *next upcoming* occurrence — which is the
+			// first row. RSVPing to the first row would leave a
+			// request-scoped, series-wide or bare-series read producing exactly
+			// the expected vector. Only a later occurrence separates "the row's
+			// own identity was read" from "something resolved the series from
+			// scratch".
+			const targetIndex = 1;
+			const target = rows.nth( targetIndex );
+
+			expect(
+				before[ targetIndex ].recurrenceId,
+				'the row being RSVPed to publishes its own occurrence identity to the client'
+			).toBe( toRecurrenceId( expected[ targetIndex ], '180000' ) );
+
+			await target.locator( '.gatherpress-modal--trigger-open button' ).first().click();
+
+			const modal = target
+				.locator( '.gatherpress-modal--type-rsvp.gatherpress--is-visible' )
+				.first();
+
+			await expect( modal, "the row's own RSVP modal opens" ).toBeVisible();
+			await modal.locator( '.gatherpress-rsvp--trigger-update button' ).first().click();
+
+			// The client half, asserted WITHOUT reloading. This is the check
+			// nothing else in the build can make: `state.posts` is keyed by
+			// `getPostKey( postId, recurrenceId )`, and if that key ever
+			// collapses back to the post ID alone (CF-14), every row of this
+			// series shares one entry and `sendRsvpApiRequest`'s single write
+			// lights up all six at once. The server markup was already correct
+			// per row; only a browser can see JavaScript flatten it.
+			await expect(
+				target.locator( '.gatherpress-online-event__text' ),
+				'the row that was RSVPed to reveals the private meeting URL'
+			).toHaveAttribute( 'href', ONLINE_EVENT_URL );
+
+			const after = await readSeriesRowVector( rows );
+
+			expect(
+				after.map( ( row ) => row.onlineTag ),
+				'exactly one row exposes the private meeting URL, and it is the one that was RSVPed to'
+			).toEqual( expected.map( ( _date, index ) => ( targetIndex === index ? 'A' : 'SPAN' ) ) );
+
+			expect(
+				after.map( ( row ) => row.onlineHref ),
+				'no sibling occurrence of the same series carries the URL'
+			).toEqual(
+				expected.map( ( _date, index ) => ( targetIndex === index ? ONLINE_EVENT_URL : null ) )
+			);
+
+			expect(
+				after.map( ( row ) => row.rsvpStatus ),
+				'and the RSVP block itself reports attending on that row alone'
+			).toEqual(
+				expected.map( ( _date, index ) => ( targetIndex === index ? 'attending' : 'no_status' ) )
+			);
+
+			// The dates did not shuffle underneath the vector, so the row that
+			// went green is the occurrence it claims to be.
+			expect(
+				after.map( ( row ) => leadingDateText( row.dateText ) ),
+				'the rows are still the same occurrences, in the same order'
+			).toEqual( expected.map( dateText ) );
+
+			// The server half: reload and read it all again. This proves the
+			// RSVP was *written* scoped to one occurrence rather than merely
+			// displayed that way — `Event::maybe_get_online_event_link()` asks
+			// the RSVP store per row, so a series-wide write would light every
+			// row up here even with a perfectly keyed client store.
+			await page.reload();
+			await page.waitForLoadState( 'load' );
+
+			const reloaded = await readSeriesRowVector( getSeriesRows( page, title ) );
+
+			expect(
+				reloaded.map( ( row ) => row.onlineHref ),
+				'after a reload the server still withholds the URL from every other occurrence'
+			).toEqual(
+				expected.map( ( _date, index ) => ( targetIndex === index ? ONLINE_EVENT_URL : null ) )
+			);
+
+			expect(
+				reloaded.map( ( row ) => row.rsvpStatus ),
+				'and the stored RSVP belongs to one occurrence, not to the series'
+			).toEqual(
+				expected.map( ( _date, index ) => ( targetIndex === index ? 'attending' : 'no_status' ) )
+			);
+		} finally {
+			await gotoAdmin( page );
+			await deletePost( page, eventId );
+
+			if ( listPageId ) {
+				await deletePost( page, listPageId, 'pages' );
+			}
+		}
+	} );
+
+	test( 'Beat 6 (REQ-12): a cancelled occurrence leaves the list, still resolves, and says it was cancelled', async ( {
+		page,
+	} ) => {
+		// The organizer path here opens the editor twice — once to author the
+		// rule, once to come back to the Occurrences panel — so give it room on
+		// a loaded CI runner rather than letting a timeout read as a product
+		// failure.
+		test.slow();
+
+		await gotoAdmin( page );
+		await setSiteTimezone( page, 'America/New_York' );
+
+		const title = `Cancel one occurrence ${ Date.now() }`;
+		const { eventId, anchor, link: seriesLink } = await seedEventWithDatetime( page, {
+			title,
+			daysFromNow: daysUntilUtcWeekday( 1 ),
+			hour: 18,
+		} );
+
+		let listPageId;
+
+		try {
+			await openEventEditor( page, eventId );
+			await enableRecurrence( page );
+			await setFrequency( page, { frequency: 'weekly' } );
+			await setWeekdays( page, [ 'Tuesday', 'Thursday' ] );
+			await setEndCondition( page, { endType: 'count', count: 6 } );
+			await saveEvent( page );
+
+			const anchorDate = new Date( anchor.year, anchor.month, anchor.day );
+			const expected = weeklyOccurrences( anchorDate, [ 2, 4 ], 1, 6 );
+
+			// Cancel the SECOND occurrence, not the first — same reason as
+			// beat 5. Cancelling the first would also move what the bare-series
+			// URL resolves to, so "it left the list" could be satisfied by a
+			// resolver that had simply advanced; and an off-by-one in the
+			// panel's own row-to-occurrence mapping would be invisible against
+			// the first row. Cancelling a middle occurrence leaves neighbours
+			// on both sides to prove the rest of the series is untouched.
+			const cancelIndex = 1;
+
+			// Re-open the editor so the Occurrences panel mounts against a
+			// series that already has occurrence rows: its `useEffect` fetches
+			// once, on mount, and the rule was authored after that in the
+			// session above. This is the organizer's own path — the panel is on
+			// the event they come back to, not the one they just created.
+			await openEventEditor( page, eventId );
+
+			const panelRows = page.locator( '.gatherpress-occurrence-row' );
+
+			await expect(
+				panelRows,
+				'the Occurrences panel lists every upcoming occurrence of the series'
+			).toHaveCount( expected.length );
+
+			const cancelRow = panelRows.nth( cancelIndex );
+
+			await expect(
+				cancelRow.locator( '.gatherpress-occurrence-row__date' ),
+				'the panel row about to be cancelled is the occurrence it claims to be'
+			).toContainText( dateText( expected[ cancelIndex ] ) );
+
+			await expect(
+				cancelRow.locator( '.gatherpress-occurrence-row__status' )
+			).toHaveText( 'Scheduled' );
+
+			// Driven through the UI, not the REST route: the button is the path
+			// an organizer takes and the one nothing else in the build covers.
+			await cancelRow.getByRole( 'button', { name: 'Cancel' } ).click();
+
+			await expect(
+				cancelRow.locator( '.gatherpress-occurrence-row__status' ),
+				'the panel reports the occurrence cancelled'
+			).toHaveText( 'Cancelled', { timeout: 20000 } );
+
+			await expect(
+				cancelRow.getByRole( 'button', { name: 'Restore' } ),
+				'and offers to restore it, so the action is reversible'
+			).toBeVisible();
+
+			// Every other panel row is untouched — cancellation is occurrence
+			// state (PRD C-5), never a mutation of the rule.
+			await expect(
+				panelRows.locator( '.gatherpress-occurrence-row__status' ).filter( {
+					hasText: 'Cancelled',
+				} ),
+				'exactly one occurrence is cancelled, not the series'
+			).toHaveCount( 1 );
+
+			await gotoAdmin( page );
+
+			const { pageId, link: listUrl } = await createUpcomingEventsListPage(
+				page,
+				`Beat 6 upcoming list ${ Date.now() }`,
+				{ perPage: 50, search: title }
+			);
+
+			listPageId = pageId;
+
+			await page.goto( listUrl );
+			await page.waitForLoadState( 'load' );
+
+			const remaining = await readSeriesRowVector( getSeriesRows( page, title ) );
+
+			// Half one: it left the upcoming list — and the other five are all
+			// still there, in order. Asserting the whole vector rather than
+			// "the cancelled date is absent" is what separates "one occurrence
+			// was dropped" from "the join went wrong and took the series with
+			// it", which is exactly what a `status = 'scheduled'` predicate in
+			// the WHERE clause rather than the JOIN condition would do.
+			expect(
+				remaining.map( ( row ) => leadingDateText( row.dateText ) ),
+				'the cancelled occurrence leaves the upcoming list and its siblings stay'
+			).toEqual(
+				expected
+					.filter( ( _date, index ) => cancelIndex !== index )
+					.map( dateText )
+			);
+
+			// Half two: its own URL still resolves. REQ-12's second half —
+			// somebody holding a link to the cancelled date has to be *told*,
+			// not 404ed and left guessing.
+			const cancelledUrl =
+				`${ seriesLink.replace( /\/$/, '' ) }/` +
+				`${ toRecurrenceId( expected[ cancelIndex ], '180000' ) }/`;
+			const response = await page.goto( cancelledUrl );
+			await page.waitForLoadState( 'load' );
+
+			expect(
+				response.status(),
+				"a cancelled occurrence's URL still resolves rather than 404ing"
+			).toBe( 200 );
+
+			// Half three: the page says so, on the occurrence's own date.
+			await expect(
+				page.locator( '.gatherpress-occurrence-cancelled-notice' ),
+				'the cancelled occurrence says it was cancelled'
+			).toHaveText( 'This occurrence has been cancelled.' );
+
+			await expect(
+				page.locator( 'body' ),
+				"and is still the occurrence's own date, not the series' anchor"
+			).toContainText( dateText( expected[ cancelIndex ] ) );
+
+			// A sibling occurrence's page carries no such notice — the notice
+			// is scoped to the cancelled row, not prepended to the series.
+			const siblingUrl =
+				`${ seriesLink.replace( /\/$/, '' ) }/` +
+				`${ toRecurrenceId( expected[ cancelIndex + 1 ], '180000' ) }/`;
+
+			await page.goto( siblingUrl );
+			await page.waitForLoadState( 'load' );
+
+			await expect(
+				page.locator( '.gatherpress-occurrence-cancelled-notice' ),
+				'a scheduled sibling occurrence carries no cancellation notice'
+			).toHaveCount( 0 );
 		} finally {
 			await gotoAdmin( page );
 			await deletePost( page, eventId );
