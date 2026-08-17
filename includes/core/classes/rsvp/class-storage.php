@@ -26,6 +26,7 @@ use GatherPress\Core\Rsvp\Response\State;
 use GatherPress\Core\Rsvp\Response\Status;
 use InvalidArgumentException;
 use WP_Comment;
+use WP_Term;
 
 /**
  * Class Storage.
@@ -272,10 +273,8 @@ final class Storage {
 			}
 		}
 
-		if ( empty( $non_cached_ids ) ) {
-			return;
-		}
-
+		// No early return for an empty set: `wp_get_object_terms()` bails on one
+		// itself, so a guard here would be a branch no test could distinguish.
 		$non_cached_ids = array_unique( $non_cached_ids );
 		$terms          = wp_get_object_terms(
 			$non_cached_ids,
@@ -287,10 +286,26 @@ final class Storage {
 			)
 		);
 
+		// Only when one of the two taxonomies is not registered, which is a
+		// misconfigured request rather than a state worth caching an answer for.
+		if ( is_wp_error( $terms ) ) {
+			return;
+		}
+
 		$object_terms = array();
 
-		foreach ( (array) $terms as $term ) {
-			$object_terms[ $term->object_id ][ $term->taxonomy ][] = $term->term_id;
+		/**
+		 * Terms carrying the object they belong to, as `all_with_object_id` returns them.
+		 *
+		 * @var WP_Term[] $terms
+		 */
+		foreach ( $terms as $term ) {
+			// Read through `to_array()`: `all_with_object_id` attaches
+			// `object_id` as a dynamic property, which is not part of WP_Term's
+			// declared shape.
+			$fields = $term->to_array();
+
+			$object_terms[ $fields['object_id'] ][ $fields['taxonomy'] ][] = $fields['term_id'];
 		}
 
 		foreach ( $non_cached_ids as $comment_id ) {

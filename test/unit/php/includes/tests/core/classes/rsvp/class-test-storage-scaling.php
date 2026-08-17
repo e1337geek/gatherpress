@@ -25,8 +25,10 @@
 namespace GatherPress\Tests\Core\Rsvp;
 
 use GatherPress\Core\Event;
+use GatherPress\Core\Rsvp\Response\Provider\Base as Provider;
 use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Rsvp\Rsvp;
+use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
 use GatherPress\Core\Rsvp\Storage;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
@@ -249,6 +251,35 @@ class Test_Storage_Scaling extends Base {
 			array(),
 			get_object_term_cache( $comment_id, Status::TAXONOMY ),
 			'Failed to assert a comment with no status term caches an empty answer rather than a miss.'
+		);
+	}
+
+	/**
+	 * Priming gives up when one of the two taxonomies is not registered.
+	 *
+	 * @covers ::prime_term_cache
+	 *
+	 * @return void
+	 */
+	public function test_prime_term_cache_bails_when_a_taxonomy_is_unregistered(): void {
+		$post_id    = $this->create_event();
+		$comment_id = $this->create_one_rsvp( $post_id );
+		$storage    = new Storage( $post_id );
+
+		clean_object_term_cache( array( $comment_id ), 'comment' );
+		unregister_taxonomy( Status::TAXONOMY );
+
+		Utility::invoke_hidden_method( $storage, 'prime_term_cache', array( array( $comment_id ) ) );
+
+		$cached = get_object_term_cache( $comment_id, Provider::TAXONOMY );
+
+		// Re-registered before asserting, so a failure does not leave the
+		// taxonomy missing for every test that runs after this one.
+		Rsvp_Setup::get_instance()->register_taxonomy();
+
+		$this->assertFalse(
+			$cached,
+			'Failed to assert nothing is cached when the term lookup could not be made.'
 		);
 	}
 
