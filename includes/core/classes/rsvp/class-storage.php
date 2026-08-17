@@ -13,6 +13,7 @@ namespace GatherPress\Core\Rsvp;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Rsvp\Response\Data;
 use GatherPress\Core\Rsvp\Response\Identity;
 use GatherPress\Core\Rsvp\Response\Identity_Type;
@@ -97,6 +98,7 @@ final class Storage {
 
 		// Add the identity of the RSVP response.
 		$args = wp_parse_args( $this->get_identity_query_args( $identity ), $args );
+		$args = $this->scope_to_occurrence( $args );
 
 		$rsvp = $this->rsvp_query->get_rsvp( $args );
 
@@ -174,6 +176,15 @@ final class Storage {
 		// from, so without this term their responses could never load.
 		wp_set_object_terms( $comment_id, $intent->provider->get_slug(), Provider::TAXONOMY );
 
+		// Bind the response to the occurrence the request is rendering, so the
+		// same responder can hold an independent RSVP on every date in a
+		// series rather than one that follows them across all of them.
+		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $this->post_id );
+
+		if ( null !== $recurrence_id ) {
+			Rsvp_Occurrence::get_instance()->assign( $comment_id, $this->post_id, $recurrence_id );
+		}
+
 		if ( $intent->data->guests ) {
 			update_comment_meta( $comment_id, 'gatherpress_rsvp_guests', $intent->data->guests );
 		} else {
@@ -204,7 +215,9 @@ final class Storage {
 			'status'  => 'approve',
 		);
 
-		$comments = $this->rsvp_query->get_rsvps( $args );
+		$comments = $this->rsvp_query->get_rsvps( $this->scope_to_occurrence( $args ) );
+
+		$this->prime_term_cache( array_map( 'intval', wp_list_pluck( $comments, 'comment_ID' ) ) );
 
 		$states = array();
 
@@ -217,6 +230,115 @@ final class Storage {
 		}
 
 		return $states;
+	}
+
+	/**
+	 * Fetch every comment's status and provider terms in a single query.
+	 *
+	 * Hydration reads one status term and one provider term per comment, and
+	 * asking for them a comment at a time made a full read cost two queries per
+	 * stored RSVP. Because every write reads the whole set — once through
+	 * `Rsvp::attending_limit_reached()` and once through
+	 * `Rsvp::check_waiting_list()` — the cost of the nth response was
+	 * proportional to n, and filling an event was quadratic.
+	 *
+	 * This mirrors `update_object_term_cache()` rather than calling it, because
+	 * that function primes every taxonomy registered on comments. Naming the
+	 * two taxonomies hydration actually reads keeps the occurrence taxonomy out
+	 * of the SQL a site with no recurring events runs (REQ-16), and skips work
+	 * for a term nothing here goes on to read.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[] $comment_ids RSVP comment IDs about to be hydrated.
+	 *
+	 * @return void
+	 */
+	private function prime_term_cache( array $comment_ids ): void {
+		if ( empty( $comment_ids ) ) {
+			return;
+		}
+
+		$taxonomies     = array( Status::TAXONOMY, Provider::TAXONOMY );
+		$non_cached_ids = array();
+
+		foreach ( $taxonomies as $taxonomy ) {
+			$cached = wp_cache_get_multiple( $comment_ids, sprintf( '%s_relationships', $taxonomy ) );
+
+			foreach ( $cached as $comment_id => $value ) {
+				if ( false === $value ) {
+					$non_cached_ids[] = (int) $comment_id;
+				}
+			}
+		}
+
+		if ( empty( $non_cached_ids ) ) {
+			return;
+		}
+
+		$non_cached_ids = array_unique( $non_cached_ids );
+		$terms          = wp_get_object_terms(
+			$non_cached_ids,
+			$taxonomies,
+			array(
+				'fields'                 => 'all_with_object_id',
+				'orderby'                => 'name',
+				'update_term_meta_cache' => false,
+			)
+		);
+
+		$object_terms = array();
+
+		foreach ( (array) $terms as $term ) {
+			$object_terms[ $term->object_id ][ $term->taxonomy ][] = $term->term_id;
+		}
+
+		foreach ( $non_cached_ids as $comment_id ) {
+			foreach ( $taxonomies as $taxonomy ) {
+				// An RSVP with no term in a taxonomy still caches the empty
+				// answer, so the next read does not go looking for it again.
+				wp_cache_add(
+					$comment_id,
+					$object_terms[ $comment_id ][ $taxonomy ] ?? array(),
+					sprintf( '%s_relationships', $taxonomy )
+				);
+			}
+		}
+	}
+
+	/**
+	 * Narrow comment query args to the occurrence the request is rendering.
+	 *
+	 * The scoping rides the `tax_query` var `Rsvp\Query::taxonomy_query()`
+	 * already splices into the comment clauses, so no new SQL, filter, or table
+	 * is involved. Outside occurrence context — and on every site with no
+	 * recurring events at all — the args are returned untouched (REQ-16).
+	 *
+	 * `cache_domain` is set alongside it deliberately.
+	 * `WP_Comment_Query::get_comments()` builds its cache key from its own
+	 * declared query vars only, and `tax_query` is not one of them, so two
+	 * occurrences' queries would otherwise hash to the same key and the second
+	 * would be served the first one's comment IDs. `cache_domain` is a declared
+	 * var, so varying it is what actually varies the key.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $args Comment query args.
+	 *
+	 * @return array The args, scoped to one occurrence when the request is rendering one.
+	 */
+	private function scope_to_occurrence( array $args ): array {
+		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $this->post_id );
+
+		if ( null === $recurrence_id ) {
+			return $args;
+		}
+
+		// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query
+		$args['tax_query']    = Rsvp_Occurrence::get_instance()->tax_query( $this->post_id, $recurrence_id );
+		$args['cache_domain'] = sprintf( 'gatherpress_occurrence_%s', $recurrence_id );
+
+		return $args;
 	}
 
 	/**
@@ -377,6 +499,11 @@ final class Storage {
 	/**
 	 * Get a single term slug of a taxonomy for an object.
 	 *
+	 * Reads the object term cache first, which `all()` primes for the whole
+	 * result set in a single query. `get_object_term_cache()` returns false —
+	 * not an empty array — when the object has not been primed, and that is the
+	 * only case that still costs a query of its own.
+	 *
 	 * @since 0.35.0
 	 *
 	 * @param int    $id       The object ID.
@@ -385,7 +512,11 @@ final class Storage {
 	 * @return string|null The first term's slug, or null when the object has none.
 	 */
 	private function get_value_from_object_terms( int $id, string $taxonomy ): ?string {
-		$terms = wp_get_object_terms( $id, $taxonomy );
+		$terms = get_object_term_cache( $id, $taxonomy );
+
+		if ( false === $terms ) {
+			$terms = wp_get_object_terms( $id, $taxonomy );
+		}
 
 		if ( ! empty( $terms ) && is_array( $terms ) ) {
 			return $terms[0]->slug;

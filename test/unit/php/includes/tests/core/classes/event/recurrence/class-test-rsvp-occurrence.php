@@ -608,6 +608,110 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
+	 * Coverage for `__construct` and `setup_hooks`.
+	 *
+	 * @covers ::__construct
+	 * @covers ::setup_hooks
+	 *
+	 * @return void
+	 */
+	public function test_setup_hooks(): void {
+		$instance = Rsvp_Occurrence::get_instance();
+		$hooks    = array(
+			array(
+				'type'     => 'action',
+				'name'     => 'delete_comment',
+				'priority' => 10,
+				'callback' => array( $instance, 'delete_term_relationships' ),
+			),
+		);
+
+		$this->assert_hooks( $hooks, $instance );
+	}
+
+	/**
+	 * Deleting a comment that is not an RSVP touches no term relationships.
+	 *
+	 * @covers ::delete_term_relationships
+	 *
+	 * @return void
+	 */
+	public function test_delete_term_relationships_ignores_non_rsvp_comments(): void {
+		Rsvp_Setup::get_instance()->register_taxonomy();
+
+		$comment_id = (int) $this->factory->comment->create();
+
+		Rsvp_Occurrence::get_instance()->assign( $comment_id, 12, self::OCCURRENCE_A );
+
+		// A plain comment reaching the callback, and the same call with no
+		// comment object at all — the shape WordPress uses in a few legacy
+		// `do_action( 'delete_comment', $id )` call sites.
+		Rsvp_Occurrence::get_instance()->delete_term_relationships( $comment_id, get_comment( $comment_id ) );
+		Rsvp_Occurrence::get_instance()->delete_term_relationships( $comment_id );
+
+		$this->assertSame(
+			1,
+			$this->relationship_count( $comment_id, Rsvp_Occurrence::TAXONOMY ),
+			'Failed to assert a non-RSVP comment is left alone by the RSVP relationship cleanup.'
+		);
+	}
+
+	/**
+	 * On a non-recurring site the cleanup never names the occurrence taxonomy.
+	 *
+	 * @covers ::delete_term_relationships
+	 *
+	 * @return void
+	 */
+	public function test_delete_term_relationships_skips_the_occurrence_taxonomy_off_a_recurring_site(): void {
+		global $wpdb;
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+		$user_id = $this->factory->user->create();
+
+		Recurrence_Query::refresh_has_recurring_events();
+
+		$comment_id = (int) ( new Rsvp( $post_id ) )->save( $user_id, 'attending' )['comment_id'];
+
+		$query_count_before = count( $wpdb->queries );
+
+		wp_delete_comment( $comment_id, true );
+
+		$queries_since = array_slice( $wpdb->queries, $query_count_before );
+
+		$this->assertNotEmpty(
+			$queries_since,
+			'Failed to capture any queries; SAVEQUERIES must be on for this assertion to mean anything.'
+		);
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$queries_since,
+					static function ( array $query ): bool {
+						return str_contains( $query[0], Rsvp_Occurrence::TAXONOMY );
+					}
+				)
+			),
+			'Failed to assert a non-recurring site never queries the occurrence taxonomy on delete.'
+		);
+		$this->assertSame(
+			array(
+				Status::TAXONOMY          => 0,
+				Provider::TAXONOMY        => 0,
+				Rsvp_Occurrence::TAXONOMY => 0,
+			),
+			$this->all_relationship_counts( $comment_id ),
+			'Failed to assert the pre-existing status and provider orphans are cleaned on a non-recurring site too.'
+		);
+	}
+
+	/**
 	 * Hard-deleting an RSVP comment leaves no orphaned term relationships.
 	 *
 	 * Core's `wp_delete_comment()` never removes term relationships, so all

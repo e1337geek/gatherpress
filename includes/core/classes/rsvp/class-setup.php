@@ -15,6 +15,7 @@ namespace GatherPress\Core\Rsvp;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Rsvp\Response\Provider\Base as Provider;
 use GatherPress\Core\Rsvp\Response\Provider_Registry;
 use GatherPress\Core\Rsvp\Response\Status;
@@ -82,6 +83,11 @@ final class Setup {
 		Form::get_instance();
 		Query::get_instance();
 		Provider_Registry::get_instance();
+
+		// Owns the occurrence link on an RSVP comment, and with it the
+		// `delete_comment` cleanup that keeps all three RSVP comment
+		// taxonomies from orphaning relationship rows.
+		Rsvp_Occurrence::get_instance();
 	}
 
 	/**
@@ -168,6 +174,25 @@ final class Setup {
 				'publicly_queryable' => false,
 				'rewrite'            => false,
 				'show_in_rest'       => true,
+			)
+		);
+
+		// The occurrence link is an internal join key rather than a vocabulary
+		// anyone browses or edits, so unlike the two above it is private and
+		// withheld from REST.
+		register_taxonomy(
+			Rsvp_Occurrence::TAXONOMY,
+			'comment',
+			array(
+				'labels'             => array(),
+				'hierarchical'       => false,
+				'public'             => false,
+				'show_ui'            => false,
+				'show_admin_column'  => false,
+				'query_var'          => false,
+				'publicly_queryable' => false,
+				'rewrite'            => false,
+				'show_in_rest'       => false,
 			)
 		);
 	}
