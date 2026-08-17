@@ -187,25 +187,13 @@ class Test_Projection_Cron extends Base {
 		);
 	}
 
-	/**
-	 * Coverage for `run_sweep()`'s early-return branch, driven through the
-	 * real cron hook rather than a direct call.
-	 *
-	 * @covers ::run_sweep
-	 *
-	 * @return void
-	 */
-	public function test_run_sweep_does_nothing_when_site_has_no_recurring_events(): void {
-		Query::refresh_has_recurring_events();
-
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
-		do_action( Projection_Cron::SWEEP_ACTION );
-
-		$this->assertFalse(
-			Query::site_has_recurring_events(),
-			'Failed to assert the fixture site still has no recurring events after the sweep.'
-		);
-	}
+	// Coverage for run_sweep()'s early-return branch lives in
+	// Test_Occurrences::test_scheduled_job_performs_no_writes_on_a_site_with_no_recurring_events(),
+	// which fires this same real cron hook and asserts against a $wpdb->queries
+	// capture. A prior version of this test asserted only that
+	// site_has_recurring_events() was still false after the sweep -- a
+	// tautology, since nothing in run_sweep() can write that option regardless
+	// of whether the guard runs; removing the guard left that assertion green.
 
 	/**
 	 * Coverage for `run_sweep()`'s top-up branch, driven through the real
@@ -293,6 +281,30 @@ class Test_Projection_Cron extends Base {
 		$this->assertFalse(
 			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
 			'Failed to assert that deactivate() is a harmless no-op when nothing was scheduled.'
+		);
+	}
+
+	/**
+	 * Coverage for `setup_hooks()`'s `register_deactivation_hook()` call.
+	 * Both deactivation tests above call `deactivate()` directly, so neither
+	 * would fail if the `register_deactivation_hook()` line were removed --
+	 * this asserts the registration itself, the same shape as the
+	 * cron-wiring gap a prior review round caught for `run_sweep()`.
+	 *
+	 * @covers ::setup_hooks
+	 *
+	 * @return void
+	 */
+	public function test_deactivation_hook_is_registered(): void {
+		$instance = Projection_Cron::get_instance();
+
+		$this->assertSame(
+			10,
+			has_action(
+				'deactivate_' . plugin_basename( GATHERPRESS_CORE_FILE ),
+				array( $instance, 'deactivate' )
+			),
+			'Failed to assert that deactivate() is registered on the real WordPress deactivation hook.'
 		);
 	}
 }

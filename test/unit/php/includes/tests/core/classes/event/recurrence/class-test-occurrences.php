@@ -1734,13 +1734,18 @@ class Test_Occurrences extends Base {
 	 *
 	 * @since 0.36.0
 	 *
+	 * @param int $horizon_months Horizon, in months, used only while creating
+	 *                             the fixture -- smaller values produce a
+	 *                             more-stale series once the filter is
+	 *                             removed and the real horizon applies again.
+	 *
 	 * @return array{0: int, 1: DateTimeImmutable} The post ID and its anchor.
 	 */
-	protected function create_short_horizon_never_ending_series(): array {
+	protected function create_short_horizon_never_ending_series( int $horizon_months = 1 ): array {
 		$timezone = new DateTimeZone( 'America/New_York' );
 		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 weeks' );
 
-		$short_horizon = static fn() => 1;
+		$short_horizon = static fn() => $horizon_months;
 		add_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
 
 		$post_id = $this->create_relative_recurring_event(
@@ -1758,6 +1763,63 @@ class Test_Occurrences extends Base {
 		remove_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
 
 		return array( $post_id, $anchor );
+	}
+
+	/**
+	 * Create a `COUNT`-bounded weekly series, fully in the past and complete.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $count Occurrence count.
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_completed_count_series( int $count = 3 ): int {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$far_past = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 years' );
+
+		return $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $far_past->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => $count,
+			),
+			$far_past,
+			$far_past->modify( '+2 hours' ),
+			'America/New_York'
+		);
+	}
+
+	/**
+	 * Create an `UNTIL`-bounded weekly series whose `until` has already
+	 * passed -- complete, in the same sense a `COUNT`-bounded series is
+	 * complete: `Expander::expand()`'s `past_until()` guard means nothing
+	 * further will ever be produced for it, no matter how far its latest
+	 * projected occurrence sits below `resolve_top_up_cutoff()`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_completed_until_series(): int {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$far_past = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 years' );
+		$until    = $far_past->modify( '+3 weeks' );
+
+		return $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $far_past->format( 'w' ) ),
+				'end_type'  => 'until',
+				'until'     => $until->format( 'Y-m-d' ),
+			),
+			$far_past,
+			$far_past->modify( '+2 hours' ),
+			'America/New_York'
+		);
 	}
 
 	/**
@@ -1865,6 +1927,14 @@ class Test_Occurrences extends Base {
 	 * never be re-projected by the sweep, however far its (fixed, final)
 	 * latest occurrence sits in the past.
 	 *
+	 * Asserts on the candidate list and on a `$wpdb->queries` capture, not on
+	 * row equality -- `project()` is value-idempotent, so a row-equality
+	 * assertion (`assertSame( $before, $after )`) would pass whether or not
+	 * the sweep actually re-projected this series, and is decorative on its
+	 * own. This series is the only recurring series present, so "the sweep
+	 * issues no write against the occurrence table" is unambiguous proof it
+	 * was never a candidate, not a coincidence of unchanged values.
+	 *
 	 * @covers ::select_series_needing_top_up
 	 * @covers ::top_up
 	 *
@@ -1873,24 +1943,13 @@ class Test_Occurrences extends Base {
 	public function test_count_bounded_rule_is_not_re_projected_by_the_sweep(): void {
 		global $wpdb;
 
-		$timezone = new DateTimeZone( 'America/New_York' );
-		$far_past = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 years' );
+		$post_id = $this->create_completed_count_series( 3 );
 
-		$post_id = $this->create_relative_recurring_event(
-			array(
-				'frequency' => 'weekly',
-				'interval'  => 1,
-				'weekdays'  => array( (int) $far_past->format( 'w' ) ),
-				'end_type'  => 'count',
-				'count'     => 3,
-			),
-			$far_past,
-			$far_past->modify( '+2 hours' ),
-			'America/New_York'
+		$this->assertCount(
+			3,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the count-bounded fixture wrote exactly 3 rows.'
 		);
-
-		$before = Occurrences::get_instance()->select_for_series( array( $post_id ) );
-		$this->assertCount( 3, $before, 'Failed to assert the count-bounded fixture wrote exactly 3 rows.' );
 
 		$this->assertNotContains(
 			$post_id,
@@ -1900,15 +1959,167 @@ class Test_Occurrences extends Base {
 
 		Query::refresh_has_recurring_events();
 
+		$occurrences_table  = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$query_count_before = count( $wpdb->queries );
+
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
 		do_action( Projection_Cron::SWEEP_ACTION );
 
-		$after = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$queries_since       = array_slice( $wpdb->queries, $query_count_before );
+		$touched_occurrences = array_values(
+			array_filter(
+				$queries_since,
+				static function ( $query ) use ( $occurrences_table ) {
+					return str_contains( $query[0], $occurrences_table )
+						&& (bool) preg_match( '/^\s*(INSERT|UPDATE|DELETE|REPLACE)/i', $query[0] );
+				}
+			)
+		);
 
 		$this->assertSame(
-			$before,
-			$after,
-			'Failed to assert that the count-bounded series rows were untouched by the sweep.'
+			array(),
+			$touched_occurrences,
+			'Failed to assert that the sweep issued no write against the occurrence table for a count-bounded series.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: an `UNTIL`-bounded rule whose latest projected
+	 * occurrence has already reached its `until` date is complete in the
+	 * same sense a `COUNT`-bounded rule is complete -- `Expander::expand()`'s
+	 * `past_until()` guard means nothing further will ever be produced, so
+	 * it must never be re-projected by the sweep either.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 * @covers ::has_reached_until
+	 *
+	 * @return void
+	 */
+	public function test_until_bounded_rule_is_not_re_projected_by_the_sweep(): void {
+		global $wpdb;
+
+		$post_id = $this->create_completed_until_series();
+
+		$rows_before = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$this->assertNotEmpty( $rows_before, 'Failed to assert the until-bounded fixture wrote at least one row.' );
+
+		$this->assertNotContains(
+			$post_id,
+			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
+			'Failed to assert that select_series_needing_top_up excludes a completed until-bounded series.'
+		);
+
+		Query::refresh_has_recurring_events();
+
+		$occurrences_table  = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$query_count_before = count( $wpdb->queries );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
+		do_action( Projection_Cron::SWEEP_ACTION );
+
+		$queries_since       = array_slice( $wpdb->queries, $query_count_before );
+		$touched_occurrences = array_values(
+			array_filter(
+				$queries_since,
+				static function ( $query ) use ( $occurrences_table ) {
+					return str_contains( $query[0], $occurrences_table )
+						&& (bool) preg_match( '/^\s*(INSERT|UPDATE|DELETE|REPLACE)/i', $query[0] );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$touched_occurrences,
+			'Failed to assert that the sweep issued no write against the occurrence table for a completed'
+				. ' until-bounded series.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: three completed series with lower post IDs must not
+	 * starve a genuinely open-ended, stale series out of a smaller batch.
+	 * This is the measured regression from review: `LIMIT` with no `ORDER BY`
+	 * deterministically returns the lowest-ID group keys, so three completed
+	 * `until` series created before an open-ended one would occupy every slot
+	 * of a batch of 3 forever, and the open-ended series would never
+	 * reach its own real horizon -- the exact ship-blocker REQ-6 exists to
+	 * close, one indirection later.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_completed_series_do_not_starve_an_open_ended_series_out_of_the_batch(): void {
+		$this->create_completed_until_series();
+		$this->create_completed_until_series();
+		$this->create_completed_until_series();
+
+		list( $open_ended_id ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+
+		$far_future = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '+6 months' )
+			->format( 'Y-m-d H:i:s' );
+
+		$before_rows = Occurrences::get_instance()->select_for_series( array( $open_ended_id ) );
+		$this->assertEmpty(
+			array_filter( $before_rows, static fn( $row ) => $row['datetime_start_gmt'] > $far_future ),
+			'Failed to assert the open-ended fixture had nothing projected six months out before the sweep.'
+		);
+
+		$candidates = Occurrences::get_instance()->select_series_needing_top_up( 3 );
+
+		$this->assertSame(
+			array( $open_ended_id ),
+			$candidates,
+			'Failed to assert that the completed until series were excluded, leaving only the'
+				. ' open-ended series as a candidate.'
+		);
+
+		$filter = static fn() => 3;
+		add_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
+		do_action( Projection_Cron::SWEEP_ACTION );
+
+		remove_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
+
+		$after_rows = Occurrences::get_instance()->select_for_series( array( $open_ended_id ) );
+
+		$this->assertNotEmpty(
+			array_filter( $after_rows, static fn( $row ) => $row['datetime_start_gmt'] > $far_future ),
+			'Failed to assert that the open-ended series was selected and extended past six months'
+				. ' despite three completed series existing at lower post IDs.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: `select_series_needing_top_up()` orders by
+	 * staleness, not by `series_post_id`, so a batch smaller than the
+	 * candidate pool cannot starve the most-overdue series behind
+	 * lower-post-ID, less-stale ones. Created deliberately out of staleness
+	 * order (least stale first, most stale last) so the lowest post IDs would
+	 * win under a naive `LIMIT`-with-no-`ORDER BY` read, and the assertion
+	 * would fail if `ORDER BY` were removed.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_select_series_needing_top_up_orders_by_staleness(): void {
+		list( $least_stale ) = $this->create_short_horizon_never_ending_series( 6 );
+		list( $middle )      = $this->create_short_horizon_never_ending_series( 3 );
+		list( $most_stale )  = $this->create_short_horizon_never_ending_series( 1 );
+
+		$candidates = Occurrences::get_instance()->select_series_needing_top_up( 2 );
+
+		$this->assertSame(
+			array( $most_stale, $middle ),
+			$candidates,
+			'Failed to assert that a smaller batch selects the most overdue series first, not the lowest post IDs.'
 		);
 	}
 
@@ -1973,6 +2184,33 @@ class Test_Occurrences extends Base {
 		remove_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
 
 		$this->assertSame( 1, $written, 'Failed to assert that top_up honors the batch-size filter default.' );
+	}
+
+	/**
+	 * Coverage for `top_up()`'s clamp: a filter returning a non-positive batch
+	 * size must not reach `select_series_needing_top_up()` as a `LIMIT` of
+	 * zero or negative, which is a SQL syntax error for a negative value.
+	 *
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_top_up_clamps_a_non_positive_batch_size_filter_to_one(): void {
+		$this->create_short_horizon_never_ending_series();
+		$this->create_short_horizon_never_ending_series();
+
+		$filter = static fn() => -5;
+		add_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
+
+		$written = Occurrences::get_instance()->top_up();
+
+		remove_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
+
+		$this->assertSame(
+			1,
+			$written,
+			'Failed to assert that top_up clamps a negative batch-size filter to at least 1.'
+		);
 	}
 
 	/**
@@ -2075,6 +2313,178 @@ class Test_Occurrences extends Base {
 		);
 
 		$this->assertTrue( $stale, 'Failed to assert that a series projected with a short horizon is reported stale.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s no-rows branch: a recurring
+	 * series whose occurrence rows were lost (a failed projection, a partial
+	 * restore) must be reported stale, or it would be invisible to both the
+	 * sweep and the lazy repair forever.
+	 *
+	 * @covers ::is_series_stale
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_true_for_a_series_with_no_projected_rows(): void {
+		// A never-ending rule, not the shared WEEKLY_RULE fixture (COUNT-bounded)
+		// -- is_series_stale() must reach the no-rows branch, not short-circuit
+		// on the COUNT-bounded branch that already has its own coverage above.
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		Occurrences::get_instance()->delete_for_post( $post_id );
+		$this->assertCount( 0, Occurrences::get_instance()->select_for_series( array( $post_id ) ) );
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertTrue( $stale, 'Failed to assert that a series with zero projected rows is reported stale.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s `has_reached_until()` branch:
+	 * an until-bounded series that has already reached its `until` date is
+	 * never reported stale, even though its latest occurrence sits well below
+	 * `resolve_top_up_cutoff()`.
+	 *
+	 * @covers ::is_series_stale
+	 * @covers ::has_reached_until
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_false_for_a_completed_until_bounded_series(): void {
+		$post_id = $this->create_completed_until_series();
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertFalse( $stale, 'Failed to assert that a completed until-bounded series is never reported stale.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s until-not-yet-reached branch:
+	 * an until-bounded series still has room to grow before its `until` date
+	 * and is reported stale exactly like a `never`-ending series once its
+	 * latest occurrence runs short of the horizon.
+	 *
+	 * @covers ::is_series_stale
+	 * @covers ::has_reached_until
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_true_for_an_until_bounded_series_not_yet_reached(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 weeks' );
+		$until    = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '+5 years' );
+
+		$short_horizon = static fn() => 1;
+		add_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'until',
+				'until'     => $until->format( 'Y-m-d' ),
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertTrue(
+			$stale,
+			'Failed to assert that an until-bounded series short of its horizon, but not yet at its'
+				. ' until date, is stale.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `has_reached_until()`'s non-until branch.
+	 *
+	 * @covers ::has_reached_until
+	 *
+	 * @return void
+	 */
+	public function test_has_reached_until_returns_false_for_a_non_until_end_type(): void {
+		$post_id = $this->create_and_project();
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'has_reached_until',
+			array( $post_id, 'never', '2026-09-03 18:00:00' )
+		);
+
+		$this->assertFalse(
+			$result,
+			'Failed to assert that has_reached_until returns false for a non-until end type.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `has_reached_until()`'s empty-until defensive branch.
+	 *
+	 * @covers ::has_reached_until
+	 *
+	 * @return void
+	 */
+	public function test_has_reached_until_returns_false_when_until_meta_is_empty(): void {
+		$post_id = $this->create_and_project();
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'has_reached_until',
+			array( $post_id, Rule::END_TYPE_UNTIL, '2026-09-03 18:00:00' )
+		);
+
+		$this->assertFalse(
+			$result,
+			'Failed to assert that has_reached_until returns false when the until mirror is empty.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `has_reached_until()`'s reached and not-yet-reached branches.
+	 *
+	 * @covers ::has_reached_until
+	 *
+	 * @return void
+	 */
+	public function test_has_reached_until_compares_the_date_portion_of_the_latest_local_start(): void {
+		$post_id = $this->create_and_project();
+
+		update_post_meta( $post_id, 'gatherpress_recurrence_until', '2026-09-10' );
+
+		$reached = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'has_reached_until',
+			array( $post_id, Rule::END_TYPE_UNTIL, '2026-09-10 18:00:00' )
+		);
+		$not_yet = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'has_reached_until',
+			array( $post_id, Rule::END_TYPE_UNTIL, '2026-09-09 18:00:00' )
+		);
+
+		$this->assertTrue( $reached, 'Failed to assert that a latest local date on the until date has reached it.' );
+		$this->assertFalse(
+			$not_yet,
+			'Failed to assert that a latest local date before the until date has not reached it.'
+		);
 	}
 
 	/**
@@ -2189,6 +2599,73 @@ class Test_Occurrences extends Base {
 		$this->assertFalse(
 			get_transient( sprintf( 'gatherpress_projected_%d', $post_id ) ),
 			'Failed to assert that select_past never sets the lazy-repair debounce transient.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: `maybe_lazy_repair()` caps how many distinct stale
+	 * series one read attempts, so a listing page surfacing many distinct
+	 * stale series cannot turn into many synchronous `project()` calls inside
+	 * one request. Two stale series are encountered by one `select_upcoming()`
+	 * read; at the default cap of 1, only one gets a debounce transient.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_maybe_lazy_repair_caps_the_number_of_series_repaired_per_read(): void {
+		list( $first )  = $this->create_short_horizon_never_ending_series();
+		list( $second ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+		delete_transient( sprintf( 'gatherpress_projected_%d', $first ) );
+		delete_transient( sprintf( 'gatherpress_projected_%d', $second ) );
+
+		Occurrences::get_instance()->select_upcoming( 50 );
+
+		$repaired = array_filter(
+			array( $first, $second ),
+			static fn( $post_id ) => false !== get_transient( sprintf( 'gatherpress_projected_%d', $post_id ) )
+		);
+
+		$this->assertCount(
+			1,
+			$repaired,
+			'Failed to assert that only one of two stale series was attempted, per the default read batch cap.'
+		);
+	}
+
+	/**
+	 * Coverage for the `gatherpress_recurrence_lazy_repair_batch_size` filter.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_maybe_lazy_repair_batch_size_is_filterable(): void {
+		list( $first )  = $this->create_short_horizon_never_ending_series();
+		list( $second ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+		delete_transient( sprintf( 'gatherpress_projected_%d', $first ) );
+		delete_transient( sprintf( 'gatherpress_projected_%d', $second ) );
+
+		$filter = static fn() => 2;
+		add_filter( 'gatherpress_recurrence_lazy_repair_batch_size', $filter );
+
+		Occurrences::get_instance()->select_upcoming( 50 );
+
+		remove_filter( 'gatherpress_recurrence_lazy_repair_batch_size', $filter );
+
+		$repaired = array_filter(
+			array( $first, $second ),
+			static fn( $post_id ) => false !== get_transient( sprintf( 'gatherpress_projected_%d', $post_id ) )
+		);
+
+		$this->assertCount(
+			2,
+			$repaired,
+			'Failed to assert that the lazy-repair batch-size filter raises the per-read cap.'
 		);
 	}
 }

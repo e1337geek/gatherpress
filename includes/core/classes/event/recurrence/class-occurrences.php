@@ -147,6 +147,21 @@ final class Occurrences {
 	const LAZY_REPAIR_TRANSIENT_FORMAT = 'gatherpress_projected_%d';
 
 	/**
+	 * Maximum number of distinct series one read attempts to lazily repair.
+	 *
+	 * `maybe_lazy_repair()` runs synchronously inside a front-end read, so a
+	 * listing page surfacing many distinct stale series must not turn into
+	 * many synchronous `project()` calls inside one request -- the scheduled
+	 * sweep is the primary top-up path; this is a same-request safety net,
+	 * not expected to carry the bulk of the work. Filterable via
+	 * `gatherpress_recurrence_lazy_repair_batch_size`.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const LAZY_REPAIR_READ_BATCH_SIZE = 1;
+
+	/**
 	 * Posts whose recurrence blob had not landed yet when a save tried to project it.
 	 *
 	 * `wp_after_insert_post` can fire before the request's meta writes have
@@ -462,7 +477,21 @@ final class Occurrences {
 			}
 		}
 
-		foreach ( array_keys( $post_ids ) as $post_id ) {
+		/**
+		 * Filters how many distinct stale series one read attempts to lazily repair.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param int $batch_size Batch size, default `Occurrences::LAZY_REPAIR_READ_BATCH_SIZE`.
+		 *
+		 * @return int Batch size.
+		 */
+		$limit = max(
+			0,
+			(int) apply_filters( 'gatherpress_recurrence_lazy_repair_batch_size', self::LAZY_REPAIR_READ_BATCH_SIZE )
+		);
+
+		foreach ( array_slice( array_keys( $post_ids ), 0, $limit ) as $post_id ) {
 			$this->maybe_repair_stale_series( $post_id );
 		}
 	}
@@ -500,18 +529,23 @@ final class Occurrences {
 	/**
 	 * Report whether a series' projected horizon has run short.
 	 *
-	 * A `COUNT`-bounded rule is already complete by design and is never
-	 * reported stale, however far in the past its fixed, final occurrence
-	 * sits -- re-projecting it would be a no-op at best and a rewrite of the
-	 * same rows forever at worst. An empty end type means the post carries
-	 * no recurrence rule at all.
+	 * Two end types are already complete by design and are never reported
+	 * stale: `COUNT`, always -- and `UNTIL`, once its latest projected
+	 * occurrence has reached the rule's own `until` bound, which
+	 * `has_reached_until()` checks. Re-projecting either would be a no-op at
+	 * best and a rewrite of the same rows forever at worst. An empty end type
+	 * means the post carries no recurrence rule at all. A series with a rule
+	 * but zero projected rows (a failed projection, a partial restore) is
+	 * always reported stale, since it would otherwise be invisible to both
+	 * the sweep and the lazy repair forever.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Series post ID to check.
 	 *
-	 * @return bool True when the series' latest projected occurrence is
-	 *              within `TOP_UP_MARGIN_DAYS` of the horizon, or beyond it.
+	 * @return bool True when the series has no projected rows at all, or its
+	 *              latest projected occurrence is within `TOP_UP_MARGIN_DAYS`
+	 *              of the horizon, or beyond it.
 	 */
 	protected function is_series_stale( int $post_id ): bool {
 		global $wpdb;
@@ -525,12 +559,60 @@ final class Occurrences {
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$latest = $wpdb->get_var(
-			$wpdb->prepare( 'SELECT MAX(datetime_start_gmt) FROM %i WHERE series_post_id = %d', $table, $post_id )
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT MAX(datetime_start_gmt) AS latest_gmt, MAX(datetime_start) AS latest_local'
+					. ' FROM %i WHERE series_post_id = %d',
+				$table,
+				$post_id
+			),
+			ARRAY_A
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-		return null !== $latest && $latest < $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+		$latest_gmt = null === $row ? null : $row['latest_gmt'];
+
+		if ( null === $latest_gmt ) {
+			return true;
+		}
+
+		if ( $this->has_reached_until( $post_id, $end_type, (string) $row['latest_local'] ) ) {
+			return false;
+		}
+
+		return $latest_gmt < $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+	}
+
+	/**
+	 * Report whether an `UNTIL`-bounded series has already reached its `until` date.
+	 *
+	 * Compares only the date portion, since `gatherpress_recurrence_until` is
+	 * stored as a bare `Y-m-d` (RFC 5545's `UNTIL` is date-only in this
+	 * plugin's authoring model) while `$latest_local` carries a time -- once
+	 * the latest projected occurrence's local date is on or after `until`,
+	 * `Expander::expand()`'s own `past_until()` guard means nothing further
+	 * will ever be produced, so the series is complete rather than stale.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id      Series post ID.
+	 * @param string $end_type     One of the `Rule::END_TYPE_*` constants.
+	 * @param string $latest_local Latest projected occurrence's local start, `Y-m-d H:i:s`.
+	 *
+	 * @return bool True when the series is `UNTIL`-bounded and has reached its `until` date.
+	 */
+	protected function has_reached_until( int $post_id, string $end_type, string $latest_local ): bool {
+		if ( Rule::END_TYPE_UNTIL !== $end_type ) {
+			return false;
+		}
+
+		$until = (string) get_post_meta( $post_id, 'gatherpress_recurrence_until', true );
+
+		if ( '' === $until ) {
+			return false;
+		}
+
+		return substr( $latest_local, 0, 10 ) >= $until;
 	}
 
 	/**
@@ -573,14 +655,28 @@ final class Occurrences {
 	 * `series_post_id` candidates only, never rows for display, so
 	 * `GROUP BY` / `HAVING MAX()` is the correct tool here rather than a
 	 * violation of the "never aggregate a result set of event rows" rule.
-	 * `COUNT`-bounded rules are excluded in SQL via the `end_type` mirror, so
-	 * a completed series is never even a candidate.
+	 *
+	 * Two end types are excluded structurally, in SQL, so a completed series
+	 * is never even a candidate: `COUNT`-bounded rules, via the `end_type`
+	 * mirror, and `UNTIL`-bounded rules whose latest projected occurrence has
+	 * already reached their `until` mirror -- both are complete by design and
+	 * would otherwise look permanently "stale" (their fixed, final occurrence
+	 * only ever falls further behind `resolve_top_up_cutoff()` as real time
+	 * passes) and get rewritten by every sweep forever.
+	 *
+	 * `ORDER BY MAX( o.datetime_start_gmt ) ASC` rotates the batch by
+	 * staleness rather than by `series_post_id`. Without it, `LIMIT` alone
+	 * deterministically returns the same subset (MySQL's default row order
+	 * for an unordered `GROUP BY` tracks storage/insertion order, i.e. the
+	 * lowest post IDs) on every sweep -- a site with more stale candidates
+	 * than one batch can starve a newer, more-overdue series behind older,
+	 * lower-ID ones indefinitely.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $limit Maximum number of series to return.
 	 *
-	 * @return int[] Series post IDs needing a top-up, oldest-horizon first is not guaranteed.
+	 * @return int[] Series post IDs needing a top-up, most-overdue first.
 	 */
 	public function select_series_needing_top_up( int $limit ): array {
 		global $wpdb;
@@ -588,11 +684,28 @@ final class Occurrences {
 		$table  = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$cutoff = $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
 
-		$sql = 'SELECT o.series_post_id FROM %i o'
-			. ' INNER JOIN %i pm ON pm.post_id = o.series_post_id AND pm.meta_key = %s'
-			. ' WHERE pm.meta_value != %s'
-			. ' GROUP BY o.series_post_id'
+		// The SELECT list carries end_type_meta.meta_value and until_meta.meta_value
+		// alongside the series_post_id this method actually wants (get_col() reads
+		// only the first column) -- MariaDB's optimizer, at least on the version
+		// this was verified against, rejects a bare non-aggregate join column
+		// referenced only in HAVING as "Unknown column" once three tables are
+		// joined, even though it appears in GROUP BY. Including both columns in
+		// SELECT resolves them before HAVING is evaluated.
+		$sql = 'SELECT o.series_post_id, end_type_meta.meta_value, until_meta.meta_value FROM %i o'
+			. ' INNER JOIN %i end_type_meta'
+			. ' ON end_type_meta.post_id = o.series_post_id AND end_type_meta.meta_key = %s'
+			. ' LEFT JOIN %i until_meta'
+			. ' ON until_meta.post_id = o.series_post_id AND until_meta.meta_key = %s'
+			. ' WHERE end_type_meta.meta_value != %s'
+			. ' GROUP BY o.series_post_id, end_type_meta.meta_value, until_meta.meta_value'
 			. ' HAVING MAX( o.datetime_start_gmt ) < %s'
+			. ' AND ('
+			. '     end_type_meta.meta_value != %s'
+			. '     OR until_meta.meta_value IS NULL'
+			. '     OR until_meta.meta_value = %s'
+			. '     OR DATE( MAX( o.datetime_start ) ) < until_meta.meta_value'
+			. ' )'
+			. ' ORDER BY MAX( o.datetime_start_gmt ) ASC'
 			. ' LIMIT %d';
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -603,8 +716,12 @@ final class Occurrences {
 				$table,
 				$wpdb->postmeta,
 				'gatherpress_recurrence_end_type',
+				$wpdb->postmeta,
+				'gatherpress_recurrence_until',
 				Rule::END_TYPE_COUNT,
 				$cutoff,
+				Rule::END_TYPE_UNTIL,
+				'',
 				$limit
 			)
 		);
@@ -642,7 +759,10 @@ final class Occurrences {
 			 *
 			 * @return int Batch size.
 			 */
-			$limit = (int) apply_filters( 'gatherpress_recurrence_top_up_batch_size', self::TOP_UP_BATCH_SIZE );
+			$limit = max(
+				1,
+				(int) apply_filters( 'gatherpress_recurrence_top_up_batch_size', self::TOP_UP_BATCH_SIZE )
+			);
 		}
 
 		$post_ids = $this->select_series_needing_top_up( $limit );
