@@ -536,21 +536,28 @@ class Test_Surface_Census extends Base {
 	 * `{permalink}{Ymd}T{His}/` shape itself instead of agreeing with whatever
 	 * the production builder currently emits.
 	 *
-	 * `$occurrence_link` distinguishes the two documented contracts rather than
-	 * papering over a difference. Inside a loop, a row's permalink is its
-	 * occurrence's URL -- that half of CF-8. On a *singular* occurrence request
-	 * `Context::permalink()` deliberately stands down, because the requested URL
-	 * already is the occurrence URL and rewriting `get_permalink()` there would
-	 * change what core's canonical-redirect machinery compares against. Both
-	 * are asserted, and neither is inferred from the other.
+	 * **The contract is uniform: wherever an occurrence is in play, that post's
+	 * permalink is the occurrence's URL.** This census originally carried an
+	 * `$occurrence_link` flag because it was not -- `Context::permalink()` stood
+	 * down on a *singular* occurrence request, on the reasoning that the
+	 * requested URL already was the occurrence URL and rewriting
+	 * `get_permalink()` would disturb core's canonical-redirect comparison. That
+	 * left `get_permalink()` returning the *bare series* URL on an occurrence
+	 * page, which per PRD D-4 resolves to the **next upcoming** occurrence -- so
+	 * the iCal `URL:` field and every link on the page named a different date.
+	 *
+	 * The census encoded that contract explicitly so a change to it would be
+	 * visible rather than silent, and that is exactly what happened: CF-15
+	 * removed the stand-down after measuring that `redirect_canonical()` never
+	 * reaches `get_permalink()` on a matched occurrence rewrite rule. The flag
+	 * is gone with it. Two contracts became one.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param int               $post_id         Post the row renders.
-	 * @param string            $recurrence_id   Occurrence identifier, or '' for a non-recurring row.
-	 * @param DateTimeImmutable $start           The row's own start.
-	 * @param int               $attending       Attendee count the row must report.
-	 * @param bool              $occurrence_link Whether the row's own permalink carries the occurrence segment.
+	 * @param int               $post_id       Post the row renders.
+	 * @param string            $recurrence_id Occurrence identifier, or '' for a non-recurring row.
+	 * @param DateTimeImmutable $start         The row's own start.
+	 * @param int               $attending     Attendee count the row must report.
 	 *
 	 * @return array<string, mixed> The expected row.
 	 */
@@ -558,8 +565,7 @@ class Test_Surface_Census extends Base {
 		int $post_id,
 		string $recurrence_id,
 		DateTimeImmutable $start,
-		int $attending,
-		bool $occurrence_link = true
+		int $attending
 	): array {
 		$slug = (string) get_post_field( 'post_name', $post_id );
 		$base = home_url( sprintf( '/event/%s/', $slug ) );
@@ -573,7 +579,7 @@ class Test_Surface_Census extends Base {
 					'recurrenceId' => $recurrence_id,
 				),
 			'date'      => $start->format( self::DATE_FORMAT ),
-			'href'      => ( '' === $recurrence_id || ! $occurrence_link ) ? $base : $base . $recurrence_id . '/',
+			'href'      => ( '' === $recurrence_id ) ? $base : $base . $recurrence_id . '/',
 			'attending' => $attending,
 		);
 	}
@@ -837,8 +843,7 @@ class Test_Surface_Census extends Base {
 				$fixture['series'],
 				$recurrence_id,
 				$start,
-				( self::RSVP_INDEX === $index ) ? 1 : 0,
-				false
+				( self::RSVP_INDEX === $index ) ? 1 : 0
 			);
 
 			$url         = Rewrite::get_occurrence_url( $fixture['series'], $recurrence_id );
@@ -896,8 +901,7 @@ class Test_Surface_Census extends Base {
 			$fixture['series'],
 			$this->occurrence_id( $fixture['series_anchor'], 1 ),
 			$this->series_start( $fixture, 1 ),
-			0,
-			false
+			0
 		);
 
 		$actual = $this->request_singular_row(
