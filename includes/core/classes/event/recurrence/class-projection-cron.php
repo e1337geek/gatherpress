@@ -92,11 +92,27 @@ final class Projection_Cron {
 	/**
 	 * Schedule the recurring sweep, deduped via `wp_next_scheduled()`.
 	 *
+	 * Short-circuits on `Query::site_has_recurring_events()` first, so a site
+	 * with no recurring events never schedules the cron event or writes the
+	 * `wp_options` row that scheduling it performs -- run on `init`, this
+	 * would otherwise cost every GatherPress install a permanent hourly cron
+	 * event and an option write regardless of whether the site has ever
+	 * published a recurring event at all.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
 	 */
 	public function maybe_schedule_sweep(): void {
+		// REQ-16's "a site with no recurring events pays nothing" guarantee
+		// covers the scheduler itself, not only the sweep callback: an hourly
+		// cron event and the wp_options write wp_schedule_event() performs
+		// are both a cost, and the overwhelming majority of GatherPress
+		// installs never publish a recurring event at all.
+		if ( ! Query::site_has_recurring_events() ) {
+			return;
+		}
+
 		/**
 		 * Filters the sweep schedule call to take over scheduling.
 		 *

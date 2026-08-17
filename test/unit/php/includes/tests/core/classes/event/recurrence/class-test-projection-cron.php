@@ -126,19 +126,74 @@ class Test_Projection_Cron extends Base {
 	}
 
 	/**
-	 * Coverage for `maybe_schedule_sweep()` scheduling the recurring sweep
-	 * when nothing is scheduled yet.
+	 * Coverage for `maybe_schedule_sweep()`'s `site_has_recurring_events()`
+	 * guard: REQ-16's "a site with no recurring events pays nothing"
+	 * guarantee covers the scheduler itself, not only the sweep callback.
+	 * Run on `init`, an unguarded scheduler would cost every GatherPress
+	 * install -- the overwhelming majority of which never publish a
+	 * recurring event -- a permanent hourly cron event and the
+	 * `wp_options` write `wp_schedule_event()` performs. Measured via a
+	 * `$wpdb->queries` capture, not the schedule alone, since a version
+	 * that scheduled without writing an option would still pass a
+	 * schedule-only assertion.
 	 *
 	 * @covers ::maybe_schedule_sweep
 	 *
 	 * @return void
 	 */
-	public function test_maybe_schedule_sweep_schedules_the_sweep(): void {
+	public function test_maybe_schedule_sweep_does_nothing_on_a_site_with_no_recurring_events(): void {
+		global $wpdb;
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$query_count_before = count( $wpdb->queries );
+
+		Projection_Cron::get_instance()->maybe_schedule_sweep();
+
+		$this->assertFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert that maybe_schedule_sweep does not schedule on a site with no recurring events.'
+		);
+
+		$queries_since = array_slice( $wpdb->queries, $query_count_before );
+		$option_writes = array_values(
+			array_filter(
+				$queries_since,
+				static function ( $query ) {
+					return (bool) preg_match( '/^\s*(INSERT|UPDATE|REPLACE)\s+.*`?options`?/i', $query[0] );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$option_writes,
+			'Failed to assert that maybe_schedule_sweep performs no options-table write on a site'
+				. ' with no recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for `maybe_schedule_sweep()` scheduling the recurring sweep
+	 * on a site that does have recurring events, when nothing is scheduled
+	 * yet -- the companion to the no-recurring-events guard above.
+	 *
+	 * @covers ::maybe_schedule_sweep
+	 *
+	 * @return void
+	 */
+	public function test_maybe_schedule_sweep_schedules_when_site_has_recurring_events(): void {
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
 		Projection_Cron::get_instance()->maybe_schedule_sweep();
 
 		$this->assertNotFalse(
 			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
-			'Failed to assert that maybe_schedule_sweep schedules the recurring sweep.'
+			'Failed to assert that maybe_schedule_sweep schedules the recurring sweep on a site with recurring events.'
 		);
 	}
 
@@ -151,6 +206,8 @@ class Test_Projection_Cron extends Base {
 	 * @return void
 	 */
 	public function test_maybe_schedule_sweep_does_not_duplicate_an_existing_schedule(): void {
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
 		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
 		$existing = wp_next_scheduled( Projection_Cron::SWEEP_ACTION );
 
@@ -174,6 +231,8 @@ class Test_Projection_Cron extends Base {
 	 * @return void
 	 */
 	public function test_maybe_schedule_sweep_is_short_circuited_by_the_pre_schedule_filter(): void {
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
 		$filter = static fn() => 'action-scheduler-job-id';
 		add_filter( 'gatherpress_recurrence_top_up_pre_schedule_sweep', $filter );
 
@@ -250,7 +309,11 @@ class Test_Projection_Cron extends Base {
 	 */
 	public function test_deactivation_unschedules_the_sweep(): void {
 		$instance = Projection_Cron::get_instance();
-		$instance->maybe_schedule_sweep();
+
+		// Scheduled directly rather than through maybe_schedule_sweep() --
+		// this test is about deactivate(), not about the scheduling guard,
+		// which has its own coverage above.
+		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
 
 		$this->assertNotFalse(
 			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),

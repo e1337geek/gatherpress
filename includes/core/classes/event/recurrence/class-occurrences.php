@@ -458,6 +458,19 @@ final class Occurrences {
 	 * Only refs carrying a non-null `recurrence_id` name an actual series --
 	 * a non-recurring event's ref has nothing to repair.
 	 *
+	 * The per-read cap is applied *after* filtering out series already
+	 * suppressed by their debounce transient, not before: refs arrive in
+	 * `datetime_start_gmt` order, not staleness order, so slicing the raw
+	 * post ID list first lets a series that is currently suppressed (or was
+	 * already repaired earlier in this same read) occupy a batch slot and
+	 * starve every series behind it out of every read for the rest of the
+	 * transient's `LAZY_REPAIR_TTL` window -- a fresh series sorting first
+	 * would otherwise permanently block a genuinely stale one sorting after
+	 * it. `maybe_repair_stale_series()` still re-checks the transient itself
+	 * (a second read within the same request could otherwise double-attempt
+	 * a series this method already cleared), so this filter is an
+	 * optimization that keeps the cap meaningful, not the sole guard.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param Occurrence_Ref[] $refs Refs produced by this read.
@@ -477,6 +490,15 @@ final class Occurrences {
 			}
 		}
 
+		$unsuppressed = array_values(
+			array_filter(
+				array_keys( $post_ids ),
+				static function ( $post_id ) {
+					return false === get_transient( sprintf( self::LAZY_REPAIR_TRANSIENT_FORMAT, $post_id ) );
+				}
+			)
+		);
+
 		/**
 		 * Filters how many distinct stale series one read attempts to lazily repair.
 		 *
@@ -491,7 +513,7 @@ final class Occurrences {
 			(int) apply_filters( 'gatherpress_recurrence_lazy_repair_batch_size', self::LAZY_REPAIR_READ_BATCH_SIZE )
 		);
 
-		foreach ( array_slice( array_keys( $post_ids ), 0, $limit ) as $post_id ) {
+		foreach ( array_slice( $unsuppressed, 0, $limit ) as $post_id ) {
 			$this->maybe_repair_stale_series( $post_id );
 		}
 	}
@@ -656,13 +678,18 @@ final class Occurrences {
 	 * `GROUP BY` / `HAVING MAX()` is the correct tool here rather than a
 	 * violation of the "never aggregate a result set of event rows" rule.
 	 *
-	 * Two end types are excluded structurally, in SQL, so a completed series
-	 * is never even a candidate: `COUNT`-bounded rules, via the `end_type`
-	 * mirror, and `UNTIL`-bounded rules whose latest projected occurrence has
-	 * already reached their `until` mirror -- both are complete by design and
-	 * would otherwise look permanently "stale" (their fixed, final occurrence
-	 * only ever falls further behind `resolve_top_up_cutoff()` as real time
-	 * passes) and get rewritten by every sweep forever.
+	 * Excluded structurally, in SQL, so none of the following is ever a
+	 * candidate: a post with no recurrence rule at all (empty `end_type`
+	 * mirror -- kept in parity with `is_series_stale()`'s own empty-end-type
+	 * branch, since the two predicates disagreeing would silently make an
+	 * unrecognized/blank end type a permanent hourly candidate);
+	 * `COUNT`-bounded rules, via the `end_type` mirror; and `UNTIL`-bounded
+	 * rules whose latest projected occurrence has already reached their
+	 * `until` mirror. The `COUNT` and reached-`UNTIL` cases are complete by
+	 * design and would otherwise look permanently "stale" (their fixed,
+	 * final occurrence only ever falls further behind
+	 * `resolve_top_up_cutoff()` as real time passes) and get rewritten by
+	 * every sweep forever.
 	 *
 	 * `ORDER BY MAX( o.datetime_start_gmt ) ASC` rotates the batch by
 	 * staleness rather than by `series_post_id`. Without it, `LIMIT` alone
@@ -684,26 +711,34 @@ final class Occurrences {
 		$table  = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$cutoff = $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
 
-		// The SELECT list carries end_type_meta.meta_value and until_meta.meta_value
-		// alongside the series_post_id this method actually wants (get_col() reads
-		// only the first column) -- MariaDB's optimizer, at least on the version
-		// this was verified against, rejects a bare non-aggregate join column
-		// referenced only in HAVING as "Unknown column" once three tables are
-		// joined, even though it appears in GROUP BY. Including both columns in
-		// SELECT resolves them before HAVING is evaluated.
-		$sql = 'SELECT o.series_post_id, end_type_meta.meta_value, until_meta.meta_value FROM %i o'
+		// The joined meta columns are aliased (et_value, until_value) rather
+		// than referenced as bare `end_type_meta.meta_value` /
+		// `until_meta.meta_value` in GROUP BY and HAVING. A bare reference to
+		// a non-aggregate joined column used only in HAVING, once three
+		// tables are joined, is rejected as "Unknown column" by both MariaDB
+		// and MySQL 8 -- this is not engine-specific, and putting the raw
+		// (unaliased) columns in the SELECT list only worked around it
+		// because both were literally named `meta_value`, which itself
+		// breaks under a site running with ONLY_FULL_GROUP_BY (WordPress
+		// strips that mode on connect, but a site filtering
+		// `incompatible_sql_modes` back in would silently get an empty
+		// candidate list forever). Aliasing costs nothing and is correct
+		// under every SQL mode.
+		$sql = 'SELECT o.series_post_id,'
+			. ' end_type_meta.meta_value AS et_value, until_meta.meta_value AS until_value'
+			. ' FROM %i o'
 			. ' INNER JOIN %i end_type_meta'
 			. ' ON end_type_meta.post_id = o.series_post_id AND end_type_meta.meta_key = %s'
 			. ' LEFT JOIN %i until_meta'
 			. ' ON until_meta.post_id = o.series_post_id AND until_meta.meta_key = %s'
-			. ' WHERE end_type_meta.meta_value != %s'
-			. ' GROUP BY o.series_post_id, end_type_meta.meta_value, until_meta.meta_value'
+			. ' WHERE end_type_meta.meta_value != %s AND end_type_meta.meta_value != %s'
+			. ' GROUP BY o.series_post_id, et_value, until_value'
 			. ' HAVING MAX( o.datetime_start_gmt ) < %s'
 			. ' AND ('
-			. '     end_type_meta.meta_value != %s'
-			. '     OR until_meta.meta_value IS NULL'
-			. '     OR until_meta.meta_value = %s'
-			. '     OR DATE( MAX( o.datetime_start ) ) < until_meta.meta_value'
+			. '     et_value != %s'
+			. '     OR until_value IS NULL'
+			. '     OR until_value = %s'
+			. '     OR DATE( MAX( o.datetime_start ) ) < until_value'
 			. ' )'
 			. ' ORDER BY MAX( o.datetime_start_gmt ) ASC'
 			. ' LIMIT %d';
@@ -719,6 +754,7 @@ final class Occurrences {
 				$wpdb->postmeta,
 				'gatherpress_recurrence_until',
 				Rule::END_TYPE_COUNT,
+				'',
 				$cutoff,
 				Rule::END_TYPE_UNTIL,
 				'',

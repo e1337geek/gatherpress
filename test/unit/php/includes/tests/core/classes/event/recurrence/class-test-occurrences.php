@@ -2668,4 +2668,130 @@ class Test_Occurrences extends Base {
 			'Failed to assert that the lazy-repair batch-size filter raises the per-read cap.'
 		);
 	}
+
+	/**
+	 * Direct coverage for `maybe_repair_stale_series()`'s own
+	 * already-suppressed branch. `maybe_lazy_repair()`'s pre-slice
+	 * `$unsuppressed` filter means this branch is no longer reachable
+	 * through that one call site -- a post ID with a live transient is
+	 * filtered out before the loop, not encountered by
+	 * `maybe_repair_stale_series()` and then bounced. The guard stays,
+	 * defense-in-depth for the `protected` method's own contract ("one
+	 * attempt per window") independent of any one caller, so it is
+	 * covered directly here per AGENTS.md's rule for a helper whose
+	 * transitive callers no longer exercise a branch.
+	 *
+	 * @covers ::maybe_repair_stale_series
+	 *
+	 * @return void
+	 */
+	public function test_maybe_repair_stale_series_skips_when_already_suppressed(): void {
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		$calls  = 0;
+		$filter = static function ( $days ) use ( &$calls ) {
+			++$calls;
+
+			return $days;
+		};
+		add_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
+
+		Utility::invoke_hidden_method( Occurrences::get_instance(), 'maybe_repair_stale_series', array( $post_id ) );
+		$this->assertSame( 1, $calls, 'Failed to assert that the first direct call attempted the repair.' );
+
+		Utility::invoke_hidden_method( Occurrences::get_instance(), 'maybe_repair_stale_series', array( $post_id ) );
+
+		remove_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
+
+		$this->assertSame(
+			1,
+			$calls,
+			'Failed to assert that a second direct call is suppressed by the live debounce transient.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: at the default per-read cap of 1, a fresh series
+	 * that sorts first must not permanently block a genuinely stale series
+	 * sorting after it -- the exact starvation shape the cap re-created.
+	 * Refs arrive in `datetime_start_gmt` order, not staleness order, so a
+	 * fresh series consumes the first read's single slot even though it
+	 * needs no repair (`maybe_repair_stale_series()` sets its debounce
+	 * transient unconditionally -- "repair once" means one *attempt* per
+	 * window, not one successful repair). A second read must then see the
+	 * fresh series filtered out by its own transient and give the stale
+	 * series the budget instead.
+	 *
+	 * The refs are built directly rather than produced by a real
+	 * `select_upcoming()` query -- constructing them lets the encounter
+	 * order (the exact axis this bug turns on) be asserted deterministically
+	 * instead of depending on incidental fixture dates, while still
+	 * representing a real, producible `select_by_horizon()` result ordering.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_second_read_repairs_the_series_the_first_read_skipped(): void {
+		$fresh_id         = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( 2, 4 ),
+				'end_type'  => 'never',
+			),
+			new DateTimeImmutable( 'now', new DateTimeZone( 'America/New_York' ) ),
+			( new DateTimeImmutable( 'now', new DateTimeZone( 'America/New_York' ) ) )->modify( '+2 hours' ),
+			'America/New_York'
+		);
+		list( $stale_id ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+		delete_transient( sprintf( 'gatherpress_projected_%d', $fresh_id ) );
+		delete_transient( sprintf( 'gatherpress_projected_%d', $stale_id ) );
+
+		// The fresh series sorts first, matching the "fresh series encountered
+		// before the stale one" shape the bug required.
+		$refs = array(
+			new Occurrence_Ref( $fresh_id, '20260101T000000', '2026-01-01 00:00:00' ),
+			new Occurrence_Ref( $stale_id, '20260101T000100', '2026-01-01 00:01:00' ),
+		);
+
+		$far_future = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '+6 months' )
+			->format( 'Y-m-d H:i:s' );
+
+		Utility::invoke_hidden_method( Occurrences::get_instance(), 'maybe_lazy_repair', array( $refs ) );
+
+		$this->assertNotFalse(
+			get_transient( sprintf( 'gatherpress_projected_%d', $fresh_id ) ),
+			'Failed to assert that the first read attempted the fresh series (it sorts first).'
+		);
+		$this->assertFalse(
+			get_transient( sprintf( 'gatherpress_projected_%d', $stale_id ) ),
+			'Failed to assert that the first read never reached the stale series, per the per-read cap of 1.'
+		);
+
+		$stale_rows_after_first_read = Occurrences::get_instance()->select_for_series( array( $stale_id ) );
+		$this->assertEmpty(
+			array_filter( $stale_rows_after_first_read, static fn( $row ) => $row['datetime_start_gmt'] > $far_future ),
+			'Failed to assert that the first read did not repair the stale series it never reached.'
+		);
+
+		Utility::invoke_hidden_method( Occurrences::get_instance(), 'maybe_lazy_repair', array( $refs ) );
+
+		$this->assertNotFalse(
+			get_transient( sprintf( 'gatherpress_projected_%d', $stale_id ) ),
+			'Failed to assert that the second read attempted the stale series once the fresh one was filtered out.'
+		);
+
+		$stale_rows_after_second_read = Occurrences::get_instance()->select_for_series( array( $stale_id ) );
+		$this->assertNotEmpty(
+			array_filter(
+				$stale_rows_after_second_read,
+				static fn( $row ) => $row['datetime_start_gmt'] > $far_future
+			),
+			'Failed to assert that the second read repaired the series the first read skipped.'
+		);
+	}
 }
