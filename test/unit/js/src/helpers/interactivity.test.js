@@ -29,20 +29,25 @@ jest.mock(
 /**
  * Mock the a11y script module so announcement tests can assert on `speak()`
  * without a DOM live region.
+ *
+ * Deliberately not `{ virtual: true }`: `@wordpress/a11y` ships a `require`
+ * entry point, so Jest resolves it, and the flag would key the mock to the
+ * bare specifier instead of that resolved path. Because the module ID for
+ * each `(importer, name)` pair is memoized on a `Resolver` that the test
+ * worker shares across files, another file loading `src/helpers/interactivity.js`
+ * first would cache the resolved path and leave this registration unmatched —
+ * handing the module under test the real `speak()` while these tests watch
+ * the mock. See `test/unit/js/mock-hygiene.test.js`.
  */
-jest.mock(
-	'@wordpress/a11y',
-	() => ( {
-		speak: jest.fn(),
-	} ),
-	{ virtual: true }
-);
+jest.mock( '@wordpress/a11y', () => ( {
+	speak: jest.fn(),
+} ) );
 
 /**
  * WordPress dependencies
  */
 import { speak } from '@wordpress/a11y';
-// eslint-disable-next-line import/named -- `__mockState` only exists on the virtual mock above.
+// eslint-disable-next-line import/named -- `__mockState` only exists on the virtual interactivity mock above.
 import { __mockState as mockInteractivityState } from '@wordpress/interactivity';
 
 /**
