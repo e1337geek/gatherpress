@@ -21,6 +21,7 @@ use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
+use WP_Query;
 
 /**
  * Class Test_Context.
@@ -324,6 +325,12 @@ class Test_Context extends Base {
 	/**
 	 * Coverage for the metadata filter ignoring meta keys it does not own.
 	 *
+	 * Asserted against a multi-value key rather than a single-value one: a
+	 * filter missing its key allowlist still answers a single-value read with
+	 * the right string by way of the series fallback, so a single-value
+	 * assertion here cannot fail. Collapsing a multi-value read to one entry is
+	 * the damage an unscoped filter actually does.
+	 *
 	 * @covers ::metadata
 	 *
 	 * @return void
@@ -331,14 +338,20 @@ class Test_Context extends Base {
 	public function test_metadata_leaves_unrelated_meta_keys_untouched(): void {
 		$post_id = $this->create_and_project();
 
-		update_post_meta( $post_id, 'gatherpress_max_guest_limit', '7' );
+		add_post_meta( $post_id, 'gatherpress_unit_test_key', 'first' );
+		add_post_meta( $post_id, 'gatherpress_unit_test_key', 'second' );
 
 		Context::get_instance()->set( $post_id, self::SECOND_ID );
 
 		$this->assertSame(
-			'7',
-			get_post_meta( $post_id, 'gatherpress_max_guest_limit', true ),
+			'first',
+			get_post_meta( $post_id, 'gatherpress_unit_test_key', true ),
 			'Failed to assert that an unrelated meta key is left untouched in context.'
+		);
+		$this->assertSame(
+			array( 'first', 'second' ),
+			get_post_meta( $post_id, 'gatherpress_unit_test_key', false ),
+			'Failed to assert that an unrelated multi-value meta key keeps every one of its values.'
 		);
 	}
 
@@ -515,6 +528,38 @@ class Test_Context extends Base {
 	}
 
 	/**
+	 * Coverage for `get_datetime()` reading the record rather than the filter.
+	 *
+	 * `get_datetime()` is the explicit accessor the recurrence subsystem calls;
+	 * the `get_post_metadata` filter is the compatibility path for unmodified
+	 * blocks. With the filter unhooked, delegating to `Event::get_datetime()`
+	 * would return the series anchor — so this is what separates the two.
+	 *
+	 * @covers ::get_datetime
+	 * @covers ::occurrence_value
+	 *
+	 * @return void
+	 */
+	public function test_get_datetime_reads_the_record_without_the_metadata_filter(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Context::get_instance();
+
+		$instance->set( $post_id, self::SECOND_ID );
+
+		remove_filter( 'get_post_metadata', array( $instance, 'metadata' ), 10 );
+
+		$datetime = $instance->get_datetime( $post_id );
+
+		add_filter( 'get_post_metadata', array( $instance, 'metadata' ), 10, 4 );
+
+		$this->assertSame(
+			self::SECOND_START,
+			$datetime['datetime_start'],
+			'Failed to assert that get_datetime reads the occurrence record without the metadata filter.'
+		);
+	}
+
+	/**
 	 * Coverage for `get_datetime()` outside occurrence context.
 	 *
 	 * @covers ::get_datetime
@@ -652,14 +697,132 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for `the_post` clearing context for a post that is not the requested occurrence.
+	 * Coverage for an occurrence query var on a request that resolves to no post.
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
 	 *
 	 * @return void
 	 */
-	public function test_the_post_clears_context_for_an_unrelated_post(): void {
+	public function test_context_stays_unset_when_the_request_resolves_to_no_post(): void {
+		$this->create_and_project();
+
+		$this->register_query_var();
+		$this->go_to( add_query_arg( Context::QUERY_VAR, self::SECOND_ID, home_url( '/' ) ) );
+
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert that an occurrence query var on a non-singular request is ignored.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16: a request naming no occurrence queries no occurrence.
+	 *
+	 * Both guards in `maybe_set_from_request()` exist for this. Neither changes
+	 * the resulting context — `Occurrences::get()` would return null for an
+	 * empty recurrence identifier or a post ID of zero anyway — so the only
+	 * thing that can tell a missing guard apart is the query it did not make.
+	 *
+	 * @covers ::sync
+	 * @covers ::maybe_set_from_request
+	 *
+	 * @return void
+	 */
+	public function test_a_request_naming_no_occurrence_makes_no_occurrence_query(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen    = 0;
+
+		$this->register_query_var();
+
+		add_filter(
+			'query',
+			static function ( string $query ) use ( &$seen, $table ): string {
+				if ( str_contains( $query, $table ) ) {
+					++$seen;
+				}
+
+				return $query;
+			}
+		);
+
+		$this->go_to( (string) get_permalink( $post_id ) );
+
+		$this->assertSame(
+			0,
+			$seen,
+			'Failed to assert that a plain series request never queries the occurrence table.'
+		);
+
+		$this->go_to( add_query_arg( Context::QUERY_VAR, self::SECOND_ID, home_url( '/' ) ) );
+
+		$this->assertSame(
+			0,
+			$seen,
+			'Failed to assert that a request resolving to no post never queries the occurrence table.'
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		$this->assertGreaterThan(
+			0,
+			$seen,
+			'Failed to assert that a genuine occurrence request does query the occurrence table.'
+		);
+	}
+
+	/**
+	 * Coverage for `maybe_set_from_request()` invoked directly, on both return paths.
+	 *
+	 * @covers ::maybe_set_from_request
+	 *
+	 * @return void
+	 */
+	public function test_maybe_set_from_request_returns_early_without_a_resolvable_request(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Context::get_instance();
+
+		Utility::invoke_hidden_method( $instance, 'maybe_set_from_request', array( $post_id ) );
+
+		$this->assertNull(
+			$instance->current(),
+			'Failed to assert that a request carrying no occurrence query var leaves the context unset.'
+		);
+
+		set_query_var( Context::QUERY_VAR, self::SECOND_ID );
+
+		Utility::invoke_hidden_method( $instance, 'maybe_set_from_request', array( 0 ) );
+
+		$this->assertNull(
+			$instance->current(),
+			'Failed to assert that a post ID of zero leaves the context unset.'
+		);
+
+		Utility::invoke_hidden_method( $instance, 'maybe_set_from_request', array( $post_id ) );
+
+		$this->assertIsArray(
+			$instance->current(),
+			'Failed to assert that a resolvable request enters occurrence context.'
+		);
+	}
+
+	/**
+	 * Coverage for an inner loop over an unrelated post, and the reset afterwards.
+	 *
+	 * Driven through a real secondary `WP_Query` rather than a bare
+	 * `do_action()`, because the whole point is that the loop's own wiring
+	 * behaves — a hand-fired action proves nothing about `WP_Query::the_post()`.
+	 *
+	 * @covers ::sync
+	 * @covers ::maybe_set_from_request
+	 * @covers ::clear
+	 *
+	 * @return void
+	 */
+	public function test_an_inner_loop_over_an_unrelated_post_does_not_inherit_context(): void {
 		$post_id = $this->create_and_project();
 		$other   = $this->create_recurring_event( self::WEEKLY_RULE );
 
@@ -671,11 +834,30 @@ class Test_Context extends Base {
 			'Failed to assert that the occurrence request established context.'
 		);
 
-		do_action( 'the_post', get_post( $other ), $GLOBALS['wp_query'] );
+		$loop = new WP_Query(
+			array(
+				'p'         => $other,
+				'post_type' => Event::POST_TYPE,
+			)
+		);
+
+		$loop->the_post();
 
 		$this->assertNull(
 			Context::get_instance()->current(),
 			'Failed to assert that iterating an unrelated post clears occurrence context.'
+		);
+		$this->assertSame(
+			$this->reference_anchor_start,
+			get_post_meta( $other, 'gatherpress_datetime_start', true ),
+			'Failed to assert that the unrelated post in the inner loop reads its own datetime.'
+		);
+
+		wp_reset_postdata();
+
+		$this->assertIsArray(
+			Context::get_instance()->current(),
+			'Failed to assert that resetting post data restores the request\'s occurrence context.'
 		);
 	}
 
