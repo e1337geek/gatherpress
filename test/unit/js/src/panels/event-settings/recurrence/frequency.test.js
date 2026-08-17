@@ -93,4 +93,57 @@ describe( 'FrequencyControl', () => {
 
 		expect( onIntervalChange ).toHaveBeenCalledWith( 5 );
 	} );
+
+	test( 'offers Yearly as a selectable frequency option', () => {
+		render(
+			<FrequencyControl
+				frequency="daily"
+				interval={ 1 }
+				onFrequencyChange={ jest.fn() }
+				onIntervalChange={ jest.fn() }
+			/>,
+		);
+
+		expect(
+			screen.getByRole( 'option', { name: 'Yearly' } ),
+		).toHaveValue( 'yearly' );
+	} );
+
+	test( 'calls onFrequencyChange with yearly when selected', () => {
+		const onFrequencyChange = jest.fn();
+
+		render(
+			<FrequencyControl
+				frequency="daily"
+				interval={ 1 }
+				onFrequencyChange={ onFrequencyChange }
+				onIntervalChange={ jest.fn() }
+			/>,
+		);
+
+		fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+			target: { value: 'yearly' },
+		} );
+
+		expect( onFrequencyChange ).toHaveBeenCalledWith( 'yearly' );
+	} );
+
+	test( 'renders the current yearly frequency without leaking weekly or monthly controls', () => {
+		render(
+			<FrequencyControl
+				frequency="yearly"
+				interval={ 1 }
+				onFrequencyChange={ jest.fn() }
+				onIntervalChange={ jest.fn() }
+			/>,
+		);
+
+		expect( screen.getByLabelText( 'Frequency' ) ).toHaveValue( 'yearly' );
+		// FrequencyControl renders only the frequency select and the interval
+		// input -- the weekly/monthly-specific controls live in the parent
+		// panel and are gated there, so a yearly selection here must not
+		// render or leak any weekday/monthly state of its own.
+		expect( screen.queryByLabelText( /weekday/i ) ).not.toBeInTheDocument();
+		expect( screen.queryByLabelText( /monthly/i ) ).not.toBeInTheDocument();
+	} );
 } );
