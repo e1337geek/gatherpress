@@ -674,6 +674,10 @@ class Test_Rewrite extends Base {
 	 * that has no occurrence segment (i.e. every ordinary event permalink on
 	 * the entire site).
 	 *
+	 * The guard lives on `parse_request()` itself rather than on this branch,
+	 * so its sibling test below covers the occurrence-segment branch.
+	 *
+	 * @covers ::parse_request
 	 * @covers ::maybe_resolve_bare_series
 	 *
 	 * @return void
@@ -709,6 +713,55 @@ class Test_Rewrite extends Base {
 			0,
 			$query_count,
 			'A plain event permalink request must not query the occurrence table when the site has no recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16 on the occurrence-segment branch of `parse_request()`.
+	 *
+	 * The sibling of the bare-series test above. That one probes the branch
+	 * taken when a URL carries no occurrence segment; this one drives a real
+	 * occurrence URL, which takes the other branch and reaches
+	 * `Occurrences::get()` -- a raw, uncached `$wpdb->get_row()`. The two
+	 * branches shipped with different guarding precisely because only the
+	 * first was ever probed, so both are pinned here.
+	 *
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_skips_occurrence_query_without_recurring_events(): void {
+		global $wpdb;
+
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+
+		$url = Rewrite::get_occurrence_url( $post_id, Occurrences::recurrence_id( $anchor_start ) );
+
+		// Flipped only after projection, so a real occurrence row exists and the
+		// URL is genuinely well-formed: what is asserted is the guard, not a
+		// missing fixture.
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$query_count       = 0;
+		$count_queries     = static function ( string $query ) use ( $occurrences_table, &$query_count ): string {
+			if ( str_contains( $query, $occurrences_table ) ) {
+				++$query_count;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $count_queries );
+
+		$this->go_to( $url );
+
+		remove_filter( 'query', $count_queries );
+
+		$this->assertSame(
+			0,
+			$query_count,
+			'An occurrence URL must not query the occurrence table when the site has no recurring events.'
 		);
 	}
 
@@ -963,6 +1016,12 @@ class Test_Rewrite extends Base {
 	 * @return void
 	 */
 	public function test_parse_request_bails_when_no_post_resolves(): void {
+		// The site must genuinely have a recurring event, or REQ-16's guard on
+		// `parse_request()` returns before the post-resolution branch this test
+		// exists to reach -- the assertion below would then hold for a reason
+		// that has nothing to do with post resolution.
+		$this->create_relative_daily_series( 5, 7, 3 );
+
 		$wp             = new WP();
 		$wp->query_vars = array( Context::QUERY_VAR => '20260901T180000' );
 

@@ -215,6 +215,15 @@ final class Rewrite {
 	 * does not filter by status, so a cancelled row is returned like any
 	 * other and this method never inspects `status` itself.
 	 *
+	 * REQ-16 is enforced here, at the single entry point, rather than inside
+	 * each branch. Both branches reach the occurrence table -- the bare-series
+	 * one through `next_upcoming_recurrence_id()`, the occurrence-segment one
+	 * through `Occurrences::get()` -- and `Occurrences::get()` is a raw,
+	 * uncached `$wpdb->get_row()`. A guard placed per branch is one a later
+	 * branch can be added without, which is exactly how the occurrence-segment
+	 * path shipped unguarded while the bare-series path was correct. Guarding
+	 * the method instead of the path means a new branch inherits it.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param WP $wp The main WP request object, mutated in place.
@@ -222,6 +231,10 @@ final class Rewrite {
 	 * @return void
 	 */
 	public function parse_request( WP $wp ): void {
+		if ( ! Query::site_has_recurring_events() ) {
+			return;
+		}
+
 		if ( ! isset( $wp->query_vars[ Context::QUERY_VAR ] ) || '' === $wp->query_vars[ Context::QUERY_VAR ] ) {
 			$this->maybe_resolve_bare_series( $wp );
 
@@ -259,12 +272,12 @@ final class Rewrite {
 	 * rows -- a non-recurring event, or a series that has run out -- is left
 	 * untouched so it renders exactly as it does today.
 	 *
-	 * REQ-16: `Query::site_has_recurring_events()` guards *before*
-	 * `resolve_post_id_from_query_vars()` runs, not after -- this method is
-	 * the bare-URL branch of `parse_request()`, which every non-occurrence
-	 * request on the site falls through to, so without this guard first,
-	 * every plain event permalink pays a `get_page_by_path()` lookup plus an
-	 * occurrence-table query on a site with no recurring events at all.
+	 * REQ-16 is handled by `parse_request()` before this method is reached, so
+	 * the `get_page_by_path()` lookup below is never paid on a site with no
+	 * recurring events. The guard deliberately does not live here: this is the
+	 * branch every non-occurrence request falls through to, and guarding a
+	 * branch rather than the entry point is what let the sibling
+	 * occurrence-segment branch ship without one.
 	 *
 	 * @since 0.36.0
 	 *
@@ -273,10 +286,6 @@ final class Rewrite {
 	 * @return void
 	 */
 	protected function maybe_resolve_bare_series( WP $wp ): void {
-		if ( ! Query::site_has_recurring_events() ) {
-			return;
-		}
-
 		$post_id = $this->resolve_post_id_from_query_vars( $wp->query_vars );
 
 		if ( null === $post_id ) {

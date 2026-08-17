@@ -408,6 +408,14 @@ final class Context {
 	/**
 	 * Build the permalink of one occurrence.
 	 *
+	 * Delegates to `Rewrite::get_occurrence_url()`, which owns the canonical
+	 * `/{event-slug}/{postname}/{Ymd\THis}/` form and the
+	 * `gatherpress_recurrence_id_format` filter. This method predates that one
+	 * and originally composed a `?gatherpress_occurrence=` query arg; keeping
+	 * both shapes would mean two URLs resolving to the same occurrence, only
+	 * one of which is canonical, and would let callers here emit links that
+	 * never exercise the rewrite rules.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
@@ -416,12 +424,10 @@ final class Context {
 	 * @return string The occurrence URL, or the series permalink when no occurrence is named.
 	 */
 	public static function occurrence_url( int $post_id, string $recurrence_id ): string {
-		$permalink = (string) get_permalink( $post_id );
-
-		if ( '' === $permalink || '' === $recurrence_id ) {
-			return $permalink;
+		if ( '' === $recurrence_id ) {
+			return (string) get_permalink( $post_id );
 		}
 
-		return (string) add_query_arg( self::QUERY_VAR, $recurrence_id, $permalink );
+		return Rewrite::get_occurrence_url( $post_id, $recurrence_id );
 	}
 }

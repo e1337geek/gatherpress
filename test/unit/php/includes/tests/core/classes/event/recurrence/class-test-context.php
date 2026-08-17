@@ -13,13 +13,18 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use GatherPress\Core\Calendar\Calendar;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
+use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
+use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use RuntimeException;
@@ -110,15 +115,37 @@ class Test_Context extends Base {
 
 		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
 		Context::get_instance()->clear();
+
+		// Pretty permalinks and the occurrence rewrite rule, so every `go_to()`
+		// below travels the production URL -- `/{event-slug}/{postname}/{Ymd\THis}/`
+		// resolved by the real rewrite rules -- rather than a query-arg stand-in
+		// that no visitor ever sends. Mirrors `Test_Rewrite::setUp()`, including
+		// the post type re-registration: WP only builds a post type's pretty
+		// permastruct when `permalink_structure` is non-empty at registration
+		// time, and the bootstrap registered it while permalinks were plain.
+		global $wp_rewrite;
+		$wp_rewrite->set_permalink_structure( '/%postname%/' );
+
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+		unregister_taxonomy( Topic::TAXONOMY );
+		Topic::get_instance()->register_taxonomy();
+
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
 	}
 
 	/**
-	 * Leave no occurrence context behind for the next test.
+	 * Leave no occurrence context or rewrite state behind for the next test.
 	 *
 	 * @return void
 	 */
 	public function tearDown(): void {
 		Context::get_instance()->clear();
+
+		global $wp_rewrite;
+		$wp_rewrite->set_permalink_structure( '' );
+		$wp_rewrite->flush_rules();
 
 		parent::tearDown();
 	}
@@ -140,23 +167,66 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Register the occurrence query var so `go_to()` keeps it.
+	 * Create a projected daily series straddling "now", anchored relative to it.
 	 *
-	 * The rewrite lane owns real registration; this stands in for it so the
-	 * `wp` wiring can be driven through a genuine request here.
+	 * The reference fixture's anchor is a fixed 2026 date, which is fine for
+	 * assertions about a *named* occurrence but a date bomb for anything about
+	 * the *next upcoming* one — once real time passes the last occurrence, the
+	 * series has lapsed and D-4 resolves to nothing.
+	 *
+	 * The anchor is placed in the past and the interval chosen so exactly one
+	 * occurrence is behind "now" and two are ahead. That makes the next upcoming
+	 * occurrence neither the anchor nor the first row, so an implementation that
+	 * returned either is distinguishable from one that genuinely picks the next.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @return void
+	 * @return array{0:int,1:string,2:string} Post ID, past recurrence ID, next upcoming recurrence ID.
 	 */
-	protected function register_query_var(): void {
-		add_filter(
-			'query_vars',
-			static function ( array $query_vars ): array {
-				$query_vars[] = Context::QUERY_VAR;
+	protected function create_series_straddling_now(): array {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-5 days' );
+		$post_id  = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
 
-				return $query_vars;
-			}
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor->format( Event::DATETIME_FORMAT ),
+					'dateTimeEnd'   => $anchor->modify( '+2 hours' )->format( Event::DATETIME_FORMAT ),
+					'timezone'      => $timezone->getName(),
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		add_post_meta(
+			$post_id,
+			Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 7,
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return array(
+			$post_id,
+			Occurrences::recurrence_id( $anchor ),
+			Occurrences::recurrence_id( $anchor->modify( '+7 days' ) ),
 		);
 	}
 
@@ -615,25 +685,30 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for `occurrence_url()` carrying the recurrence identifier.
+	 * Coverage for `occurrence_url()` producing the canonical occurrence URL.
+	 *
+	 * Pinned as identical to `Rewrite::get_occurrence_url()` rather than merely
+	 * "contains the identifier somewhere". Two builders emitting two different
+	 * URL shapes for the same occurrence is exactly the drift this delegation
+	 * exists to prevent, and a containment assertion would not notice it.
 	 *
 	 * @covers ::occurrence_url
 	 *
 	 * @return void
 	 */
-	public function test_occurrence_url_carries_the_recurrence_id(): void {
+	public function test_occurrence_url_matches_the_canonical_occurrence_url(): void {
 		$post_id = $this->create_and_project();
 		$url     = Context::occurrence_url( $post_id, self::SECOND_ID );
 
-		$this->assertStringContainsString(
-			sprintf( '%s=%s', Context::QUERY_VAR, self::SECOND_ID ),
+		$this->assertSame(
+			Rewrite::get_occurrence_url( $post_id, self::SECOND_ID ),
 			$url,
-			'Failed to assert that the occurrence URL carries the recurrence identifier.'
+			'Failed to assert that occurrence_url() produces the canonical occurrence URL.'
 		);
 		$this->assertStringContainsString(
-			(string) wp_parse_url( (string) get_permalink( $post_id ), PHP_URL_PATH ),
+			sprintf( '/%s/', self::SECOND_ID ),
 			$url,
-			'Failed to assert that the occurrence URL is built on the series permalink.'
+			'Failed to assert that the occurrence URL carries the recurrence identifier as a path segment.'
 		);
 	}
 
@@ -681,7 +756,6 @@ class Test_Context extends Base {
 	public function test_context_is_established_on_wp_for_an_occurrence_request(): void {
 		$post_id = $this->create_and_project();
 
-		$this->register_query_var();
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		$current = Context::get_instance()->current();
@@ -695,22 +769,50 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for a request without the occurrence query var.
+	 * Coverage for a bare series request composing with PRD D-4.
+	 *
+	 * `Rewrite` resolves a bare series URL to the next upcoming occurrence and
+	 * sets the query var during `parse_request`; `Context` then establishes that
+	 * occurrence on `wp`. Before D-4 existed this asserted the context stayed
+	 * unset, which is now wrong.
+	 *
+	 * It asserts the *specific* occurrence rather than merely a non-null
+	 * context. The fixture straddles "now", so the next upcoming occurrence is
+	 * neither the anchor nor the first row: an implementation that resolved to
+	 * either — or one that carried a stale identifier forward — produces a
+	 * different value and fails here.
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
+	 * @covers ::set
 	 *
 	 * @return void
 	 */
-	public function test_context_stays_unset_on_wp_without_the_query_var(): void {
-		$post_id = $this->create_and_project();
+	public function test_bare_series_request_establishes_the_next_upcoming_occurrence(): void {
+		list( $post_id, $past_id, $next_id ) = $this->create_series_straddling_now();
 
-		$this->register_query_var();
 		$this->go_to( (string) get_permalink( $post_id ) );
 
-		$this->assertNull(
-			Context::get_instance()->current(),
-			'Failed to assert that a plain series request leaves the context unset.'
+		$current = Context::get_instance()->current();
+
+		$this->assertIsArray(
+			$current,
+			'A bare series request must establish occurrence context under PRD D-4.'
+		);
+		$this->assertSame(
+			$next_id,
+			$current['recurrence_id'],
+			'A bare series request must resolve to the next upcoming occurrence.'
+		);
+		$this->assertNotSame(
+			$past_id,
+			$current['recurrence_id'],
+			'A bare series request must not resolve to an occurrence that has already happened.'
+		);
+		$this->assertSame(
+			$post_id,
+			(int) $current['series_post_id'],
+			'The established context must belong to the requested series.'
 		);
 	}
 
@@ -725,7 +827,6 @@ class Test_Context extends Base {
 	public function test_context_stays_unset_when_the_request_resolves_to_no_post(): void {
 		$this->create_and_project();
 
-		$this->register_query_var();
 		$this->go_to( add_query_arg( Context::QUERY_VAR, self::SECOND_ID, home_url( '/' ) ) );
 
 		$this->assertNull(
@@ -754,8 +855,6 @@ class Test_Context extends Base {
 		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 		$seen    = 0;
 
-		$this->register_query_var();
-
 		add_filter(
 			'query',
 			static function ( string $query ) use ( &$seen, $table ): string {
@@ -767,20 +866,29 @@ class Test_Context extends Base {
 			}
 		);
 
-		$this->go_to( (string) get_permalink( $post_id ) );
-
-		$this->assertSame(
-			0,
-			$seen,
-			'Failed to assert that a plain series request never queries the occurrence table.'
-		);
-
+		// A request that identifies no post at all cannot name an occurrence,
+		// whatever the query string claims -- this pins the post ID guard. It
+		// remains a hard zero after D-4, because the bare-series resolution has
+		// no post to resolve either.
 		$this->go_to( add_query_arg( Context::QUERY_VAR, self::SECOND_ID, home_url( '/' ) ) );
 
 		$this->assertSame(
 			0,
 			$seen,
 			'Failed to assert that a request resolving to no post never queries the occurrence table.'
+		);
+
+		// A post that is not an event resolves to an ID but never to an
+		// occurrence -- this pins the empty-identifier guard, which the home
+		// page case above cannot reach because it bails on the post ID first.
+		$plain_post = $this->factory->post->create( array( 'post_type' => 'post' ) );
+
+		$this->go_to( (string) get_permalink( $plain_post ) );
+
+		$this->assertSame(
+			0,
+			$seen,
+			'Failed to assert that a non-event permalink never queries the occurrence table.'
 		);
 
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
@@ -867,7 +975,6 @@ class Test_Context extends Base {
 		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 		$seen  = 0;
 
-		$this->register_query_var();
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		add_filter(
@@ -950,8 +1057,6 @@ class Test_Context extends Base {
 
 		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 		$seen  = 0;
-
-		$this->register_query_var();
 
 		add_filter(
 			'query',
@@ -1145,7 +1250,6 @@ class Test_Context extends Base {
 	public function test_event_date_block_renders_occurrence_date_unmodified(): void {
 		$post_id = $this->create_and_project();
 
-		$this->register_query_var();
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		$output = do_blocks(
@@ -1180,7 +1284,6 @@ class Test_Context extends Base {
 	public function test_add_to_calendar_links_carry_occurrence_datetime(): void {
 		$post_id = $this->create_and_project();
 
-		$this->register_query_var();
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		$output = do_blocks(
@@ -1220,6 +1323,17 @@ class Test_Context extends Base {
 	/**
 	 * Coverage for teardown leaving no stale occurrence value behind.
 	 *
+	 * Teardown is still a real requirement after PRD D-4, but "context is null"
+	 * is no longer how it shows: a later bare-series request legitimately
+	 * re-establishes context. So the test distinguishes *re-derived from this
+	 * request* from *survived from the previous one*.
+	 *
+	 * The fixture straddles "now" and the first request explicitly names the
+	 * occurrence that is **not** the next upcoming one. A stale value therefore
+	 * reads differently from a correctly re-derived one, which a null check
+	 * could never have told apart. A second leg then leaves for a non-event URL,
+	 * where the correct answer really is no context at all.
+	 *
 	 * @covers ::sync
 	 * @covers ::clear
 	 * @covers ::metadata
@@ -1227,37 +1341,48 @@ class Test_Context extends Base {
 	 * @return void
 	 */
 	public function test_no_stale_occurrence_value_leaks_after_teardown(): void {
-		$post_id = $this->create_and_project();
+		list( $post_id, $past_id, $next_id ) = $this->create_series_straddling_now();
 
-		$this->register_query_var();
-		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+		$this->go_to( Context::occurrence_url( $post_id, $past_id ) );
 
 		$this->assertSame(
-			self::SECOND_START,
-			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
-			'Failed to assert that the occurrence request served the occurrence datetime.'
+			$past_id,
+			Context::get_instance()->current()['recurrence_id'],
+			'Failed to assert that the occurrence request served the occurrence it named.'
 		);
+
+		$past_start = (string) get_post_meta( $post_id, 'gatherpress_datetime_start', true );
 
 		$this->go_to( (string) get_permalink( $post_id ) );
 
-		$this->assertNull(
-			Context::get_instance()->current(),
-			'Failed to assert that occurrence context is gone after the request ends.'
-		);
 		$this->assertSame(
-			$this->reference_anchor_start,
+			$next_id,
+			Context::get_instance()->current()['recurrence_id'],
+			'The later request must reflect its own resolution, not the previous request\'s occurrence.'
+		);
+		$this->assertNotSame(
+			$past_start,
 			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
-			'Failed to assert that no stale occurrence value leaks into a later request.'
+			'Failed to assert that the previous request\'s occurrence datetime did not survive into this one.'
 		);
 
 		$output = do_blocks(
 			'<!-- wp:gatherpress/event-date {"displayType":"start","startDateFormat":"Y-m-d H:i"} /-->'
 		);
 
-		$this->assertStringContainsString(
-			'2026-09-03 18:00',
+		$this->assertStringNotContainsString(
+			substr( $past_start, 0, 16 ),
 			$output,
-			'Failed to assert that the event-date block returns to the series date after teardown.'
+			'Failed to assert that the event-date block stopped rendering the previous request\'s occurrence.'
+		);
+
+		// Leaving for a URL that names no event at all must drop context
+		// outright -- there is nothing for D-4 to re-derive.
+		$this->go_to( home_url( '/' ) );
+
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert that occurrence context is gone once the request names no event.'
 		);
 	}
 
@@ -1297,7 +1422,6 @@ class Test_Context extends Base {
 			)
 		);
 
-		$this->register_query_var();
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		$this->assertSame(
