@@ -46,6 +46,57 @@ async function dismissEditorModals( page ) {
 }
 
 /**
+ * Perform a REST request through the page's `wp.apiFetch`, raising a legible
+ * Error when it rejects.
+ *
+ * `apiFetch` rejects with a plain object (`{ code, message, data }`), not an
+ * `Error`. Playwright serializes a thrown non-`Error` out of `page.evaluate`
+ * as the bare string `Object`, so every REST failure in this suite -- a
+ * missing route, a permissions refusal, a rejected meta value -- arrives as
+ * `Error: page.evaluate: Object` with the entire reason discarded, pointing
+ * only at the helper's line number. That turns a one-line diagnosis into an
+ * investigation. Normalize the rejection inside the page, then raise a real
+ * Error on the Node side naming the route, the status and the message.
+ *
+ * @since 0.36.0
+ *
+ * @param {import('@playwright/test').Page} page    Playwright page object, already on an admin page.
+ * @param {Object}                          options `apiFetch` options (`path`, `method`, `data`).
+ *
+ * @return {Promise<Object>} The parsed response body.
+ */
+async function restRequest( page, options ) {
+	const outcome = await page.evaluate( async ( request ) => {
+		if ( 'function' !== typeof window.wp?.apiFetch ) {
+			return { error: { code: 'no_api_fetch', message: 'window.wp.apiFetch is not available', status: null } };
+		}
+
+		try {
+			return { data: await window.wp.apiFetch( request ) };
+		} catch ( error ) {
+			return {
+				error: {
+					code: error?.code ?? 'unknown_error',
+					message: error?.message ?? String( error ),
+					status: error?.data?.status ?? null,
+				},
+			};
+		}
+	}, options );
+
+	if ( outcome.error ) {
+		const { code, message, status } = outcome.error;
+
+		throw new Error(
+			`REST ${ options.method ?? 'GET' } ${ options.path } failed: ` +
+				`${ code } (HTTP ${ status ?? 'unknown' }) — ${ message }`
+		);
+	}
+
+	return outcome.data;
+}
+
+/**
  * Navigate to `/wp-admin/` and confirm the page is usable for REST seeding.
  *
  * Every spec in this suite starts by loading an admin page so
@@ -127,71 +178,62 @@ async function seedEventWithDatetime( page, {
 	timezone = 'America/New_York',
 	status = 'publish',
 } = {} ) {
-	const result = await page.evaluate(
-		async ( { title: t, daysFromNow: d, hour: h, durationHours: dur, timezone: tz, status: s } ) => {
-			// Built entirely from UTC fields, deliberately: `gatherpress_datetime`
-			// wants a naive "local wall clock" string paired with the `timezone`
-			// field, and the browser's own system timezone (whatever the host
-			// machine happens to be set to) must never leak into which
-			// calendar day that string names. Mixing local-timezone `Date`
-			// getters/setters with `toISOString()`'s UTC conversion shifts the
-			// calendar day near midnight on any host not itself running UTC.
-			const now = new Date();
-			const daysAhead = new Date( now.getTime() + ( d * 24 * 60 * 60 * 1000 ) );
-			const start = new Date( Date.UTC(
-				daysAhead.getUTCFullYear(),
-				daysAhead.getUTCMonth(),
-				daysAhead.getUTCDate(),
-				h, 0, 0
-			) );
-			const end = new Date( start.getTime() + ( dur * 60 * 60 * 1000 ) );
-			const pad = ( n ) => String( n ).padStart( 2, '0' );
-			const fmt = ( date ) => `${ date.getUTCFullYear() }-${ pad( date.getUTCMonth() + 1 ) }-` +
-				`${ pad( date.getUTCDate() ) } ${ pad( date.getUTCHours() ) }:00:00`;
+	// Built entirely from UTC fields, deliberately: `gatherpress_datetime`
+	// wants a naive "local wall clock" string paired with the `timezone`
+	// field, and the machine's own system timezone (whatever the host happens
+	// to be set to) must never leak into which calendar day that string names.
+	// Mixing local-timezone `Date` getters/setters with `toISOString()`'s UTC
+	// conversion shifts the calendar day near midnight on any host not itself
+	// running UTC.
+	const now = new Date();
+	const daysAhead = new Date( now.getTime() + ( daysFromNow * 24 * 60 * 60 * 1000 ) );
+	const start = new Date( Date.UTC(
+		daysAhead.getUTCFullYear(),
+		daysAhead.getUTCMonth(),
+		daysAhead.getUTCDate(),
+		hour, 0, 0
+	) );
+	const end = new Date( start.getTime() + ( durationHours * 60 * 60 * 1000 ) );
+	const pad = ( value ) => String( value ).padStart( 2, '0' );
+	const fmt = ( date ) => `${ date.getUTCFullYear() }-${ pad( date.getUTCMonth() + 1 ) }-` +
+		`${ pad( date.getUTCDate() ) } ${ pad( date.getUTCHours() ) }:00:00`;
 
-			const res = await window.wp.apiFetch( {
-				path: '/wp/v2/gatherpress_events',
-				method: 'POST',
-				data: {
-					title: t,
-					status: s,
-					// Non-empty content so the editor's pattern-picker start
-					// page never covers the sidebar controls a later step
-					// interacts with.
-					// Includes a linked event-date block so specs can read the
-					// resolved occurrence date straight off the single event
-					// page (bare series URL or a direct occurrence URL).
-					content: '<!-- wp:gatherpress/event-date {"isLink":true} /-->' +
-						'<!-- wp:paragraph --><p>Seeded by the recurring-events e2e suite.</p><!-- /wp:paragraph -->',
-					meta: {
-						gatherpress_datetime: JSON.stringify( {
-							dateTimeStart: fmt( start ),
-							dateTimeEnd: fmt( end ),
-							timezone: tz,
-						} ),
-					},
-				},
-			} );
-
-			return {
-				eventId: res.id,
-				link: res.link,
-				// Plain components (not a Date instance — page.evaluate can
-				// only return serializable values) so a caller can rebuild
-				// the exact local anchor date/time this event was seeded
-				// with, e.g. to compute an expected occurrence ID.
-				anchor: {
-					year: start.getUTCFullYear(),
-					month: start.getUTCMonth(),
-					day: start.getUTCDate(),
-					hour: start.getUTCHours(),
-				},
-			};
+	const res = await restRequest( page, {
+		path: '/wp/v2/gatherpress_events',
+		method: 'POST',
+		data: {
+			title,
+			status,
+			// Non-empty content so the editor's pattern-picker start page never
+			// covers the sidebar controls a later step interacts with. Includes a
+			// linked event-date block so specs can read the resolved occurrence
+			// date straight off the single event page (bare series URL or a
+			// direct occurrence URL).
+			content: '<!-- wp:gatherpress/event-date {"isLink":true} /-->' +
+				'<!-- wp:paragraph --><p>Seeded by the recurring-events e2e suite.</p><!-- /wp:paragraph -->',
+			meta: {
+				gatherpress_datetime: JSON.stringify( {
+					dateTimeStart: fmt( start ),
+					dateTimeEnd: fmt( end ),
+					timezone,
+				} ),
+			},
 		},
-		{ title, daysFromNow, hour, durationHours, timezone, status }
-	);
+	} );
 
-	return result;
+	return {
+		eventId: res.id,
+		link: res.link,
+		// Plain components so a caller can rebuild the exact local anchor
+		// date/time this event was seeded with, e.g. to compute an expected
+		// occurrence ID or an expected rendered date.
+		anchor: {
+			year: start.getUTCFullYear(),
+			month: start.getUTCMonth(),
+			day: start.getUTCDate(),
+			hour: start.getUTCHours(),
+		},
+	};
 }
 
 /**
@@ -469,12 +511,11 @@ async function saveEvent( page ) {
  * @return {Promise<Object>} The event's `meta` object.
  */
 async function getEventMeta( page, eventId ) {
-	return page.evaluate( async ( id ) => {
-		const res = await window.wp.apiFetch( {
-			path: `/wp/v2/gatherpress_events/${ id }?context=edit`,
-		} );
-		return res.meta;
-	}, eventId );
+	const res = await restRequest( page, {
+		path: `/wp/v2/gatherpress_events/${ eventId }?context=edit`,
+	} );
+
+	return res.meta;
 }
 
 /**
@@ -499,14 +540,13 @@ async function createUpcomingEventsListPage( page, title ) {
 		'<!-- wp:post-title {"isLink":true} /--><!-- wp:gatherpress/event-date {"isLink":true} /-->' +
 		'<!-- /wp:post-template --></div><!-- /wp:query -->';
 
-	return page.evaluate( async ( { title: t, content: c } ) => {
-		const res = await window.wp.apiFetch( {
-			path: '/wp/v2/pages',
-			method: 'POST',
-			data: { title: t, status: 'publish', content: c },
-		} );
-		return { pageId: res.id, link: res.link };
-	}, { title, content } );
+	const res = await restRequest( page, {
+		path: '/wp/v2/pages',
+		method: 'POST',
+		data: { title, status: 'publish', content },
+	} );
+
+	return { pageId: res.id, link: res.link };
 }
 
 /**
@@ -554,12 +594,10 @@ async function getUpcomingRows( page, pageUrl ) {
  * @return {Promise<void>}
  */
 async function deletePost( page, id, restBase = 'gatherpress_events' ) {
-	await page.evaluate( async ( { id: postId, restBase: base } ) => {
-		await window.wp.apiFetch( {
-			path: `/wp/v2/${ base }/${ postId }?force=true`,
-			method: 'DELETE',
-		} );
-	}, { id, restBase } );
+	await restRequest( page, {
+		path: `/wp/v2/${ restBase }/${ id }?force=true`,
+		method: 'DELETE',
+	} );
 }
 
 /**
@@ -575,13 +613,11 @@ async function deletePost( page, id, restBase = 'gatherpress_events' ) {
  * @return {Promise<void>}
  */
 async function setSiteTimezone( page, tz ) {
-	await page.evaluate( async ( timezone ) => {
-		await window.wp.apiFetch( {
-			path: '/wp/v2/settings',
-			method: 'POST',
-			data: { timezone },
-		} );
-	}, tz );
+	await restRequest( page, {
+		path: '/wp/v2/settings',
+		method: 'POST',
+		data: { timezone: tz },
+	} );
 }
 
 /**
@@ -599,10 +635,9 @@ async function setSiteTimezone( page, tz ) {
  * @return {Promise<string>} The site's `timezone` setting.
  */
 async function getSiteTimezone( page ) {
-	return page.evaluate( async () => {
-		const settings = await window.wp.apiFetch( { path: '/wp/v2/settings' } );
-		return settings.timezone;
-	} );
+	const settings = await restRequest( page, { path: '/wp/v2/settings' } );
+
+	return settings.timezone;
 }
 
 /**
@@ -753,6 +788,7 @@ function toRecurrenceId( date, hhmmss ) {
 
 module.exports = {
 	dismissEditorModals,
+	restRequest,
 	gotoAdmin,
 	openEventSettingsPanel,
 	seedEventWithDatetime,

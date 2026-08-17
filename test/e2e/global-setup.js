@@ -16,7 +16,7 @@ module.exports = async ( config ) => {
 
 	// Create request context for API calls.
 	const requestContext = await request.newContext( {
-		baseURL: baseURL || 'http://localhost:8889',
+		baseURL,
 	} );
 
 	// Create request utils for WordPress REST API operations.

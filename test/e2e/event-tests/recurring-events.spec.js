@@ -1,6 +1,7 @@
 const { test, expect } = require( '@playwright/test' );
 const {
 	gotoAdmin,
+	restRequest,
 	openEventEditor,
 	setEventTimezone,
 	enableRecurrence,
@@ -235,12 +236,9 @@ test.describe( 'Recurring events', () => {
 			expect( meta.gatherpress_recurrence_byday ).toBe( 'TU,TH' );
 
 			// The post is published, not left as a draft.
-			const status = await page.evaluate( async ( id ) => {
-				const res = await window.wp.apiFetch( {
-					path: `/wp/v2/gatherpress_events/${ id }`,
-				} );
-				return res.status;
-			}, eventId );
+			const { status } = await restRequest( page, {
+				path: `/wp/v2/gatherpress_events/${ eventId }`,
+			} );
 
 			expect( status ).toBe( 'publish' );
 		} finally {
@@ -303,10 +301,9 @@ test.describe( 'Recurring events', () => {
 			// rather than "it is a Wednesday" is what makes "last" load-bearing:
 			// a server resolving `-1` as the *first* Wednesday of the month also
 			// produces a Wednesday.
-			const link = await page.evaluate( async ( id ) => {
-				const res = await window.wp.apiFetch( { path: `/wp/v2/gatherpress_events/${ id }` } );
-				return res.link;
-			}, eventId );
+			const { link } = await restRequest( page, {
+				path: `/wp/v2/gatherpress_events/${ eventId }`,
+			} );
 
 			await page.goto( link );
 			await page.waitForLoadState( 'load' );
@@ -357,10 +354,9 @@ test.describe( 'Recurring events', () => {
 			await setEndCondition( page, { endType: 'count', count: 12 } );
 			await saveEvent( page );
 
-			const { link: seriesLink } = await page.evaluate( async ( id ) => {
-				const res = await window.wp.apiFetch( { path: `/wp/v2/gatherpress_events/${ id }` } );
-				return { link: res.link };
-			}, eventId );
+			const { link: seriesLink } = await restRequest( page, {
+				path: `/wp/v2/gatherpress_events/${ eventId }`,
+			} );
 
 			const { pageId, link: listUrl } = await createUpcomingEventsListPage(
 				page,
