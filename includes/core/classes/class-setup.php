@@ -532,6 +532,11 @@ final class Setup {
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php'; // NOSONAR.
 
 		dbDelta( $sql );
+
+		// This is the one path that can turn a "the occurrence table is
+		// missing" answer into a "it is there now" answer inside a single
+		// request, so the memo that answers it is discarded here.
+		Occurrences::get_instance()->forget_table_exists();
 	}
 
 	/**

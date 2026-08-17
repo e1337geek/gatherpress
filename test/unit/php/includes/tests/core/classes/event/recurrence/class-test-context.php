@@ -265,6 +265,24 @@ class Test_Context extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'note_meta_write' ),
 			),
+			array(
+				'type'     => 'filter',
+				'name'     => 'the_content',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_prepend_cancelled_notice' ),
+			),
+			array(
+				'type'     => 'filter',
+				'name'     => 'post_type_link',
+				'priority' => 10,
+				'callback' => array( $instance, 'permalink' ),
+			),
+			array(
+				'type'     => 'filter',
+				'name'     => 'post_link',
+				'priority' => 10,
+				'callback' => array( $instance, 'permalink' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );
@@ -547,7 +565,7 @@ class Test_Context extends Base {
 			Utility::invoke_hidden_method(
 				Context::get_instance(),
 				'occurrence_value',
-				array( 'gatherpress_datetime_start_gmt' )
+				array( Context::get_instance()->current(), 'gatherpress_datetime_start_gmt' )
 			),
 			'Failed to assert that occurrence_value returns the occurrence row column.'
 		);
@@ -584,7 +602,7 @@ class Test_Context extends Base {
 			Utility::invoke_hidden_method(
 				Context::get_instance(),
 				'occurrence_value',
-				array( 'gatherpress_timezone' )
+				array( Context::get_instance()->current(), 'gatherpress_timezone' )
 			),
 			'Failed to assert that occurrence_value falls back to the series meta for an empty column.'
 		);

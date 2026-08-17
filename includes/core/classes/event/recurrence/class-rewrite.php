@@ -378,7 +378,12 @@ final class Rewrite {
 	 * @return string The occurrence URL, or '' when the post has no permalink.
 	 */
 	public static function get_occurrence_url( int $post_id, string $recurrence_id ): string {
-		$permalink = get_permalink( $post_id );
+		// Read through `Context`, which stands its own permalink filter down
+		// for the duration: the occurrence URL is composed on top of the
+		// *series* permalink, and reading a filtered one during a loop
+		// iteration would append a second occurrence segment to a URL that
+		// already carries one.
+		$permalink = Context::get_instance()->series_permalink( $post_id );
 
 		if ( false === $permalink ) {
 			return '';

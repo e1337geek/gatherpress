@@ -11,10 +11,11 @@
  * CURRENT SITE ONLY. Table creation is therefore lazy per blog: on an
  * existing network upgrading in place, a subsite does not get the occurrence
  * table until someone visits its wp-admin (or a network activation /
- * new-site event runs). The occurrence layer must degrade rather than fatal
- * when its own table is absent on the current blog -- see
- * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` below
- * for the true, empirically observed shape of that degradation.
+ * new-site event runs). A blog without the table must therefore show exactly
+ * what it would show with no recurrence code present at all -- not fatal, and
+ * equally not an empty list. "Does not fatal" is the weaker property and was
+ * all that held before CF-9; see
+ * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` below.
  *
  * Per AGENTS.md: never remove `@group multisite` from this class, and never
  * add `@codeCoverageIgnore` to a multisite-only branch -- CI runs this suite
@@ -284,6 +285,60 @@ class Test_Backcompat_Multisite extends Base {
 			$without_recurrence,
 			$with_recurrence,
 			'Failed to assert the clauses are byte-identical when the occurrence table is absent.'
+		);
+	}
+
+	/**
+	 * (b2) Coverage for the table-existence memo across a blog that gains the
+	 * table mid-request.
+	 *
+	 * The memo is what keeps CF-9's guard from costing a schema probe per
+	 * query, and `Setup::create_tables()` is the one path that can turn its
+	 * answer from false to true inside one request. A memo that outlived that
+	 * would leave a blog permanently un-expanded after its table appeared.
+	 *
+	 * @group multisite
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::table_exists
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::forget_table_exists
+	 * @covers \GatherPress\Core\Setup::create_tables
+	 *
+	 * @return void
+	 */
+	public function test_table_exists_is_rechecked_after_the_table_is_created(): void {
+		global $wpdb;
+
+		$new_site_id = $this->factory()->blog->create();
+
+		switch_to_blog( $new_site_id );
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- simulating the lazy-creation hazard.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		Occurrences::get_instance()->forget_table_exists();
+
+		$missing  = Occurrences::get_instance()->table_exists();
+		$memoized = Occurrences::get_instance()->table_exists();
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$restored = Occurrences::get_instance()->table_exists();
+
+		restore_current_blog();
+
+		$this->assertFalse(
+			$missing,
+			'Failed to assert table_exists() reports a missing occurrence table.'
+		);
+		$this->assertFalse(
+			$memoized,
+			'Failed to assert the memoized answer matches the probe.'
+		);
+		$this->assertTrue(
+			$restored,
+			'Failed to assert create_tables() discards the memo so the table is seen once it exists.'
 		);
 	}
 

@@ -21,6 +21,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Event;
 use GatherPress\Core\Traits\Singleton;
+use WP_Post;
 
 /**
  * Class Context.
@@ -104,6 +105,22 @@ final class Context {
 	protected ?array $writing = null;
 
 	/**
+	 * The post ID whose occurrence permalink is currently being composed.
+	 *
+	 * `Rewrite::get_occurrence_url()` builds the occurrence URL on top of
+	 * `get_permalink()`, which fires the very filter that called it. The post
+	 * ID is noted for the duration of that call so the nested read returns the
+	 * bare series permalink instead of recursing. Holding the ID rather than a
+	 * bare flag keeps the suppression scoped to the one post being resolved,
+	 * so a filter on `gatherpress_recurrence_id_format` that happens to ask
+	 * for a *different* post's permalink still gets a correctly filtered one.
+	 *
+	 * @since 0.36.0
+	 * @var int|null
+	 */
+	protected ?int $linking = null;
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -115,19 +132,29 @@ final class Context {
 	/**
 	 * Set up hooks for occurrence context.
 	 *
-	 * Context is established once, on `wp`, after the main query has resolved
-	 * and before `template_redirect` or any block renders. It deliberately does
-	 * not track the loop. Re-deriving on `the_post` would bind context to
-	 * whichever post the loop reached, and since `recurrence_id` is `Ymd\THis`
-	 * two series projected from the same rule share one — so an inner loop over
-	 * a sibling series would silently adopt the requested occurrence's date. It
-	 * would also cost an uncached occurrence query per iteration, and any inner
-	 * loop that forgot `wp_reset_postdata()` would drop the request's context
-	 * for every block below it.
+	 * There are two sources of occurrence identity, and they are deliberately
+	 * different mechanisms because they answer different questions.
 	 *
-	 * Isolation instead comes from `metadata()`, which serves the occurrence
-	 * only for the post the context belongs to. That is scoping by identity
-	 * rather than by loop position, which is what PRD C-1 asks for.
+	 * The *request's* occurrence is established once, on `wp`, after the main
+	 * query has resolved and before `template_redirect` or any block renders.
+	 * That is the singular occurrence permalink, and it is held in state
+	 * because the request has exactly one of them.
+	 *
+	 * A *loop iteration's* occurrence is held in no state at all. It is read
+	 * back off the result object `Query::attach_occurrences()` stamped, via
+	 * `loop_occurrence()`, at the moment a consumer asks. Nothing is bound on
+	 * `the_post` and nothing is pushed or popped: `the_post()` and
+	 * `wp_reset_postdata()` already maintain the current post correctly,
+	 * including through nesting, so deriving from it inherits that correctness
+	 * instead of duplicating it. Binding on `the_post` would have to clear on
+	 * an inner loop's unstamped post and would then have nothing to restore
+	 * the outer iteration's identity from, because `wp_reset_postdata()` fires
+	 * no action.
+	 *
+	 * Isolation in both cases comes from the same rule the pre-existing
+	 * `metadata()` and `maybe_prepend_cancelled_notice()` already follow: an
+	 * occurrence is served only for the post it belongs to. That is scoping by
+	 * identity rather than by loop position, which is what PRD C-1 asks for.
 	 *
 	 * @since 0.36.0
 	 *
@@ -138,6 +165,13 @@ final class Context {
 		add_action( 'wp', array( $this, 'sync' ) );
 		add_filter( 'update_post_metadata', array( $this, 'note_meta_write' ), 10, 3 );
 		add_filter( 'add_post_metadata', array( $this, 'note_meta_write' ), 10, 3 );
+		add_filter( 'the_content', array( $this, 'maybe_prepend_cancelled_notice' ) );
+		// Both permalink filters, because `get_permalink()` routes a custom
+		// post type through `post_type_link` and the built-in post type
+		// through `post_link`, and recurrence belongs to the
+		// `gatherpress-event-date` support rather than to one post type.
+		add_filter( 'post_type_link', array( $this, 'permalink' ), 10, 2 );
+		add_filter( 'post_link', array( $this, 'permalink' ), 10, 2 );
 	}
 
 	/**
@@ -233,8 +267,11 @@ final class Context {
 	 * Filters `get_post_metadata`. Outside occurrence context it returns the
 	 * value untouched, so the meta read falls through to core. This is the
 	 * compatibility path that lets unmodified blocks render an occurrence's
-	 * date; code inside the recurrence subsystem calls `get_datetime()`
-	 * instead.
+	 * date -- the event date block, the add-to-calendar links, the "has this
+	 * event passed" gate the RSVP blocks read, the block bindings and
+	 * structured data `Event\Setup` emits, and the feed all reach it through
+	 * `Event::get_datetime()`, which reads these five keys. Code inside the
+	 * recurrence subsystem calls `get_datetime()` instead.
 	 *
 	 * @since 0.36.0
 	 *
@@ -257,21 +294,207 @@ final class Context {
 			return $value;
 		}
 
-		// Stand aside while already reading meta of our own (see `$reading`),
-		// outside occurrence context, for keys the occurrence record does not
-		// own, and for any post other than the one the context belongs to.
-		if (
-			$this->reading
-			|| null === $this->occurrence
-			|| ! isset( self::META_KEY_COLUMNS[ $meta_key ] )
-			|| (int) $this->occurrence['series_post_id'] !== $object_id
-		) {
+		// Stand aside while already reading meta of our own (see `$reading`)
+		// and for keys the occurrence record does not own. Both are checked
+		// before `resolve()` rather than inside it: the first is what stops
+		// `read_series_meta()` from re-entering this filter without end.
+		$occurrence = ( $this->reading || ! isset( self::META_KEY_COLUMNS[ $meta_key ] ) )
+			? null
+			: $this->resolve( $object_id );
+
+		if ( null === $occurrence ) {
 			return $value;
 		}
 
-		$result = $this->occurrence_value( $meta_key );
+		$result = $this->occurrence_value( $occurrence, $meta_key );
 
 		return $single ? $result : array( $result );
+	}
+
+	/**
+	 * Replace a loop row's permalink with its occurrence's permalink.
+	 *
+	 * Filters `post_type_link` and `post_link`. Scoped to the loop's stamped
+	 * result object and deliberately *not* to the request's own occurrence
+	 * context: on a singular occurrence request the requested URL already is
+	 * the occurrence URL, and rewriting `get_permalink()` there would change
+	 * what core's canonical-redirect machinery compares against for no gain
+	 * this defect asks for.
+	 *
+	 * The `$post` core hands this filter is `get_post()`'s cached object, not
+	 * the stamped clone, which is exactly why identity is resolved through
+	 * `loop_occurrence()` by ID rather than read off `$post` directly.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $permalink The post's permalink.
+	 * @param mixed  $post      The post the permalink belongs to. Typed loosely rather than as
+	 *                          `WP_Post` because this is a public callback on a singleton, and a
+	 *                          fatal is a poor answer to a caller that hands it something else.
+	 *
+	 * @return string The occurrence's permalink during an occurrence loop iteration, otherwise unchanged.
+	 */
+	public function permalink( $permalink, $post ): string {
+		$post_id = ( $post instanceof WP_Post ) ? (int) $post->ID : 0;
+
+		if ( $this->linking === $post_id || 1 > $post_id ) {
+			return (string) $permalink;
+		}
+
+		$occurrence = $this->loop_occurrence( $post_id );
+
+		return ( null === $occurrence )
+			? (string) $permalink
+			: Rewrite::get_occurrence_url( $post_id, (string) $occurrence['recurrence_id'] );
+	}
+
+	/**
+	 * Read a post's own series permalink, with occurrence substitution suppressed.
+	 *
+	 * The single place the `permalink()` filter is stood down, and it belongs
+	 * here rather than at the call site because the reason is this class's:
+	 * `Rewrite::get_occurrence_url()` composes the occurrence URL *on top of*
+	 * the series permalink, so a filtered read would append an occurrence
+	 * segment to a URL that already has one. That is not merely a recursion
+	 * hazard -- any caller building an occurrence URL while a loop row is set
+	 * up would get a doubled URL, whether or not this filter is what called it.
+	 *
+	 * The previous value is saved and restored rather than cleared, so a
+	 * nested build (a `gatherpress_recurrence_id_format` filter asking for
+	 * another post's occurrence URL) leaves the outer suppression intact.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID to read the permalink of.
+	 *
+	 * @return string|false The series permalink, or false when the post has none.
+	 */
+	public function series_permalink( int $post_id ) {
+		$previous      = $this->linking;
+		$this->linking = $post_id;
+
+		try {
+			return get_permalink( $post_id );
+		} finally {
+			$this->linking = $previous;
+		}
+	}
+
+	/**
+	 * Resolve which occurrence, if any, applies to one post right now.
+	 *
+	 * The request's own occurrence wins over the loop's, because a singular
+	 * occurrence permalink is what the visitor asked for; a loop rendered on
+	 * that same response can still only reach this arm for the requested post
+	 * itself, and for that post the two agree.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID being read.
+	 *
+	 * @return array|null The occurrence row, or null when this post has no occurrence in play.
+	 */
+	protected function resolve( int $post_id ): ?array {
+		if ( null !== $this->occurrence && (int) $this->occurrence['series_post_id'] === $post_id ) {
+			return $this->occurrence;
+		}
+
+		return $this->loop_occurrence( $post_id );
+	}
+
+	/**
+	 * Read the occurrence the current loop iteration represents.
+	 *
+	 * `Query::attach_occurrences()` stamps identity *and* the occurrence's own
+	 * datetime columns onto a clone of every result row, so this is pure
+	 * property access -- no query, and nothing keyed by list position or by
+	 * index (PRD C-1, and preamble rule 6). The values are the occurrence
+	 * record's own columns rather than the anchor's time applied to the
+	 * occurrence's date (PRD C-3).
+	 *
+	 * The `$post_id` comparison is the isolation rule: the stamp is served
+	 * only for the post it was stamped onto, so a consumer reading a different
+	 * post's meta or permalink mid-iteration gets nothing from here. That is
+	 * the same scoping `maybe_prepend_cancelled_notice()` already applies.
+	 *
+	 * Only scheduled occurrences reach a loop -- the join in
+	 * `Query::expand_event_clauses()` filters on `status` -- so the row this
+	 * rebuilds says so.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID being read.
+	 *
+	 * @return array|null An occurrence row, or null when the current post is not a stamped occurrence of it.
+	 */
+	protected function loop_occurrence( int $post_id ): ?array {
+		$post = get_post();
+
+		if ( ! $post instanceof WP_Post || (int) $post->ID !== $post_id ) {
+			return null;
+		}
+
+		// Read through `get_object_vars()`, mirroring how
+		// `Query::stamp_occurrence()` writes the stamp, so the two ends of the
+		// contract are the same shape and neither depends on `WP_Post`'s magic
+		// accessors.
+		//
+		// Keyed on the datetime stamp alone rather than on both stamps,
+		// because `stamp_occurrence()` writes the pair together: the datetime
+		// property is an array for an occurrence row and null for a
+		// non-recurring one, and it is absent entirely on any post that never
+		// passed through `attach_occurrences()`.
+		$values   = get_object_vars( $post );
+		$datetime = $values[ Query::RESULT_DATETIME_PROPERTY ] ?? null;
+
+		if ( ! is_array( $datetime ) ) {
+			return null;
+		}
+
+		return array_merge(
+			$datetime,
+			array(
+				'series_post_id' => $post_id,
+				'recurrence_id'  => (string) $values[ Query::RESULT_PROPERTY ],
+				'status'         => Occurrences::STATUS_SCHEDULED,
+			)
+		);
+	}
+
+	/**
+	 * Prepend a cancellation notice to a cancelled occurrence's content.
+	 *
+	 * REQ-12 is explicit that "an attendee holding the link deserves to be
+	 * told it was cancelled." `Rewrite::parse_request()` already lets a
+	 * cancelled occurrence's URL resolve instead of 404ing; this is what
+	 * tells the visitor once it does. Scoped to the post the occurrence
+	 * context belongs to via `get_the_ID()`, matching how `metadata()` scopes
+	 * its own substitution, so an unrelated loop rendering full content
+	 * elsewhere on the same response (a Query Loop, a widget) does not pick
+	 * up a notice meant for the one post the request is actually about.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $content The post content.
+	 *
+	 * @return string The content, with a cancellation notice prepended when
+	 *                this is a cancelled occurrence's own content.
+	 */
+	public function maybe_prepend_cancelled_notice( string $content ): string {
+		if (
+			null === $this->occurrence
+			|| Occurrences::STATUS_CANCELLED !== $this->occurrence['status']
+			|| get_the_ID() !== (int) $this->occurrence['series_post_id']
+		) {
+			return $content;
+		}
+
+		$notice = sprintf(
+			'<p class="gatherpress-occurrence-cancelled-notice">%s</p>',
+			esc_html__( 'This occurrence has been cancelled.', 'gatherpress' )
+		);
+
+		return $notice . $content;
 	}
 
 	/**
@@ -309,15 +532,16 @@ final class Context {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param string $meta_key One of the keys of `META_KEY_COLUMNS`.
+	 * @param array  $occurrence The occurrence row to read from.
+	 * @param string $meta_key   One of the keys of `META_KEY_COLUMNS`.
 	 *
 	 * @return mixed The occurrence's value, or the series' own value when the column is empty.
 	 */
-	protected function occurrence_value( string $meta_key ) {
-		$value = $this->occurrence[ self::META_KEY_COLUMNS[ $meta_key ] ];
+	protected function occurrence_value( array $occurrence, string $meta_key ) {
+		$value = $occurrence[ self::META_KEY_COLUMNS[ $meta_key ] ];
 
 		return ( null === $value || '' === $value )
-			? $this->read_series_meta( (int) $this->occurrence['series_post_id'], $meta_key )
+			? $this->read_series_meta( (int) $occurrence['series_post_id'], $meta_key )
 			: $value;
 	}
 
@@ -368,12 +592,12 @@ final class Context {
 	 *
 	 * @param int $post_id Post ID the `Event` instance wraps.
 	 *
-	 * @return string The occurrence's identifier when the context is this post's, otherwise an empty string.
+	 * @return string The occurrence's identifier when one applies to this post, otherwise an empty string.
 	 */
 	public function cache_key( int $post_id ): string {
-		return ( null !== $this->occurrence && (int) $this->occurrence['series_post_id'] === $post_id )
-			? (string) $this->occurrence['recurrence_id']
-			: '';
+		$occurrence = $this->resolve( $post_id );
+
+		return ( null === $occurrence ) ? '' : (string) $occurrence['recurrence_id'];
 	}
 
 	/**
@@ -392,14 +616,16 @@ final class Context {
 	 * @return array The `Event::get_datetime()` shape, carrying the occurrence's values in context.
 	 */
 	public function get_datetime( int $post_id ): array {
-		if ( null === $this->occurrence || (int) $this->occurrence['series_post_id'] !== $post_id ) {
+		$occurrence = $this->resolve( $post_id );
+
+		if ( null === $occurrence ) {
 			return ( new Event( $post_id ) )->get_datetime();
 		}
 
 		$data = array();
 
 		foreach ( self::META_KEY_COLUMNS as $meta_key => $column ) {
-			$data[ $column ] = (string) $this->occurrence_value( $meta_key );
+			$data[ $column ] = (string) $this->occurrence_value( $occurrence, $meta_key );
 		}
 
 		return $data;

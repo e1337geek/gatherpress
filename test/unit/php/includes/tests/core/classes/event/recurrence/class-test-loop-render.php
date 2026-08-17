@@ -583,4 +583,225 @@ class Test_Loop_Render extends Base {
 			'Failed to assert the ordinary event kept its bare permalink.'
 		);
 	}
+
+	/**
+	 * Coverage for `loop_occurrence()`'s no-current-post return path.
+	 *
+	 * Invoked directly, because xdebug does not trace a same-class helper's
+	 * body reliably when it is only ever reached from the filter callbacks
+	 * above.
+	 *
+	 * @covers ::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_loop_occurrence_returns_null_with_no_current_post(): void {
+		$now      = $this->now();
+		$plain_id = $this->create_event_at( $now->modify( '+2 hours' ), $now->modify( '+3 hours' ) );
+
+		$this->assertNull(
+			get_post(),
+			'Failed to assert the fixture leaves no current post set up.'
+		);
+		$this->assertNull(
+			Utility::invoke_hidden_method( Context::get_instance(), 'loop_occurrence', array( $plain_id ) ),
+			'Failed to assert loop_occurrence returns null when no post is set up.'
+		);
+	}
+
+	/**
+	 * Coverage for `loop_occurrence()`'s wrong-post return path.
+	 *
+	 * The isolation rule: a stamped occurrence is served only for the post it
+	 * was stamped onto, never for whatever else a consumer happens to ask
+	 * about mid-iteration.
+	 *
+	 * @covers ::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_loop_occurrence_returns_null_for_another_post(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$other_id  = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
+		$query     = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+
+		$query->the_post();
+
+		$mine   = Utility::invoke_hidden_method( Context::get_instance(), 'loop_occurrence', array( $series_id ) );
+		$theirs = Utility::invoke_hidden_method( Context::get_instance(), 'loop_occurrence', array( $other_id ) );
+
+		wp_reset_postdata();
+
+		$this->assertIsArray(
+			$mine,
+			'Failed to assert loop_occurrence resolves the post it was stamped onto.'
+		);
+		$this->assertSame(
+			$this->occurrence_id( $anchor, 1 ),
+			$mine['recurrence_id'],
+			'Failed to assert the resolved row carries the iteration\'s own recurrence ID.'
+		);
+		$this->assertSame(
+			Occurrences::STATUS_SCHEDULED,
+			$mine['status'],
+			'Failed to assert only scheduled occurrences reach a loop.'
+		);
+		$this->assertNull(
+			$theirs,
+			'Failed to assert loop_occurrence refuses to answer for a different post.'
+		);
+	}
+
+	/**
+	 * Coverage for `loop_occurrence()`'s non-recurring return path.
+	 *
+	 * A plain event's row is stamped with a null datetime payload, which is
+	 * the branch that must not be reached for by list position.
+	 *
+	 * @covers ::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_loop_occurrence_returns_null_for_a_non_recurring_row(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+
+		$plain_id = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
+		$query    = $this->run_upcoming_query( array( 'post__in' => array( $plain_id ) ) );
+
+		$query->the_post();
+
+		$resolved = Utility::invoke_hidden_method( Context::get_instance(), 'loop_occurrence', array( $plain_id ) );
+		$stamped  = get_post()->{Query::RESULT_DATETIME_PROPERTY};
+
+		wp_reset_postdata();
+
+		$this->assertNull(
+			$stamped,
+			'Failed to assert a non-recurring row carries a null datetime stamp.'
+		);
+		$this->assertNull(
+			$resolved,
+			'Failed to assert loop_occurrence returns null for a non-recurring row.'
+		);
+	}
+
+	/**
+	 * Coverage for `resolve()` preferring the request's own occurrence.
+	 *
+	 * @covers ::resolve
+	 *
+	 * @return void
+	 */
+	public function test_resolve_prefers_the_requests_own_occurrence(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$requested = $this->occurrence_id( $anchor, 3 );
+
+		Context::get_instance()->set( $series_id, $requested );
+
+		$query = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+
+		$query->the_post();
+
+		$resolved = Utility::invoke_hidden_method( Context::get_instance(), 'resolve', array( $series_id ) );
+
+		wp_reset_postdata();
+
+		$this->assertSame(
+			$requested,
+			$resolved['recurrence_id'],
+			'Failed to assert the request\'s own occurrence wins over the loop\'s for the requested post.'
+		);
+	}
+
+	/**
+	 * Coverage for `permalink()`'s two pass-through return paths.
+	 *
+	 * The first is a value core hands the filter that is not a post at all;
+	 * the second is `series_permalink()`'s suppression, which is what stops
+	 * `Rewrite::get_occurrence_url()` from composing an occurrence segment on
+	 * top of a URL that already carries one.
+	 *
+	 * @covers ::permalink
+	 * @covers ::series_permalink
+	 *
+	 * @return void
+	 */
+	public function test_permalink_passes_through_without_a_post_and_while_suppressed(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$bare      = get_permalink( $series_id );
+		$query     = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+
+		$query->the_post();
+
+		$without_post = Context::get_instance()->permalink( 'https://example.test/untouched/', null );
+		$suppressed   = Context::get_instance()->series_permalink( $series_id );
+		$filtered     = get_permalink( $series_id );
+
+		wp_reset_postdata();
+
+		$this->assertSame(
+			'https://example.test/untouched/',
+			$without_post,
+			'Failed to assert permalink() leaves a non-post value untouched.'
+		);
+		$this->assertSame(
+			$bare,
+			$suppressed,
+			'Failed to assert series_permalink() reads the bare series permalink during a loop iteration.'
+		);
+		$this->assertSame(
+			Rewrite::get_occurrence_url( $series_id, $this->occurrence_id( $anchor, 1 ) ),
+			$filtered,
+			'Failed to assert the same read is filtered once suppression is restored.'
+		);
+	}
+
+	/**
+	 * Coverage for `Occurrences::table_exists()` on both memo arms.
+	 *
+	 * The first call probes the schema, the second answers from the memo. The
+	 * false arm belongs to the `@group multisite` suite, where a blog can be
+	 * built without the table; here only the true arm is reachable.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::table_exists
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::forget_table_exists
+	 *
+	 * @return void
+	 */
+	public function test_table_exists_memoizes_its_answer(): void {
+		global $wpdb;
+
+		$occurrences = Occurrences::get_instance();
+
+		$occurrences->forget_table_exists();
+
+		$wpdb->queries      = array();
+		$saved              = $wpdb->save_queries;
+		$wpdb->save_queries = true;
+
+		$first  = $occurrences->table_exists();
+		$probes = count( $wpdb->queries );
+		$second = $occurrences->table_exists();
+		$after  = count( $wpdb->queries );
+
+		$wpdb->save_queries = $saved;
+		$wpdb->queries      = array();
+
+		$this->assertTrue( $first, 'Failed to assert the occurrence table exists on the fixture site.' );
+		$this->assertTrue( $second, 'Failed to assert the memoized answer matches.' );
+		$this->assertSame( 1, $probes, 'Failed to assert the first call probes the schema exactly once.' );
+		$this->assertSame( $probes, $after, 'Failed to assert the second call answers from the memo.' );
+	}
 }

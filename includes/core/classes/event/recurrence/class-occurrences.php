@@ -224,6 +224,22 @@ final class Occurrences {
 	protected bool $table_heal_attempted = false;
 
 	/**
+	 * Whether the occurrence table exists, memoized per fully-qualified table name.
+	 *
+	 * Keyed by the resolved table name rather than held in a single slot, so
+	 * `switch_to_blog()` re-decides for the blog it switched to instead of
+	 * carrying the previous blog's answer across with it. The memo is
+	 * request-scoped on purpose: a persistent cache would have to be
+	 * invalidated from every path that can create the table, including ones
+	 * outside this plugin, and a stale `true` reintroduces exactly the failure
+	 * it exists to prevent.
+	 *
+	 * @since 0.36.0
+	 * @var array<string, bool>
+	 */
+	protected array $table_exists = array();
+
+	/**
 	 * Class constructor.
 	 *
 	 * Bootstraps `Projection_Cron` here rather than from `Recurrence\Setup`:
@@ -579,7 +595,11 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
-		$refs = array_map( array( $this, 'row_to_ref' ), null === $rows ? array() : $rows );
+		// No `null` guard: `get_results()` with `ARRAY_A` returns an array on
+		// every path that runs a query, including a failed one -- the only
+		// `null` it can produce is for an empty query string. A guard here
+		// would be a branch claiming to handle a failure it cannot observe.
+		$refs = array_map( array( $this, 'row_to_ref' ), $rows );
 
 		// Lazy repair only runs off an upcoming-events read. A past-only
 		// read has nothing forward-looking to repair, and gating
@@ -1704,6 +1724,57 @@ final class Occurrences {
 	}
 
 	/**
+	 * Report whether the occurrence table exists on the current blog.
+	 *
+	 * Table creation is lazy per blog: `Setup::create_tables()` runs on
+	 * network activation and on `wp_initialize_site`, and otherwise only via
+	 * `check_plugin_version()` on `admin_init` for the current site. An
+	 * existing network upgrading in place therefore has subsites whose
+	 * occurrence table does not exist until someone visits their wp-admin.
+	 *
+	 * This has to be asked before the SQL is built rather than handled after
+	 * it runs, because there is nothing to handle: `$wpdb` swallows a
+	 * missing-table error rather than throwing, and `get_results()` returns
+	 * `array()` rather than `null`, so a failed statement is indistinguishable
+	 * from an empty result at every call site.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when the current blog has the occurrence table.
+	 */
+	public function table_exists(): bool {
+		global $wpdb;
+
+		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+
+		if ( ! isset( $this->table_exists[ $table ] ) ) {
+			// A schema probe, not a read-path data query; there is no object
+			// cache entry that could answer it and no row for one to hold.
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$this->table_exists[ $table ] = (bool) $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $table )
+			);
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		}
+
+		return $this->table_exists[ $table ];
+	}
+
+	/**
+	 * Discard the memoized table-existence answers.
+	 *
+	 * Called by `Setup::create_tables()`, which is the one path that can turn
+	 * a `false` into a `true` inside a single request.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function forget_table_exists(): void {
+		$this->table_exists = array();
+	}
+
+	/**
 	 * Read one occurrence row by its composite key.
 	 *
 	 * @since 0.36.0
@@ -1807,7 +1878,10 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
-		return null === $rows ? array() : $rows;
+		// See `select_by_horizon()`: `get_results()` with `ARRAY_A` never
+		// returns `null` for a non-empty query, so there is no failure value
+		// to branch on here either.
+		return $rows;
 	}
 
 	/**

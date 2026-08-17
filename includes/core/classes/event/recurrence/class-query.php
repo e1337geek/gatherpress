@@ -110,6 +110,14 @@ final class Query {
 	const OCCURRENCE_ALIAS = 'gatherpress_occurrence';
 
 	/**
+	 * Prefix every occurrence column is aliased under in an expanded SELECT.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const SELECT_ALIAS_PREFIX = 'gatherpress_occurrence_';
+
+	/**
 	 * SQL alias carrying `recurrence_id` back on a full result set's rows.
 	 *
 	 * A raw column artifact rather than the published API: `attach_occurrences()`
@@ -119,7 +127,7 @@ final class Query {
 	 * @since 0.36.0
 	 * @var string
 	 */
-	const SELECT_ALIAS = 'gatherpress_occurrence_recurrence_id';
+	const SELECT_ALIAS = self::SELECT_ALIAS_PREFIX . 'recurrence_id';
 
 	/**
 	 * Property carrying occurrence identity on each result object.
@@ -131,6 +139,26 @@ final class Query {
 	 * @var string
 	 */
 	const RESULT_PROPERTY = 'gatherpress_recurrence_id';
+
+	/**
+	 * Property carrying an occurrence's own datetime columns on each result object.
+	 *
+	 * The companion to `RESULT_PROPERTY`, and what makes the render path
+	 * readable without a second query: identity alone would force every
+	 * consumer to fetch the row it came from, once per loop iteration. The
+	 * values ride along on the same object the identity does, so
+	 * `Context::loop_occurrence()` is pure property access.
+	 *
+	 * PRD C-3 is why the *columns* travel rather than just the date: an
+	 * occurrence's time of day is read from the occurrence record, never
+	 * recomposed from the anchor's time.
+	 *
+	 * A null value means the entry is a non-recurring event.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const RESULT_DATETIME_PROPERTY = 'gatherpress_occurrence_datetime';
 
 	/**
 	 * Class constructor.
@@ -344,11 +372,26 @@ final class Query {
 		// type sets no upcoming/past bucket, so it gets no events join and is
 		// not expanded: it shows one entry per series, at the series anchor
 		// date. That is a known MVP limitation of this task, not an oversight.
+		//
+		// Arm 5 is the multisite contract, and it has to be a positive check
+		// rather than error handling downstream. `$wpdb` swallows a
+		// missing-table error and `get_results()` returns `array()`, never
+		// `null`, so there is no failure value for a caller to branch on. The
+		// missing table is named in both the `LEFT JOIN` and the `NOT EXISTS`
+		// subquery, so the whole statement fails and an ordinary,
+		// non-recurring published event silently disappears from the list with
+		// nothing reported anywhere -- worse than a crash, because a crash gets
+		// reported. Not expanding at all is what makes the stated contract
+		// true: a blog without the table shows exactly what it would show with
+		// no recurrence code present. It is deliberately the last arm, so a
+		// site with no recurring events never pays for the check and REQ-16's
+		// byte-identical SQL is unaffected.
 		if (
 			! self::site_has_recurring_events()
 			|| 'ids' === $query->get( 'fields' )
 			|| is_admin()
 			|| ! str_contains( (string) $pieces['join'], $events_table )
+			|| ! Occurrences::get_instance()->table_exists()
 		) {
 			return $pieces;
 		}
@@ -389,6 +432,19 @@ final class Query {
 		}
 
 		$pieces['fields'] .= $wpdb->prepare( ', %i.recurrence_id AS %i', $alias, self::SELECT_ALIAS );
+
+		// The occurrence's own datetime columns travel with the row so the
+		// render path can read them off the result object rather than
+		// re-querying once per loop iteration. Selecting them costs nothing
+		// beyond the bytes -- the row is already joined and already read.
+		foreach ( Context::META_KEY_COLUMNS as $column ) {
+			$pieces['fields'] .= $wpdb->prepare(
+				', %i.%i AS %i',
+				$alias,
+				$column,
+				self::SELECT_ALIAS_PREFIX . $column
+			);
+		}
 
 		return $pieces;
 	}
@@ -491,15 +547,28 @@ final class Query {
 	 *
 	 * @param WP_Post $post One result row.
 	 *
-	 * @return WP_Post A clone carrying `RESULT_PROPERTY`.
+	 * @return WP_Post A clone carrying `RESULT_PROPERTY` and `RESULT_DATETIME_PROPERTY`.
 	 */
 	private function stamp_occurrence( WP_Post $post ): WP_Post {
 		$values     = get_object_vars( $post );
 		$identifier = $values[ self::SELECT_ALIAS ] ?? null;
+		$datetime   = array();
 
 		unset( $values[ self::SELECT_ALIAS ] );
 
-		$values[ self::RESULT_PROPERTY ] = ( null === $identifier ) ? null : (string) $identifier;
+		// The raw aliases are consumed here and never published, matching how
+		// `SELECT_ALIAS` is consumed: nothing downstream depends on the shape
+		// the database happened to hand back.
+		foreach ( Context::META_KEY_COLUMNS as $column ) {
+			$column_alias = self::SELECT_ALIAS_PREFIX . $column;
+
+			$datetime[ $column ] = $values[ $column_alias ] ?? null;
+
+			unset( $values[ $column_alias ] );
+		}
+
+		$values[ self::RESULT_PROPERTY ]          = ( null === $identifier ) ? null : (string) $identifier;
+		$values[ self::RESULT_DATETIME_PROPERTY ] = ( null === $identifier ) ? null : $datetime;
 
 		return new WP_Post( (object) $values );
 	}
