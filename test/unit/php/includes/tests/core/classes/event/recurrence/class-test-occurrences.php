@@ -335,6 +335,65 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Direct coverage for `resolve_projectable()`'s no-rule branch (returns
+	 * `array( $post_id )` — one direct invoke per return path per AGENTS.md,
+	 * rather than reaching it only transitively through `project()`.
+	 *
+	 * @covers ::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_resolve_projectable_clears_rows_when_no_rule_exists(): void {
+		$post_id = $this->create_and_project();
+
+		delete_post_meta( $post_id, Meta::META_KEY );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Meta::get_instance()->resolve_pending_recurrence();
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_projectable',
+			array( $post_id, true )
+		);
+
+		$this->assertNull( $result, 'Failed to assert that resolve_projectable returns null when no rule exists.' );
+		$this->assertCount(
+			0,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that resolve_projectable cleared the existing rows.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `resolve_projectable()`'s no-rule branch with
+	 * `$cleanup` false (CF-1): existing rows are left untouched.
+	 *
+	 * @covers ::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_resolve_projectable_skips_cleanup_when_cleanup_is_false(): void {
+		$post_id = $this->create_and_project();
+
+		delete_post_meta( $post_id, Meta::META_KEY );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Meta::get_instance()->resolve_pending_recurrence();
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_projectable',
+			array( $post_id, false )
+		);
+
+		$this->assertNull( $result, 'Failed to assert that resolve_projectable returns null when no rule exists.' );
+		$this->assertCount(
+			5,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that resolve_projectable left the existing rows untouched when cleanup is false.'
+		);
+	}
+
+	/**
 	 * Direct coverage for `resolve_projectable()`'s anchor-null branch:
 	 * extracted-helper coverage guards against the known xdebug tracing gap
 	 * for same-class helpers called via short delegation (`project()` ->
@@ -353,7 +412,7 @@ class Test_Occurrences extends Base {
 		$result = Utility::invoke_hidden_method(
 			Occurrences::get_instance(),
 			'resolve_projectable',
-			array( $post_id )
+			array( $post_id, true )
 		);
 
 		$this->assertNull(
@@ -364,6 +423,91 @@ class Test_Occurrences extends Base {
 			0,
 			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
 			'Failed to assert that resolve_projectable cleared the existing rows.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `resolve_projectable()`'s success path: a post with
+	 * a valid rule and a resolvable anchor returns the rule, anchor start,
+	 * anchor end, and timezone together.
+	 *
+	 * @covers ::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_resolve_projectable_returns_rule_and_anchor_for_a_recurring_post(): void {
+		$post_id = $this->create_recurring_event( self::WEEKLY_RULE );
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_projectable',
+			array( $post_id, true )
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertInstanceOf( Rule::class, $result[0] );
+		$this->assertInstanceOf( DateTimeImmutable::class, $result[1] );
+		$this->assertInstanceOf( DateTimeImmutable::class, $result[2] );
+		$this->assertInstanceOf( DateTimeZone::class, $result[3] );
+		$this->assertSame(
+			$this->reference_anchor_start,
+			$result[1]->format( 'Y-m-d H:i:s' ),
+			'Failed to assert that the returned anchor start matches the stored datetime.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `run_projection()`'s success path (a resolved rule
+	 * writing rows): called only via short delegation from `project()` and
+	 * from a loop in `resolve_pending_projection()`, which is the same
+	 * xdebug same-class tracing gap AGENTS.md documents for extracted
+	 * helpers.
+	 *
+	 * @covers ::run_projection
+	 *
+	 * @return void
+	 */
+	public function test_run_projection_writes_rows_for_a_resolved_rule(): void {
+		$post_id = $this->create_recurring_event( self::WEEKLY_RULE );
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$written = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'run_projection',
+			array( $post_id, true )
+		);
+
+		$this->assertSame( 5, $written, 'Failed to assert that run_projection wrote all five occurrences.' );
+	}
+
+	/**
+	 * Direct coverage for `run_projection()`'s `null === $occurrences` branch
+	 * (`expand_or_clear()` rejected the timezone): same xdebug same-class
+	 * short-delegation gap as the success-path test above.
+	 *
+	 * @covers ::run_projection
+	 *
+	 * @return void
+	 */
+	public function test_run_projection_returns_zero_when_expand_rejects_the_timezone(): void {
+		$post_id = $this->create_and_project();
+
+		$filter = static fn() => '+05:30';
+		add_filter( 'gatherpress_timezone', $filter );
+
+		$written = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'run_projection',
+			array( $post_id, true )
+		);
+
+		remove_filter( 'gatherpress_timezone', $filter );
+
+		$this->assertSame(
+			0,
+			$written,
+			'Failed to assert that run_projection returns 0 when expand_or_clear rejects the timezone.'
 		);
 	}
 
@@ -502,6 +646,60 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for CF-1: saving an ordinary, never-recurring event through the
+	 * real save-path hooks must issue zero queries against the occurrence
+	 * table -- REQ-16's "a site with no recurring events pays nothing"
+	 * guarantee. Checking only project()'s return value (the test above) is
+	 * not enough to guard this: the BLOCKING-1 fix for orphaned rows made the
+	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
+	 * clean up unconditionally, which silently added a DELETE query to this
+	 * exact, most-common save path. That regression passed a return-value-only
+	 * assertion; it only shows up in the query log, which is why this test
+	 * drives the real `wp_after_insert_post` / `shutdown` hooks rather than
+	 * calling project() directly.
+	 *
+	 * @covers ::maybe_project
+	 * @covers ::resolve_pending_projection
+	 * @covers ::run_projection
+	 * @covers ::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_ordinary_event_save_never_queries_the_occurrence_table(): void {
+		global $wpdb;
+
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		$query_count_before = count( $wpdb->queries );
+
+		// Production order, driven by the real hooks rather than hand-called:
+		// wp_after_insert_post (Meta::set_recurrence() at priority 10,
+		// Occurrences::maybe_project() at priority 20), then shutdown, for a
+		// post with no gatherpress_recurrence blob at all.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'wp_after_insert_post', $post_id, get_post( $post_id ), true, null );
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
+
+		$occurrences_table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$queries_since       = array_slice( $wpdb->queries, $query_count_before );
+		$touched_occurrences = array_values(
+			array_filter(
+				$queries_since,
+				static function ( $query ) use ( $occurrences_table ) {
+					return str_contains( $query[0], $occurrences_table );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$touched_occurrences,
+			'Failed to assert that saving a never-recurring event issued no query against the occurrence table.'
+		);
+	}
+
+	/**
 	 * Coverage for BLOCKING 1: a series whose rule is removed must have its
 	 * existing occurrence rows cleared, not left orphaned. `Rule::from_post()`
 	 * returning null looks identical whether a post never had a rule or just
@@ -538,12 +736,15 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for BLOCKING 1, replayed through the real lifecycle wiring
-	 * rather than calling project() directly: `maybe_project()` at
-	 * `wp_after_insert_post` priority 20, `Meta::set_recurrence()` at
-	 * priority 10 on the same hook, and `resolve_pending_projection()` on
-	 * `shutdown`. Removing the recurrence blob and replaying that exact
-	 * sequence must still clear the series' rows.
+	 * Coverage for BLOCKING 1, replayed through the real lifecycle wiring --
+	 * the actual `wp_after_insert_post` and `shutdown` hooks are fired, not a
+	 * hand-called sequence of the methods those hooks invoke. CF-4: a
+	 * hand-called sequence cannot fail even when the wiring it claims to test
+	 * is broken -- inverting `maybe_project()`'s `wp_after_insert_post`
+	 * priority and its dynamic `shutdown` priority so `Occurrences` runs
+	 * *before* `Meta` left the previous, hand-called version of this test
+	 * green. Firing the hooks for real is what makes the ordering the
+	 * deferred design depends on part of what is under test.
 	 *
 	 * @covers ::maybe_project
 	 * @covers ::resolve_pending_projection
@@ -554,22 +755,20 @@ class Test_Occurrences extends Base {
 	public function test_full_lifecycle_replay_deletes_rows_when_recurrence_blob_is_removed(): void {
 		$post_id     = $this->create_and_project();
 		$occurrences = Occurrences::get_instance();
-		$meta        = Meta::get_instance();
 
 		$this->assertCount( 5, $occurrences->select_for_series( array( $post_id ) ) );
 
 		delete_post_meta( $post_id, Meta::META_KEY );
 
-		// wp_after_insert_post priority 10, then priority 20, in that order --
-		// matches production hook ordering exactly.
-		$meta->set_recurrence( $post_id );
-		$occurrences->maybe_project( $post_id );
-
-		// Neither class had a blob to react to synchronously, so both defer.
-		// Simulates shutdown firing, Meta's priority-10 resolution before
-		// Occurrences' priority-20 one.
-		$meta->resolve_pending_recurrence();
-		$occurrences->resolve_pending_projection();
+		// Fires the real hooks, in production order: wp_after_insert_post
+		// (Meta::set_recurrence() at priority 10, Occurrences::maybe_project()
+		// at priority 20), then shutdown (Meta's priority-10 resolution, then
+		// Occurrences' priority-20 one) -- the hooks themselves decide the
+		// order, nothing here hand-sequences it.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'wp_after_insert_post', $post_id, get_post( $post_id ), true, null );
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
 
 		$this->assertNull( Rule::from_post( $post_id ) );
 		$this->assertCount(
@@ -807,6 +1006,81 @@ class Test_Occurrences extends Base {
 			'2026-11-01 08:00:00',
 			$row['datetime_end_gmt'],
 			'Failed to assert that the GMT end matches the nominal wall-clock end.'
+		);
+	}
+
+	/**
+	 * Coverage for CF-3, end to end through `project()`: an anchor whose own
+	 * span crosses the fall-back transition (2026-10-31 22:00 -> 2026-11-01
+	 * 02:00, a nominal 4 hours) must project every later occurrence -- even
+	 * ones that do not themselves touch a transition -- with that same
+	 * nominal 4-hour span. `$anchor_start->diff( $anchor_end )` on the two
+	 * *zoned* anchor datetimes reports their real elapsed time (5 hours, since
+	 * the anchor itself spans the repeated hour) rather than their wall-clock
+	 * difference, and reapplying that inflated span to every occurrence is
+	 * exactly the corruption this method exists to prevent -- the anchor's
+	 * own stored row would then contradict the anchor it was derived from.
+	 * `test_build_occurrence_row_applies_duration_from_anchor()` and
+	 * `..._preserves_nominal_span_across_fall_back()` pass a hand-built
+	 * `DateInterval` directly and so cannot catch this: this test is the only
+	 * one that exercises `resolve_nominal_span()` itself.
+	 *
+	 * @covers ::project
+	 * @covers ::resolve_nominal_span
+	 *
+	 * @return void
+	 */
+	public function test_project_preserves_nominal_span_for_an_anchor_spanning_fall_back(): void {
+		$timezone     = new DateTimeZone( 'America/New_York' );
+		$anchor_start = new DateTimeImmutable( '2026-10-31 22:00:00', $timezone );
+		$anchor_end   = new DateTimeImmutable( '2026-11-01 02:00:00', $timezone );
+
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor_start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $anchor_end->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'America/New_York',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+		add_post_meta(
+			$post_id,
+			Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'weekly',
+					'interval'  => 1,
+					'weekdays'  => array( (int) $anchor_start->format( 'w' ) ),
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		// The anchor's own row: its stored end must match the anchor it was derived from.
+		$anchor_row = Occurrences::get_instance()->get( $post_id, Occurrences::recurrence_id( $anchor_start ) );
+
+		$this->assertSame(
+			'2026-11-01 02:00:00',
+			$anchor_row['datetime_end'],
+			'Failed to assert that the anchor\'s own row keeps the anchor\'s own stored end time.'
+		);
+
+		// A later occurrence that does not itself span a transition.
+		$later_start = new DateTimeImmutable( '2026-11-07 22:00:00', $timezone );
+		$later_row   = Occurrences::get_instance()->get( $post_id, Occurrences::recurrence_id( $later_start ) );
+
+		$this->assertSame(
+			'2026-11-08 02:00:00',
+			$later_row['datetime_end'],
+			'Failed to assert that a later occurrence kept the nominal 4-hour span, not the anchor\'s inflated 5 hours.'
 		);
 	}
 
@@ -1057,6 +1331,42 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for CF-4: the priority gap on `shutdown` -- not registration
+	 * order -- is what guarantees `Meta::resolve_pending_recurrence()` runs
+	 * before `Occurrences::resolve_pending_projection()`. `has_action()`
+	 * returning a truthy value accepts any priority, including one that would
+	 * put `Occurrences` first and break the ordering the whole deferred
+	 * design depends on, so the priorities themselves have to be asserted.
+	 *
+	 * @covers ::maybe_project
+	 *
+	 * @return void
+	 */
+	public function test_shutdown_priority_gap_runs_meta_before_occurrences(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$instance = Occurrences::get_instance();
+		$meta     = Meta::get_instance();
+
+		$meta->set_recurrence( $post_id );
+		$instance->maybe_project( $post_id );
+
+		$this->assertSame(
+			20,
+			has_action( 'shutdown', array( $instance, 'resolve_pending_projection' ) ),
+			'Failed to assert that resolve_pending_projection is registered at priority 20.'
+		);
+		$this->assertLessThan(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_projection' ) ),
+			has_action( 'shutdown', array( $meta, 'resolve_pending_recurrence' ) ),
+			'Failed to assert that Meta\'s shutdown resolution runs at a lower priority than Occurrences\'.'
+		);
+
+		// Drain the pending state so it does not leak into another test.
+		$meta->resolve_pending_recurrence();
+		$instance->resolve_pending_projection();
+	}
+
+	/**
 	 * Coverage for `resolve_pending_projection()` projecting a post whose blob
 	 * arrived after `maybe_project()` ran but before shutdown.
 	 *
@@ -1168,6 +1478,14 @@ class Test_Occurrences extends Base {
 	 * Coverage for `select_upcoming()` interleaving recurring and non-recurring
 	 * events in one ascending list, each entry carrying its own identity.
 	 *
+	 * CF-2: asserting only that the recurring post ID is present, and only
+	 * checking null-ness for the *non*-recurring entry, does not exercise
+	 * C-1 at all -- `row_to_ref()` could hardcode `recurrence_id = null` for
+	 * every row and this test would still pass, while every real caller of
+	 * `select_upcoming()` would silently lose occurrence identity for every
+	 * recurring series. Asserting the recurring entry's exact, expected
+	 * `Ymd\THis` recurrence ID is what makes that change fail here.
+	 *
 	 * @covers ::select_upcoming
 	 * @covers ::select_by_horizon
 	 * @covers ::row_to_ref
@@ -1229,11 +1547,74 @@ class Test_Occurrences extends Base {
 			'Failed to assert that a non-recurring event carries a null recurrence_id.'
 		);
 
+		$recurring_ref = current(
+			array_filter( $refs, fn( Occurrence_Ref $ref ) => $recurring_post_id === $ref->post_id )
+		);
+
+		$this->assertSame(
+			Occurrences::recurrence_id( $recurring_start ),
+			$recurring_ref->recurrence_id,
+			'Failed to assert that a recurring event carries its expected, non-null recurrence_id.'
+		);
+
 		$starts = wp_list_pluck( $refs, 'datetime_start_gmt' );
 		$sorted = $starts;
 		sort( $sorted );
 
 		$this->assertSame( $sorted, $starts, 'Failed to assert that upcoming occurrences are ordered ascending.' );
+	}
+
+	/**
+	 * Direct coverage for `row_to_ref()`'s non-null branch: a row whose
+	 * `recurrence_id` column is a string produces an `Occurrence_Ref` that
+	 * carries the same string, not null.
+	 *
+	 * @covers ::row_to_ref
+	 *
+	 * @return void
+	 */
+	public function test_row_to_ref_carries_a_non_null_recurrence_id(): void {
+		$ref = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'row_to_ref',
+			array(
+				array(
+					'post_id'             => 42,
+					'recurrence_id'       => '20260903T180000',
+					'effective_start_gmt' => '2026-09-03 22:00:00',
+				),
+			)
+		);
+
+		$this->assertSame( 42, $ref->post_id );
+		$this->assertSame( '20260903T180000', $ref->recurrence_id );
+		$this->assertSame( '2026-09-03 22:00:00', $ref->datetime_start_gmt );
+	}
+
+	/**
+	 * Direct coverage for `row_to_ref()`'s null branch: a row whose
+	 * `recurrence_id` column is `null` (a non-recurring event, no occurrence
+	 * row) produces an `Occurrence_Ref` with a null `recurrence_id`.
+	 *
+	 * @covers ::row_to_ref
+	 *
+	 * @return void
+	 */
+	public function test_row_to_ref_carries_a_null_recurrence_id(): void {
+		$ref = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'row_to_ref',
+			array(
+				array(
+					'post_id'             => 42,
+					'recurrence_id'       => null,
+					'effective_start_gmt' => '2026-09-03 22:00:00',
+				),
+			)
+		);
+
+		$this->assertSame( 42, $ref->post_id );
+		$this->assertNull( $ref->recurrence_id );
 	}
 
 	/**

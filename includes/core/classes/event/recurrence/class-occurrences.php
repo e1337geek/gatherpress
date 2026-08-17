@@ -107,6 +107,16 @@ final class Occurrences {
 	 * the post is noted here and decided again on `shutdown`, once every
 	 * write this request is going to make has already happened.
 	 *
+	 * Each value is whether the post already had valid recurrence mirrors at
+	 * the moment it was deferred -- captured before `Meta`'s own deferred
+	 * resolution has a chance to touch them, since both classes read the same
+	 * meta key at the same point in the same `wp_after_insert_post` firing.
+	 * REQ-16's "a site with no recurring events pays nothing" guarantee turns
+	 * on this: an ordinary event that was never recurring, and still is not
+	 * at shutdown, must resolve without ever querying the occurrence table.
+	 * Only a post that *was* recurring justifies the cleanup query when its
+	 * rule turns out to be gone.
+	 *
 	 * @since 0.36.0
 	 * @var array<int, bool>
 	 */
@@ -166,7 +176,11 @@ final class Occurrences {
 			return;
 		}
 
-		$this->pending_projection[ $post_id ] = true;
+		// Captured now, before Meta's own deferred resolution can touch the
+		// mirrors this request -- see the $pending_projection property
+		// docblock for why this is what keeps an ordinary, never-recurring
+		// save from ever querying the occurrence table (REQ-16).
+		$this->pending_projection[ $post_id ] = Rule::from_post( $post_id ) instanceof Rule;
 
 		add_action( 'shutdown', array( $this, 'resolve_pending_projection' ), 20 );
 	}
@@ -187,14 +201,14 @@ final class Occurrences {
 		$pending                  = $this->pending_projection;
 		$this->pending_projection = array();
 
-		foreach ( array_keys( $pending ) as $post_id ) {
+		foreach ( $pending as $post_id => $was_recurring ) {
 			// The post can be gone by shutdown -- a duplicate that failed, or
 			// an insert rolled back after this hook ran.
 			if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
 				continue;
 			}
 
-			$this->project( $post_id );
+			$this->run_projection( $post_id, $was_recurring );
 		}
 	}
 
@@ -388,7 +402,31 @@ final class Occurrences {
 	 * @return int Rows written, or 0 when the post is not recurring.
 	 */
 	public function project( int $post_id ): int {
-		$resolved = $this->resolve_projectable( $post_id );
+		return $this->run_projection( $post_id, true );
+	}
+
+	/**
+	 * Shared implementation behind `project()` and the deferred-shutdown path.
+	 *
+	 * `$cleanup_when_not_recurring` exists only for `resolve_pending_projection()`:
+	 * a direct `project()` call always cleans up when it finds no rule, matching
+	 * this method's own frozen "deletes rows the rule no longer produces"
+	 * contract. The deferred path instead passes whether the post *was*
+	 * recurring at the moment it was deferred, so an ordinary, never-recurring
+	 * event resolves without ever touching the occurrence table (REQ-16) --
+	 * `Rule::from_post()` returning null looks identical whether a post never
+	 * had a rule or just lost one, so that distinction has to be captured
+	 * earlier, in `maybe_project()`, and threaded through.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int  $post_id                    Series post ID.
+	 * @param bool $cleanup_when_not_recurring Whether to delete existing rows when no rule is found.
+	 *
+	 * @return int Rows written, or 0 when the post is not recurring.
+	 */
+	protected function run_projection( int $post_id, bool $cleanup_when_not_recurring ): int {
+		$resolved = $this->resolve_projectable( $post_id, $cleanup_when_not_recurring );
 
 		if ( null === $resolved ) {
 			return 0;
@@ -402,7 +440,7 @@ final class Occurrences {
 			return 0;
 		}
 
-		$span = $anchor_start->diff( $anchor_end );
+		$span = $this->resolve_nominal_span( $anchor_start, $anchor_end );
 		$rows = array_map(
 			fn( DateTimeImmutable $start ) => $this->build_occurrence_row( $start, $span, $timezone ),
 			$occurrences
@@ -412,27 +450,61 @@ final class Occurrences {
 	}
 
 	/**
-	 * Resolve a post's rule and anchor together, clearing its occurrence rows
-	 * when either is missing.
+	 * Resolve the anchor's nominal wall-clock span, immune to zone contamination.
 	 *
-	 * Split out from `project()` so the "nothing to project" bail is a single
-	 * `return` there (`php:S1142`), and so the clear-on-removal behavior lives
-	 * in one place for both failure modes: no rule at all, and a rule whose
-	 * anchor datetime cannot be resolved.
+	 * `DateTimeImmutable::diff()` on two *zoned* datetimes returns their
+	 * elapsed real time decomposed into calendar units, not their wall-clock
+	 * difference -- across a DST transition the two disagree, and the elapsed
+	 * form silently inflates a nominal span the same way an absolute-seconds
+	 * delta does. Stripping the zone before diffing (both sides reconstructed
+	 * from their own `Y-m-d H:i:s` string in UTC) makes the result a pure
+	 * wall-clock calendar difference: the anchor's own printed digits, never
+	 * reinterpreted through a UTC offset.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param int $post_id Post ID to resolve.
+	 * @param DateTimeImmutable $anchor_start Series anchor start, in the series timezone.
+	 * @param DateTimeImmutable $anchor_end   Series anchor end, in the series timezone.
+	 *
+	 * @return DateInterval The nominal wall-clock span between the two.
+	 */
+	protected function resolve_nominal_span(
+		DateTimeImmutable $anchor_start,
+		DateTimeImmutable $anchor_end
+	): DateInterval {
+		$utc = new DateTimeZone( 'UTC' );
+
+		$naive_start = new DateTimeImmutable( $anchor_start->format( Event::DATETIME_FORMAT ), $utc );
+		$naive_end   = new DateTimeImmutable( $anchor_end->format( Event::DATETIME_FORMAT ), $utc );
+
+		return $naive_start->diff( $naive_end );
+	}
+
+	/**
+	 * Resolve a post's rule and anchor together, clearing its occurrence rows
+	 * when either is missing and `$cleanup` allows it.
+	 *
+	 * Split out from `run_projection()` so the "nothing to project" bail is a
+	 * single `return` there (`php:S1142`), and so the clear-on-removal
+	 * behavior lives in one place for both failure modes: no rule at all, and
+	 * a rule whose anchor datetime cannot be resolved.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int  $post_id Post ID to resolve.
+	 * @param bool $cleanup Whether to delete existing rows when no rule is found.
 	 *
 	 * @return array{0: Rule, 1: DateTimeImmutable, 2: DateTimeImmutable, 3: DateTimeZone}|null
 	 *              The rule, anchor start, anchor end, and timezone, or null
 	 *              when the post has no expandable rule.
 	 */
-	protected function resolve_projectable( int $post_id ): ?array {
+	protected function resolve_projectable( int $post_id, bool $cleanup ): ?array {
 		$rule = Rule::from_post( $post_id );
 
 		if ( ! $rule instanceof Rule ) {
-			$this->delete_for_post( $post_id );
+			if ( $cleanup ) {
+				$this->delete_for_post( $post_id );
+			}
 
 			return null;
 		}
@@ -440,7 +512,9 @@ final class Occurrences {
 		$anchor = $this->resolve_anchor( $post_id );
 
 		if ( null === $anchor ) {
-			$this->delete_for_post( $post_id );
+			if ( $cleanup ) {
+				$this->delete_for_post( $post_id );
+			}
 
 			return null;
 		}
@@ -581,20 +655,21 @@ final class Occurrences {
 	/**
 	 * Build one occurrence's row values from its expanded start.
 	 *
-	 * The end time carries the anchor's *nominal* wall-clock span, not an
-	 * absolute-seconds delta: `$span` is `$anchor_start->diff( $anchor_end )`,
-	 * a calendar-decomposed `DateInterval`, applied through `modify()` rather
-	 * than `DateTimeImmutable::add()`. A nominal 2-hour span starting just
-	 * before a fall-back transition must still read "2 hours later" on the
-	 * clock, even though 10,800 real seconds elapse -- an absolute-seconds
-	 * delta taken once from the anchor and reapplied to every occurrence would
-	 * silently inflate to a 3-hour event on any occurrence landing on a
-	 * transition date the anchor itself does not share.
+	 * The end time carries the anchor's *nominal* wall-clock span, produced by
+	 * `resolve_nominal_span()` and applied here through `modify()` rather than
+	 * `DateTimeImmutable::add()`. A nominal 2-hour span starting just before a
+	 * fall-back transition must still read "2 hours later" on the clock, even
+	 * though 10,800 real seconds elapse. Note that `$span` is *not*
+	 * `$anchor_start->diff( $anchor_end )` on the zoned anchors directly --
+	 * `diff()` between two zoned datetimes returns their *elapsed* real time,
+	 * not their wall-clock difference, and reintroduces the exact inflation
+	 * this method exists to avoid whenever the anchor itself spans a
+	 * transition.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param DateTimeImmutable $start    Occurrence start in the series timezone.
-	 * @param DateInterval      $span     Nominal wall-clock event span, from the series anchor.
+	 * @param DateInterval      $span     Nominal wall-clock event span, from `resolve_nominal_span()`.
 	 * @param DateTimeZone      $timezone Series timezone.
 	 *
 	 * @return array<string, string> Row values keyed as the occurrence table's columns are.
