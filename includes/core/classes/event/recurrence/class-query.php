@@ -411,7 +411,25 @@ final class Query {
 		);
 
 		$pieces['orderby'] = $this->coalesce_event_columns( (string) $pieces['orderby'], $events_table );
-		$pieces['where']   = $this->coalesce_event_columns( (string) $pieces['where'], $events_table )
+
+		// Expansion turns a list of posts into a list of occurrences, and two
+		// occurrences of different series routinely share a start datetime --
+		// which the ordering column alone cannot separate. MySQL's sort is not
+		// stable, so a tied pair can be ordered one way for `LIMIT 0, 10` and
+		// the other way for `LIMIT 10, 10`, putting one entry on two pages and
+		// the other on none. The canonical list key breaks the tie
+		// deterministically. Guarded on a non-empty clause for the same reason
+		// the `groupby` below is: an `orderby` of `none` must stay unordered
+		// rather than acquire an ORDER BY -- and a filesort -- it never had.
+		if ( '' !== (string) $pieces['orderby'] ) {
+			$pieces['orderby'] .= $wpdb->prepare(
+				', %i.ID ASC, %i.recurrence_id ASC',
+				$wpdb->posts,
+				$alias
+			);
+		}
+
+		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table )
 			. $wpdb->prepare(
 				' AND ( %i.series_post_id IS NOT NULL OR NOT EXISTS ('
 				. ' SELECT 1 FROM %i AS %i WHERE %i.series_post_id = %i.ID ) )',

@@ -407,10 +407,11 @@ class Test_Query extends Base {
 	 * @since 0.36.0
 	 *
 	 * @param string $bucket Either `upcoming` or `past`.
+	 * @param array  $args   Additional query arguments.
 	 *
 	 * @return string The SQL statement.
 	 */
-	protected function capture_request( string $bucket ): string {
+	protected function capture_request( string $bucket, array $args = array() ): string {
 		$captured = '';
 		$capture  = static function ( string $request ) use ( &$captured ): string {
 			$captured = $request;
@@ -419,7 +420,7 @@ class Test_Query extends Base {
 		};
 
 		add_filter( 'posts_request', $capture, 10 );
-		$this->run_event_query( $bucket );
+		$this->run_event_query( $bucket, $args );
 		remove_filter( 'posts_request', $capture, 10 );
 
 		return $captured;
@@ -941,6 +942,75 @@ class Test_Query extends Base {
 			3,
 			$first->max_num_pages,
 			'Failed to assert pagination is computed from the joined-row count.'
+		);
+	}
+
+	/**
+	 * Coverage for the deterministic tiebreaker an expanded ordering needs.
+	 *
+	 * Two occurrences of different series routinely share a start datetime, and
+	 * the ordering column alone cannot separate them. MySQL's sort is not
+	 * stable, so a tied pair can be ordered one way for `LIMIT 0, 10` and the
+	 * other for `LIMIT 10, 10`, which puts one entry on two pages and the other
+	 * on none. The canonical `(post_id, recurrence_id)` list key is what makes
+	 * the ordering total.
+	 *
+	 * @covers ::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_expanded_ordering_is_total(): void {
+		global $wpdb;
+
+		$this->build_scenario();
+
+		$request  = $this->capture_request( 'upcoming' );
+		$order_by = trim( substr( $request, (int) strrpos( $request, 'ORDER BY' ) ) );
+
+		$this->assertStringStartsWith(
+			sprintf(
+				'ORDER BY COALESCE( %s.datetime_start_gmt,',
+				Query::OCCURRENCE_ALIAS
+			),
+			$order_by,
+			'Failed to assert the expanded ordering leads with the effective occurrence start.'
+		);
+		$this->assertStringContainsString(
+			sprintf(
+				') ASC, `%s`.ID ASC, `%s`.recurrence_id ASC',
+				$wpdb->posts,
+				Query::OCCURRENCE_ALIAS
+			),
+			$order_by,
+			'Failed to assert the occurrence list key follows the effective start as the tiebreaker.'
+		);
+	}
+
+	/**
+	 * Coverage for the other arm: an unordered query stays unordered.
+	 *
+	 * `'orderby' => 'none'` asks for no sort at all, and appending a tiebreaker
+	 * to an empty clause would hand it an `ORDER BY` it never had -- and a
+	 * filesort with it.
+	 *
+	 * @covers ::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_expansion_does_not_order_a_query_that_asked_for_no_order(): void {
+		$this->build_scenario();
+
+		$request = $this->capture_request( 'upcoming', array( 'orderby' => 'none' ) );
+
+		$this->assertStringContainsString(
+			Query::OCCURRENCE_ALIAS,
+			$request,
+			'Failed to assert the unordered query was still occurrence-expanded.'
+		);
+		$this->assertStringNotContainsString(
+			'ORDER BY',
+			$request,
+			'Failed to assert an unordered query acquires no ORDER BY from expansion.'
 		);
 	}
 

@@ -112,6 +112,9 @@ final class Setup {
 		// Priority 11 so post types registered at default priority 10 are available for get_post_types_by_support().
 		add_action( 'init', array( $this, 'register_starter_pattern' ), 11 );
 		add_action( 'template_redirect', array( $this, 'handle_event_archive_redirect' ) );
+		// Runs inside WP::handle_404(), which is several hooks before
+		// template_redirect. See defer_event_archive_404() for why that matters.
+		add_filter( 'pre_handle_404', array( $this, 'defer_event_archive_404' ), 10, 2 );
 		add_action( 'delete_post', array( $this, 'delete_event' ) );
 		add_action( 'wp_after_insert_post', array( $this, 'set_datetimes' ) );
 		add_action( 'save_post', array( $this, 'check_waiting_list' ) );
@@ -358,8 +361,12 @@ final class Setup {
 	 *
 	 * @since 0.34.0
 	 *
+	 * Both rewrites run through `substitute_archive_query()`, which is where
+	 * the archive's ordering and its deferred 404 decision live.
+	 *
 	 * @see Feed::handle_events_feed_query()
 	 * @see self::get_event_archive_mode()
+	 * @see self::defer_event_archive_404()
 	 *
 	 * @return void
 	 */
@@ -416,20 +423,7 @@ final class Setup {
 				$page_title = get_the_title( $page->ID );
 
 				// Re-query as an event archive with proper sorting.
-				$paged = get_query_var( 'paged', 1 );
-
-				$wp_query->query(
-					array(
-						'post_type'              => Event::POST_TYPE,
-						Query::EVENT_QUERY_PARAM => $key,
-						'paged'                  => $paged,
-					)
-				);
-
-				$wp_query->is_page              = false;
-				$wp_query->is_singular          = false;
-				$wp_query->is_archive           = true;
-				$wp_query->is_post_type_archive = true;
+				$this->substitute_archive_query( $wp_query, Event::POST_TYPE, $key );
 
 				// Preserve the page as queried object so admin bar "Edit Page" works.
 				$wp_query->queried_object    = $page;
@@ -481,13 +475,93 @@ final class Setup {
 			return;
 		}
 
-		$paged = get_query_var( 'paged', 1 );
+		$this->substitute_archive_query( $wp_query, $post_type, $mode );
+	}
 
+	/**
+	 * Stop core deciding the 404 before the archive query has been substituted.
+	 *
+	 * `WP::handle_404()` runs inside `WP::main()`, several hooks before
+	 * `template_redirect`, and it judges the query WordPress parsed from the
+	 * URL — one row per event *post*. `handle_event_archive_redirect()` then
+	 * replaces that query with the occurrence-aware one, which has one row per
+	 * *occurrence* and therefore many more pages. On any page beyond the first,
+	 * the pre-substitution query has already run out of posts, so core 404s;
+	 * and `WP_Query::set_404()` resets every conditional flag, including
+	 * `is_post_type_archive`, which is the flag the substitution itself is
+	 * guarded on. The archive then loses every page but the first, and the
+	 * measured symptom is a 404 at `/event/page/2/` while `/event/` reports
+	 * nine pages.
+	 *
+	 * `pre_handle_404` exists for exactly this: deferring the judgement to
+	 * something that knows more about the request than core does.
+	 * `substitute_archive_query()` makes the judgement once the real query has
+	 * run.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param bool     $preempt  Whether to short-circuit core's 404 handling.
+	 * @param WP_Query $wp_query The query being judged.
+	 *
+	 * @return bool True to defer the decision on an event archive request, otherwise `$preempt`.
+	 */
+	public function defer_event_archive_404( $preempt, WP_Query $wp_query ) {
+		// Anything already preempting wins, and the four remaining arms mirror
+		// handle_event_archive_redirect()'s own guards: if it is not going to
+		// substitute a query, core must be left to decide the 404.
+		if (
+			false !== $preempt
+			|| ! $wp_query->is_post_type_archive
+			|| $wp_query->is_feed
+			|| $wp_query->get( Query::EVENT_QUERY_PARAM )
+			|| ! post_type_supports( (string) $wp_query->get( 'post_type' ), 'gatherpress-event-date' )
+		) {
+			return $preempt;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Replace the main query with the occurrence-aware archive query.
+	 *
+	 * The single place both archive rewrites go through, so the ordering, the
+	 * page number and the deferred 404 decision cannot drift apart.
+	 *
+	 * Ordering is by event datetime rather than by `post_date`. Without an
+	 * explicit `orderby`, `Event\Query::adjust_event_sql()` leaves WordPress's
+	 * default `wp_posts.post_date DESC` in place, which groups every
+	 * occurrence of one series together and lets a single recurring series
+	 * fill the whole first page. `datetime` resolves to the events table's
+	 * `datetime_start_gmt`, which `Recurrence\Query::expand_event_clauses()`
+	 * then rewrites to `COALESCE( occurrence, anchor )` on a site with
+	 * recurring events, so occurrences and non-recurring events interleave by
+	 * date. Direction follows the bucket, matching
+	 * `Event\Query::get_events_list()`: upcoming reads soonest-first, past
+	 * reads most-recent-first.
+	 *
+	 * The trailing block is the counterpart to `defer_event_archive_404()`.
+	 * Deferring the decision is only defensible if the decision still gets
+	 * made, and core's rule is reproduced rather than reinvented: a paged
+	 * request with no rows is a 404, an unpaged one is an empty archive at
+	 * `200`, because `get_queried_object()` resolves to the post type.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $wp_query  The global query, mutated in place.
+	 * @param string   $post_type The event-supporting post type being archived.
+	 * @param string   $bucket    Either `upcoming` or `past`.
+	 *
+	 * @return void
+	 */
+	protected function substitute_archive_query( WP_Query $wp_query, string $post_type, string $bucket ): void {
 		$wp_query->query(
 			array(
 				'post_type'              => $post_type,
-				Query::EVENT_QUERY_PARAM => $mode,
-				'paged'                  => $paged,
+				Query::EVENT_QUERY_PARAM => $bucket,
+				'paged'                  => get_query_var( 'paged', 1 ),
+				'orderby'                => 'datetime',
+				'order'                  => ( 'past' === $bucket ) ? 'DESC' : 'ASC',
 			)
 		);
 
@@ -495,6 +569,14 @@ final class Setup {
 		$wp_query->is_singular          = false;
 		$wp_query->is_archive           = true;
 		$wp_query->is_post_type_archive = true;
+
+		if ( ! empty( $wp_query->posts ) || 2 > (int) $wp_query->get( 'paged' ) ) {
+			return;
+		}
+
+		$wp_query->set_404();
+		status_header( 404 );
+		nocache_headers();
 	}
 
 	/**

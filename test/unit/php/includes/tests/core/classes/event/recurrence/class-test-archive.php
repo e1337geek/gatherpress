@@ -19,6 +19,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 use DateTimeImmutable;
 use DateTimeZone;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Query as Event_Query;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
@@ -457,6 +458,277 @@ class Test_Archive extends Base {
 			array(),
 			$query->posts,
 			'Failed to assert a request past the last archive page renders nothing.'
+		);
+	}
+
+	/**
+	 * Coverage for the other side of the boundary: an empty archive is not a 404.
+	 *
+	 * Core does not 404 an unpaged post type archive with no rows — it renders
+	 * an empty archive at `200`, because `get_queried_object()` resolves to the
+	 * post type. Deferring core's decision means reproducing that rule, not
+	 * inventing a stricter one: an events site whose events have all happened
+	 * still has an archive.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::defer_event_archive_404
+	 *
+	 * @return void
+	 */
+	public function test_archive_with_no_matching_events_is_not_a_404(): void {
+		$now = $this->now();
+
+		// Past-only, so the default `upcoming` archive matches nothing while
+		// the site still has published events.
+		$this->create_event_at( $now->modify( '-4 hours' ), $now->modify( '-3 hours' ) );
+
+		$query = $this->request_archive_page( 1 );
+
+		$this->assertFalse(
+			$query->is_404(),
+			'Failed to assert an empty first page of the archive is not a 404.'
+		);
+		$this->assertTrue(
+			$query->is_post_type_archive(),
+			'Failed to assert an empty archive is still an archive.'
+		);
+		$this->assertSame(
+			array(),
+			$query->posts,
+			'Failed to assert the empty archive lists nothing.'
+		);
+	}
+
+	/**
+	 * Coverage for the past archive: it reads most-recent-first.
+	 *
+	 * The other direction of `substitute_archive_query()`'s order ternary, and
+	 * the requirement it encodes — a past archive whose newest entry is not
+	 * first is a list nobody reads top-down.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::fall_back_to_archive_mode
+	 *
+	 * @return void
+	 */
+	public function test_past_archive_orders_by_occurrence_datetime_descending(): void {
+		add_filter( 'gatherpress_event_archive_mode', array( $this, 'force_past_archive_mode' ) );
+
+		$now      = $this->now();
+		$expected = array();
+
+		for ( $offset = 2; $offset <= 5; $offset++ ) {
+			$start = $now->modify( sprintf( '-%d hours', $offset ) );
+
+			// Created newest-first, so the required reading order is the
+			// creation order and the `wp_posts.post_date DESC` fallback is its
+			// exact reverse (rule 3a #8).
+			$expected[] = $this->create_event_at( $start, $start->modify( '+30 minutes' ) ) . '|';
+		}
+
+		$query = $this->request_archive_page( 1 );
+
+		remove_filter( 'gatherpress_event_archive_mode', array( $this, 'force_past_archive_mode' ) );
+
+		$this->assertSame(
+			$expected,
+			$this->entries( $query ),
+			'Failed to assert the past archive reads most-recent-first.'
+		);
+	}
+
+	/**
+	 * Pin the archive mode to `past`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string Always `past`.
+	 */
+	public function force_past_archive_mode(): string {
+		return 'past';
+	}
+
+	/**
+	 * Direct coverage for the substitution helper's return paths.
+	 *
+	 * The request-driven tests above are what prove the wiring, but xdebug does
+	 * not reliably trace a `protected` helper reached through a short
+	 * same-class delegation — it reports the body as `count=0` even though the
+	 * mutations that break it turn those tests red. Per the project's
+	 * "Extracted same-class helpers and xdebug coverage tracing" rule, each
+	 * return path also gets a direct invoke.
+	 *
+	 * @covers ::substitute_archive_query
+	 *
+	 * @return void
+	 */
+	public function test_substitute_archive_query_return_paths(): void {
+		global $wp_query;
+
+		$now = $this->now();
+
+		for ( $offset = 1; $offset <= 3; $offset++ ) {
+			$start = $now->modify( sprintf( '+%d hours', $offset ) );
+
+			$this->create_event_at( $start, $start->modify( '+30 minutes' ) );
+		}
+
+		$instance = Event_Setup::get_instance();
+
+		$this->go_to( (string) get_post_type_archive_link( Event::POST_TYPE ) );
+		Utility::invoke_hidden_method(
+			$instance,
+			'substitute_archive_query',
+			array( $wp_query, Event::POST_TYPE, 'upcoming' )
+		);
+
+		$this->assertCount(
+			3,
+			$wp_query->posts,
+			'Failed to assert the substituted query lists the upcoming events.'
+		);
+		$this->assertSame(
+			'ASC',
+			$wp_query->query['order'],
+			'Failed to assert an upcoming archive is substituted in ascending order.'
+		);
+		$this->assertTrue(
+			$wp_query->is_post_type_archive,
+			'Failed to assert the substituted query is flagged as a post type archive.'
+		);
+		$this->assertFalse(
+			$wp_query->is_404(),
+			'Failed to assert a substituted query with rows is not a 404.'
+		);
+
+		$this->go_to( add_query_arg( 'paged', 2, (string) get_post_type_archive_link( Event::POST_TYPE ) ) );
+		Utility::invoke_hidden_method(
+			$instance,
+			'substitute_archive_query',
+			array( $wp_query, Event::POST_TYPE, 'past' )
+		);
+
+		$this->assertSame(
+			'DESC',
+			$wp_query->query['order'],
+			'Failed to assert a past archive is substituted in descending order.'
+		);
+		$this->assertTrue(
+			$wp_query->is_404(),
+			'Failed to assert a paged substituted query with no rows falls back to a 404.'
+		);
+	}
+
+	/**
+	 * Coverage for every guard arm of the 404 deferral.
+	 *
+	 * Each arm is a reason GatherPress will *not* substitute a query, and
+	 * therefore a reason core must be left to make its own 404 decision. The
+	 * positive case is proven by the request-driven tests above; these pin the
+	 * arms that turn it off.
+	 *
+	 * @covers ::defer_event_archive_404
+	 *
+	 * @dataProvider data_defer_event_archive_404
+	 *
+	 * @param bool   $preempt   Incoming preempt value.
+	 * @param array  $flags     Conditional flags to set on the query.
+	 * @param array  $vars      Query vars to set on the query.
+	 * @param bool   $expected  Expected return value.
+	 * @param string $assertion Assertion message.
+	 *
+	 * @return void
+	 */
+	public function test_defer_event_archive_404_guards(
+		bool $preempt,
+		array $flags,
+		array $vars,
+		bool $expected,
+		string $assertion
+	): void {
+		$query = new WP_Query();
+
+		foreach ( $flags as $flag => $value ) {
+			$query->$flag = $value;
+		}
+
+		foreach ( $vars as $key => $value ) {
+			$query->set( $key, $value );
+		}
+
+		$this->assertSame(
+			$expected,
+			Event_Setup::get_instance()->defer_event_archive_404( $preempt, $query ),
+			$assertion
+		);
+	}
+
+	/**
+	 * Data provider for the 404 deferral guards.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array<string, array<int, mixed>> One case per guard arm.
+	 */
+	public function data_defer_event_archive_404(): array {
+		$archive = array(
+			'is_post_type_archive' => true,
+			'is_feed'              => false,
+		);
+		$event   = array( 'post_type' => Event::POST_TYPE );
+
+		return array(
+			'defers on an event post type archive' => array(
+				false,
+				$archive,
+				$event,
+				true,
+				'Failed to assert the 404 decision is deferred on an event archive request.',
+			),
+			'yields to an existing preempt'        => array(
+				true,
+				$archive,
+				$event,
+				true,
+				'Failed to assert an existing preempt is returned unchanged.',
+			),
+			'ignores a non-archive request'        => array(
+				false,
+				array(
+					'is_post_type_archive' => false,
+					'is_feed'              => false,
+				),
+				$event,
+				false,
+				'Failed to assert a non-archive request is left to core.',
+			),
+			'ignores a feed request'               => array(
+				false,
+				array(
+					'is_post_type_archive' => true,
+					'is_feed'              => true,
+				),
+				$event,
+				false,
+				'Failed to assert an event feed request is left to core.',
+			),
+			'ignores an already-claimed archive'   => array(
+				false,
+				$archive,
+				array(
+					'post_type'                    => Event::POST_TYPE,
+					Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+				),
+				false,
+				'Failed to assert an archive another handler already claimed is left to core.',
+			),
+			'ignores a non-event post type'        => array(
+				false,
+				$archive,
+				array( 'post_type' => 'post' ),
+				false,
+				'Failed to assert a non-event post type archive is left to core.',
+			),
 		);
 	}
 

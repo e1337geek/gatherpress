@@ -126,7 +126,12 @@ final class Query {
 		array $venues = array()
 	): WP_Query {
 		// Past events should be ordered DESC (most recent first),
-		// upcoming events should be ordered ASC (soonest first).
+		// upcoming events should be ordered ASC (soonest first). The `orderby`
+		// has to be stated explicitly: `adjust_event_sql()` reads it off the
+		// query, and an unset `orderby` reaches it as `''`, which falls through
+		// its switch and leaves WordPress's default `wp_posts.post_date` in
+		// place -- ordering the list by authoring time rather than by when the
+		// events happen, which is not what either direction above means.
 		$order = ( 'past' === $event_list_type ) ? 'DESC' : 'ASC';
 
 		$args = array(
@@ -135,6 +140,7 @@ final class Query {
 			'no_found_rows'         => true,
 			'posts_per_page'        => $number,
 			self::EVENT_QUERY_PARAM => $event_list_type,
+			'orderby'               => 'datetime',
 			'order'                 => $order,
 		);
 

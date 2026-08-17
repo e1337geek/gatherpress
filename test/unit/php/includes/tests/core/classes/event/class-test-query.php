@@ -54,6 +54,66 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * Coverage for the ordering column `get_events_list()` asks for.
+	 *
+	 * The list is documented as soonest-first for upcoming and
+	 * most-recent-first for past, but `adjust_event_sql()` reads `orderby` off
+	 * the query and falls through its switch on an empty one, leaving
+	 * WordPress's default `wp_posts.post_date` in place — ordering the iCal
+	 * feed by authoring time instead. The assertion is on the emitted ORDER BY
+	 * rather than on a result order, because only the stated `orderby` can
+	 * produce that clause, while a result order coincides with the
+	 * `post_date` fallback whenever the fixture happens to be authored in
+	 * chronological order (rule 3a #8).
+	 *
+	 * @covers ::get_events_list
+	 * @covers ::adjust_sorting_for_upcoming_events
+	 * @covers ::adjust_sorting_for_past_events
+	 *
+	 * @return void
+	 */
+	public function test_get_events_list_orders_by_event_datetime(): void {
+		global $wpdb;
+
+		$table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+
+		$this->assertStringContainsString(
+			sprintf( 'ORDER BY %s.datetime_start_gmt ASC', $table ),
+			$this->capture_events_list_request( 'upcoming' ),
+			'Failed to assert an upcoming list is ordered by event start, soonest first.'
+		);
+		$this->assertStringContainsString(
+			sprintf( 'ORDER BY %s.datetime_start_gmt DESC', $table ),
+			$this->capture_events_list_request( 'past' ),
+			'Failed to assert a past list is ordered by event start, most recent first.'
+		);
+	}
+
+	/**
+	 * Capture the SQL one `get_events_list()` call sends to the database.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $event_list_type Either `upcoming` or `past`.
+	 *
+	 * @return string The SQL statement.
+	 */
+	protected function capture_events_list_request( string $event_list_type ): string {
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		Query::get_instance()->get_events_list( $event_list_type, 5 );
+		remove_filter( 'posts_request', $capture );
+
+		return $captured;
+	}
+
+	/**
 	 * Coverage for get_upcoming_events method.
 	 *
 	 * @covers ::get_upcoming_events
