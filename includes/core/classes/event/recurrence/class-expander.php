@@ -69,6 +69,34 @@ final class Expander {
 	const MONTH_SCAN_STEPS = 48;
 
 	/**
+	 * How many candidate years the yearly walk examines before giving up.
+	 *
+	 * Counted in candidates, not in absolute years, for the same reason
+	 * `MONTH_SCAN_STEPS` is: the walk steps by the rule's interval, and an
+	 * absolute-year bound would collapse to `bound / interval` candidates and
+	 * truncate a legal `COUNT` at a wide interval.
+	 *
+	 * A yearly rule takes its month and day from the anchor, and the only
+	 * anchor date that some years lack is 29 February -- every other month and
+	 * day pair exists in every year, which an exhaustive check over all of them
+	 * from 1583 to 2400 confirms. So the worst case is a leap-day anchor whose
+	 * interval keeps landing on non-leap years. Searching every interval from 1
+	 * to `Rule::MAX_INTERVAL` against every leap-day anchor from 1600 to 2400
+	 * puts the worst run of unusable candidates at **fifteen**: interval 25 from
+	 * a 1600 anchor, which crosses 1700, 1800 and 1900 -- centuries that are not
+	 * leap years -- before landing on 2000. Interval 1 peaks at seven, over the
+	 * same 1900 gap. `Test_Expander::test_year_scan_steps_clears_the_measured_worst_case()`
+	 * re-runs that search, so the measurement cannot silently go stale.
+	 *
+	 * 64 leaves better than four times the measured worst run of headroom while
+	 * still costing only a handful of `checkdate()` calls per candidate.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const YEAR_SCAN_STEPS = 64;
+
+	/**
 	 * Derive the candidate-step budget from the rule rather than guessing it.
 	 *
 	 * The walk is day-by-day, so the budget is expressed in days rather than in
@@ -89,6 +117,7 @@ final class Expander {
 			$per = match ( $rule->frequency() ) {
 				Rule::FREQUENCY_DAILY  => 1,
 				Rule::FREQUENCY_WEEKLY => 7,
+				Rule::FREQUENCY_YEARLY => 366,
 				default                => 31,
 			};
 
@@ -191,10 +220,15 @@ final class Expander {
 		DateTimeImmutable $anchor
 	): ?DateTimeImmutable {
 		return match ( $rule->frequency() ) {
-			Rule::FREQUENCY_MONTHLY                       => $this->next_monthly_date( $rule, $cursor, $anchor ),
-			Rule::FREQUENCY_DAILY, Rule::FREQUENCY_WEEKLY => $this->next_scanned_date( $rule, $cursor, $anchor ),
+			// Yearly shares the month walk rather than getting a third pattern
+			// of its own: it is the same "step whole months from the anchor and
+			// resolve the date in that month" shape, twelve months per interval
+			// unit. A day-by-day scan would step roughly 1,460 candidates per
+			// occurrence at INTERVAL=4.
+			Rule::FREQUENCY_MONTHLY, Rule::FREQUENCY_YEARLY => $this->next_monthly_date( $rule, $cursor, $anchor ),
+			Rule::FREQUENCY_DAILY, Rule::FREQUENCY_WEEKLY   => $this->next_scanned_date( $rule, $cursor, $anchor ),
 			// An unrecognized frequency yields no occurrences rather than a fatal.
-			default                                       => null,
+			default                                         => null,
 		};
 	}
 
@@ -231,10 +265,13 @@ final class Expander {
 	}
 
 	/**
-	 * Walk months rather than days for the next date a monthly rule matches.
+	 * Walk months rather than days for the next date a month-walked rule matches.
 	 *
-	 * A day-by-day scan cannot serve a monthly rule: a day-of-month rule on the
-	 * 31st skips five months a year, and a February 29th rule can wait years.
+	 * Serves the monthly and yearly frequencies alike -- yearly is the same walk
+	 * with a twelve-times-wider step and a wider scan bound, which is why it does
+	 * not get a pattern of its own. A day-by-day scan cannot serve either: a
+	 * day-of-month rule on the 31st skips five months a year, and a 29 February
+	 * rule waits years.
 	 *
 	 * @since 0.36.0
 	 *
@@ -249,11 +286,12 @@ final class Expander {
 		DateTimeImmutable $cursor,
 		DateTimeImmutable $anchor
 	): ?DateTimeImmutable {
-		$step  = $rule->interval();
+		$step  = $this->month_step( $rule );
+		$scan  = $this->month_scan_steps( $rule );
 		$start = max( 0, (int) ceil( $this->months_apart( $anchor, $cursor ) / $step ) ) * $step;
 		$found = null;
 
-		for ( $candidate = 0; $candidate <= self::MONTH_SCAN_STEPS; $candidate++ ) {
+		for ( $candidate = 0; $candidate <= $scan; $candidate++ ) {
 			$date = $this->monthly_date_for_offset( $rule, $anchor, $start + $candidate * $step );
 
 			if ( null !== $date && $date >= $cursor ) {
@@ -266,7 +304,46 @@ final class Expander {
 	}
 
 	/**
-	 * Resolve the date a monthly rule falls on a given number of months from the anchor.
+	 * Get how many whole months one candidate step of the month walk spans.
+	 *
+	 * Yearly's interval is authored in years, so one candidate step is twelve
+	 * months per interval unit. Bounding the walk in candidate steps rather than
+	 * in absolute months is what keeps a wide interval from being truncated.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param Rule $rule Rule being expanded.
+	 *
+	 * @return int Whole months per candidate step, never below one.
+	 */
+	protected function month_step( Rule $rule ): int {
+		return Rule::FREQUENCY_YEARLY === $rule->frequency()
+			? $rule->interval() * 12
+			: $rule->interval();
+	}
+
+	/**
+	 * Get how many candidate steps the month walk examines before giving up.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param Rule $rule Rule being expanded.
+	 *
+	 * @return int Candidate steps, from `YEAR_SCAN_STEPS` or `MONTH_SCAN_STEPS`.
+	 */
+	protected function month_scan_steps( Rule $rule ): int {
+		return Rule::FREQUENCY_YEARLY === $rule->frequency()
+			? self::YEAR_SCAN_STEPS
+			: self::MONTH_SCAN_STEPS;
+	}
+
+	/**
+	 * Resolve the date a month-walked rule falls on a given number of months from the anchor.
+	 *
+	 * A yearly rule takes both its month and its day from the anchor, so the
+	 * offset -- always a multiple of twelve for yearly -- carries the month and
+	 * the anchor carries the day. It never consults `monthly_mode`, which a
+	 * yearly rule does not have.
 	 *
 	 * @since 0.36.0
 	 *
@@ -285,9 +362,20 @@ final class Expander {
 		$year   = intdiv( $months, 12 );
 		$month  = $months % 12 + 1;
 
-		$date = Rule::MONTHLY_MODE_NTH_WEEKDAY === $rule->monthly_mode()
-			? $this->nth_weekday_of_month( $year, $month, $rule->monthly_weekday(), $rule->monthly_ordinal() )
-			: $this->day_of_month_date( $year, $month, $rule->monthly_day() );
+		$date = match ( true ) {
+			Rule::FREQUENCY_YEARLY === $rule->frequency() => $this->day_of_month_date(
+				$year,
+				$month,
+				(int) $anchor->format( 'j' )
+			),
+			Rule::MONTHLY_MODE_NTH_WEEKDAY === $rule->monthly_mode() => $this->nth_weekday_of_month(
+				$year,
+				$month,
+				$rule->monthly_weekday(),
+				$rule->monthly_ordinal()
+			),
+			default => $this->day_of_month_date( $year, $month, $rule->monthly_day() ),
+		};
 
 		return null === $date ? null : new DateTimeImmutable( $date, new DateTimeZone( 'UTC' ) );
 	}
@@ -326,15 +414,19 @@ final class Expander {
 	 */
 	protected function matches( Rule $rule, DateTimeImmutable $candidate, DateTimeImmutable $anchor ): bool {
 		return match ( $rule->frequency() ) {
-			Rule::FREQUENCY_DAILY   => $this->matches_daily( $rule, $candidate, $anchor ),
-			Rule::FREQUENCY_WEEKLY  => $this->matches_weekly( $rule, $candidate, $anchor ),
-			// The walk sends monthly rules to `next_monthly_date()` rather than
-			// through the day scan, so this arm answers direct callers only. It is
-			// kept so the predicate is complete for every frequency the rule can
-			// hold, rather than correct for the two the scan happens to use.
-			Rule::FREQUENCY_MONTHLY => $this->matches_monthly( $rule, $candidate, $anchor ),
+			Rule::FREQUENCY_DAILY  => $this->matches_daily( $rule, $candidate, $anchor ),
+			Rule::FREQUENCY_WEEKLY => $this->matches_weekly( $rule, $candidate, $anchor ),
+			// The walk sends monthly and yearly rules to `next_monthly_date()`
+			// rather than through the day scan, so this arm answers direct callers
+			// only. It is kept so the predicate is complete for every frequency the
+			// rule can hold, rather than correct for the two the scan happens to use.
+			Rule::FREQUENCY_MONTHLY, Rule::FREQUENCY_YEARLY => $this->matches_monthly(
+				$rule,
+				$candidate,
+				$anchor
+			),
 			// An unrecognized frequency matches nothing rather than fataling.
-			default                 => false,
+			default => false,
 		};
 	}
 
@@ -383,6 +475,13 @@ final class Expander {
 	/**
 	 * Report whether a candidate date is the rule's date in an on-interval month.
 	 *
+	 * Serves the yearly frequency too, whose step is twelve months per interval
+	 * unit. The trailing date comparison is what carries the leap-day rule: for a
+	 * 29 February anchor, 2025-02-28 sits an on-step twelve months out and clears
+	 * every earlier guard, so only comparing the resolved date to the candidate
+	 * rejects it. RFC 5545 section 3.3.10 forbids falling back to the 28th just
+	 * as firmly as rolling on to 1 March.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param Rule              $rule      Rule being expanded.
@@ -393,7 +492,7 @@ final class Expander {
 	 */
 	protected function matches_monthly( Rule $rule, DateTimeImmutable $candidate, DateTimeImmutable $anchor ): bool {
 		$offset = $this->months_apart( $anchor, $candidate );
-		$date   = ( $offset >= 0 && 0 === $offset % $rule->interval() )
+		$date   = ( $offset >= 0 && 0 === $offset % $this->month_step( $rule ) )
 			? $this->monthly_date_for_offset( $rule, $anchor, $offset )
 			: null;
 
@@ -432,9 +531,9 @@ final class Expander {
 		return match ( $rule->frequency() ) {
 			Rule::FREQUENCY_DAILY  => $rule->interval(),
 			Rule::FREQUENCY_WEEKLY => $rule->interval() * 7 + 7,
-			// Monthly walks months, and an unrecognized frequency scans nothing.
-			// `next_candidate_date()` already routes both away from the day scan,
-			// so this arm is defense in depth rather than a live path.
+			// Monthly and yearly walk months, and an unrecognized frequency scans
+			// nothing. `next_candidate_date()` already routes all three away from
+			// the day scan, so this arm is defense in depth rather than a live path.
 			default                => 0,
 		};
 	}

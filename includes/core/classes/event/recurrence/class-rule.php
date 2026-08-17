@@ -57,6 +57,19 @@ final class Rule {
 	const FREQUENCY_MONTHLY = 'monthly';
 
 	/**
+	 * Frequency: repeats every N years, on the series start's month and day.
+	 *
+	 * Carries no companion fields of its own. `BYMONTH`, `BYYEARDAY` and
+	 * `BYWEEKNO` are permanent non-goals (PRD section 10 item 5), so yearly has
+	 * no mode switch to go with it -- the month and the day come from the
+	 * series anchor, and the expander reads them there.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const FREQUENCY_YEARLY = 'yearly';
+
+	/**
 	 * Monthly mode: a fixed day number, such as the 15th.
 	 *
 	 * @since 0.36.0
@@ -137,9 +150,9 @@ final class Rule {
 	 * `COUNT` iteration-budget check at the meta boundary.
 	 *
 	 * Deliberately kept in step with `Expander::iteration_budget()`'s own
-	 * `match ( $rule->frequency() ) { DAILY => 1, WEEKLY => 7, default => 31 }`
-	 * -- both sides land on `count * per_frequency * interval + 366`. This
-	 * duplicates the arithmetic rather than sharing it, because `Expander` is
+	 * `match ( $rule->frequency() ) { DAILY => 1, WEEKLY => 7, YEARLY => 366,
+	 * default => 31 }` -- both sides land on `count * per_frequency * interval
+	 * + 366`. This duplicates the arithmetic rather than sharing it, because `Expander` is
 	 * a different task's file and `iteration_budget()` is a `protected`
 	 * instance method taking an anchor and horizon this validation-time check
 	 * has neither of; a rejection here must be at least as strict as the
@@ -156,6 +169,7 @@ final class Rule {
 		self::FREQUENCY_DAILY   => 1,
 		self::FREQUENCY_WEEKLY  => 7,
 		self::FREQUENCY_MONTHLY => 31,
+		self::FREQUENCY_YEARLY  => 366,
 	);
 
 	/**
@@ -447,7 +461,12 @@ final class Rule {
 	 * @return bool True when the rule is complete and internally consistent.
 	 */
 	public function is_valid(): bool {
-		$valid_frequencies = array( self::FREQUENCY_DAILY, self::FREQUENCY_WEEKLY, self::FREQUENCY_MONTHLY );
+		$valid_frequencies = array(
+			self::FREQUENCY_DAILY,
+			self::FREQUENCY_WEEKLY,
+			self::FREQUENCY_MONTHLY,
+			self::FREQUENCY_YEARLY,
+		);
 		$valid_end_types   = array( self::END_TYPE_NEVER, self::END_TYPE_UNTIL, self::END_TYPE_COUNT );
 
 		// A weekly rule needs at least one weekday, and every weekday it names
@@ -564,6 +583,12 @@ final class Rule {
 	 * `WEEK_START` (Monday) is already RFC 5545's default. `UNTIL` is emitted
 	 * as a bare `Ymd` date -- the rule carries no time-of-day of its own, that
 	 * comes from the series anchor at expansion time.
+	 *
+	 * The `FREQ=` value is the uppercased frequency, so a yearly rule needs no
+	 * arm of its own here. It emits no `BY*` part at all: RFC 5545 defaults the
+	 * month and month-day of a `FREQ=YEARLY` rule to the `DTSTART`'s, which is
+	 * exactly the behavior REQ-11 specifies, and `BYMONTH` is a permanent
+	 * non-goal (PRD section 10 item 5).
 	 *
 	 * @since 0.36.0
 	 *
