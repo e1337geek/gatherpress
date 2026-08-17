@@ -359,14 +359,18 @@ final class Setup {
 	 * work; the Feed class serves those. Setting `has_archive => false`
 	 * would make feed URLs 404 in every mode.
 	 *
-	 * @since 0.34.0
+	 * Both event-archive rewrites run through `substitute_archive_query()`,
+	 * which is where the archive's ordering and its deferred 404 decision
+	 * live. The page-as-regular-page branch makes its own 404 decision through
+	 * `maybe_404_paged_page()`, because `defer_event_archive_404()` has already
+	 * taken core's away from every request that reaches this method.
 	 *
-	 * Both rewrites run through `substitute_archive_query()`, which is where
-	 * the archive's ordering and its deferred 404 decision live.
+	 * @since 0.34.0
 	 *
 	 * @see Feed::handle_events_feed_query()
 	 * @see self::get_event_archive_mode()
 	 * @see self::defer_event_archive_404()
+	 * @see self::maybe_404_paged_page()
 	 *
 	 * @return void
 	 */
@@ -438,14 +442,63 @@ final class Setup {
 		}
 
 		// Page exists but is not an archive page — serve it as a regular page.
+		// The request parsed as a paged post type archive, so the page number
+		// arrives on `paged`; carry it over to `page`, which is the var a
+		// singular request paginates its content with, and read it before the
+		// re-query throws the original query vars away.
+		$paged = max( 1, (int) get_query_var( 'paged' ) );
+
 		$wp_query->init();
-		$wp_query->query( array( 'page_id' => $page->ID ) );
+		$wp_query->query(
+			array(
+				'page_id' => $page->ID,
+				'page'    => $paged,
+			)
+		);
 		$wp_query->is_post_type_archive = false;
 		$wp_query->is_archive           = false;
 		$wp_query->is_page              = true;
 		$wp_query->is_singular          = true;
 		$wp_query->queried_object       = $page;
 		$wp_query->queried_object_id    = $page->ID;
+
+		$this->maybe_404_paged_page( $wp_query, $page, $paged );
+	}
+
+	/**
+	 * Make core's out-of-range 404 decision for the page-as-regular-page branch.
+	 *
+	 * `defer_event_archive_404()` takes core's 404 decision away from every
+	 * request that reaches `handle_event_archive_redirect()`, so every branch
+	 * of that method owes one back. This is the branch a published page
+	 * occupying the events slug takes when it is not designated as the
+	 * upcoming or past archive page: what gets served is a single page, and a
+	 * page is one page long unless its content is split with
+	 * `<!--nextpage-->`. Past that bound there is nothing left to render,
+	 * which is the conclusion `WP::handle_404()` reaches for a singular
+	 * request whose page number exceeds the split count.
+	 *
+	 * Without it the events slug answers `200` at every page number,
+	 * unboundedly, with identical content — measured on a real site as
+	 * `/event/page/2/` and `/event/page/50/` both serving the landing page
+	 * where both had been `404` before the deferral existed.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $wp_query The global query, mutated in place.
+	 * @param WP_Post  $page     The page occupying the events slug.
+	 * @param int      $paged    Page number the request asked for.
+	 *
+	 * @return void
+	 */
+	protected function maybe_404_paged_page( WP_Query $wp_query, WP_Post $page, int $paged ): void {
+		if ( $paged <= substr_count( $page->post_content, '<!--nextpage-->' ) + 1 ) {
+			return;
+		}
+
+		$wp_query->set_404();
+		status_header( 404 );
+		nocache_headers();
 	}
 
 	/**
@@ -494,21 +547,28 @@ final class Setup {
 	 * nine pages.
 	 *
 	 * `pre_handle_404` exists for exactly this: deferring the judgement to
-	 * something that knows more about the request than core does.
-	 * `substitute_archive_query()` makes the judgement once the real query has
-	 * run.
+	 * something that knows more about the request than core does. Every branch
+	 * `handle_event_archive_redirect()` can take then makes the judgement once
+	 * its real query has run — `substitute_archive_query()` for the two archive
+	 * rewrites, `maybe_404_paged_page()` for the page-as-regular-page branch.
+	 *
+	 * Neither the parameter nor the return value is typed as `bool`, and
+	 * neither should be: `pre_handle_404` is a public filter, so an earlier
+	 * callback can put any truthy value on it. Narrowing the signature would
+	 * coerce another plugin's value on the way back out; the guard below tests
+	 * `false !== $preempt` and returns whatever it was handed.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param bool     $preempt  Whether to short-circuit core's 404 handling.
+	 * @param mixed    $preempt  Whether to short-circuit core's 404 handling, as an earlier callback left it.
 	 * @param WP_Query $wp_query The query being judged.
 	 *
-	 * @return bool True to defer the decision on an event archive request, otherwise `$preempt`.
+	 * @return mixed `true` to defer the decision on an event archive request, otherwise `$preempt` unchanged.
 	 */
 	public function defer_event_archive_404( $preempt, WP_Query $wp_query ) {
 		// Anything already preempting wins, and the four remaining arms mirror
 		// handle_event_archive_redirect()'s own guards: if it is not going to
-		// substitute a query, core must be left to decide the 404.
+		// handle this request, core must be left to decide the 404.
 		if (
 			false !== $preempt
 			|| ! $wp_query->is_post_type_archive
