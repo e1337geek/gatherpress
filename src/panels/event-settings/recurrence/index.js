@@ -10,6 +10,8 @@ import { useEffect, useRef, useState } from '@wordpress/element';
  * Internal dependencies
  */
 import { usePostTypeSupports } from '../../../helpers/event';
+import ApplyScope from './apply-scope';
+import RsvpImpact from './rsvp-impact';
 import FrequencyControl from './frequency';
 import WeekdaysControl from './weekdays';
 import MonthlyControl from './monthly';
@@ -786,6 +788,8 @@ const RecurrencePanel = () => {
 								) }
 							</output>
 						) }
+						<RsvpImpact postId={ postId } rule={ rule } />
+						<ApplyScope postId={ postId } />
 					</>
 				) }
 			</div>

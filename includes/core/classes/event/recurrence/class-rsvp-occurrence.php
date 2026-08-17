@@ -20,6 +20,7 @@ namespace GatherPress\Core\Event\Recurrence;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use GatherPress\Core\Rsvp\Query as Rsvp_Query;
 use GatherPress\Core\Traits\Singleton;
 
 /**
@@ -438,6 +439,96 @@ final class Rsvp_Occurrence {
 				'field'    => 'slug',
 				'terms'    => array( self::term_slug( $post_id, $recurrence_id ) ),
 			),
+		);
+	}
+
+	/**
+	 * Drop the occurrence terms naming a post's occurrences.
+	 *
+	 * Used when REQ-13 demotes a side of a split to a plain non-recurring event.
+	 * Deleting the term removes its `term_relationships` rows, which is exactly
+	 * what is wanted: the RSVPs stay on the same comments, on the same post, for
+	 * the same date, and become readable series-wide again — which on a
+	 * single-date event *is* the date. Nothing is migrated and nothing is
+	 * deleted; only the scoping that no longer has anything to scope goes away.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $post_id        Series post ID the terms name.
+	 * @param string[] $recurrence_ids Occurrence identifiers to unscope.
+	 *
+	 * @return int Terms deleted.
+	 */
+	public function detach_series( int $post_id, array $recurrence_ids ): int {
+		$deleted = 0;
+
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$term = get_term_by( 'slug', self::term_slug( $post_id, (string) $recurrence_id ), self::TAXONOMY );
+
+			// An occurrence nobody has RSVPd to has no term to drop.
+			if ( ! $term instanceof WP_Term ) {
+				continue;
+			}
+
+			wp_delete_term( $term->term_id, self::TAXONOMY );
+
+			++$deleted;
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * Count the RSVPs attached to a set of a post's occurrences.
+	 *
+	 * REQ-13's last acceptance criterion (brief §6 Q12): when a rule change would
+	 * move or remove occurrences carrying RSVPs, the organizer is **shown how
+	 * many RSVPs are affected**, and the RSVPs are not silently migrated. This is
+	 * the number that gets shown.
+	 *
+	 * Counts comments rather than `term_taxonomy.count`, because that column
+	 * counts relationship rows and would include RSVPs whose comment has since
+	 * been trashed — an organizer told "4 RSVPs affected" when two of them are in
+	 * the trash has been told the wrong thing.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $post_id        Series post ID the terms name.
+	 * @param string[] $recurrence_ids Occurrence identifiers to count across.
+	 *
+	 * @return int The number of approved RSVPs on those occurrences.
+	 */
+	public function count_rsvps( int $post_id, array $recurrence_ids ): int {
+		$term_ids = array();
+
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$term = get_term_by( 'slug', self::term_slug( $post_id, (string) $recurrence_id ), self::TAXONOMY );
+
+			if ( $term instanceof WP_Term ) {
+				$term_ids[] = (int) $term->term_id;
+			}
+		}
+
+		if ( array() === $term_ids ) {
+			return 0;
+		}
+
+		$comment_ids = get_objects_in_term( $term_ids, self::TAXONOMY );
+
+		if ( is_wp_error( $comment_ids ) || empty( $comment_ids ) ) {
+			return 0;
+		}
+
+		// Deliberately not narrowed by `post_id`: an RSVP's `comment_post_ID`
+		// stays on the post it was left on, while a split moves the occurrence
+		// term to a sibling post — so the term IDs are the authoritative scope
+		// and a post filter would drop exactly the RSVPs a split just moved.
+		return (int) Rsvp_Query::get_instance()->get_rsvps(
+			array(
+				'comment__in' => array_map( 'intval', $comment_ids ),
+				'count'       => true,
+				'status'      => 'approve',
+			)
 		);
 	}
 }

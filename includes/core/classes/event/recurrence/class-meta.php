@@ -603,6 +603,31 @@ final class Meta {
 	}
 
 	/**
+	 * Remove a post's recurrence rule, synchronously.
+	 *
+	 * REQ-13's "a side left holding exactly one occurrence is a plain
+	 * non-recurring event": the blob goes, the ten mirrors go, and the
+	 * has-recurring-events flag is recomputed — all inside the caller's request
+	 * rather than on `shutdown`, because the caller (`Splitter`) has to return
+	 * the resulting state to the organizer in the same response.
+	 *
+	 * Deleting the blob alone is not enough and the difference is not cosmetic:
+	 * `Rule::from_post()` reads the **mirrors**, so a post whose blob is gone but
+	 * whose mirrors survive keeps expanding the rule it no longer has.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post to remove the recurrence rule from.
+	 *
+	 * @return void
+	 */
+	public function remove_recurrence( int $post_id ): void {
+		delete_post_meta( $post_id, self::META_KEY );
+
+		$this->clear_mirrors( $post_id );
+	}
+
+	/**
 	 * Strip the derived read-only recurrence meta from REST writes.
 	 *
 	 * Filters `rest_pre_insert_{$post_type}`, alongside but separate from

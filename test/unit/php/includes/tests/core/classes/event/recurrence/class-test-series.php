@@ -348,6 +348,22 @@ class Test_Series extends Base {
 			),
 			'Failed to assert no query on a flag-off site names the series taxonomy.'
 		);
+
+		// The other half of REQ-16: no extra writes. Asserted over the whole
+		// capture rather than over the taxonomy tables alone, so a write this
+		// diff did not anticipate still fails here.
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$guarded,
+					static function ( string $query ): bool {
+						return (bool) preg_match( '/^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i', $query );
+					}
+				)
+			),
+			'Failed to assert an event archive on a flag-off site performs no writes at all.'
+		);
 	}
 
 	/**

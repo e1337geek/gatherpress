@@ -68,6 +68,7 @@ final class Setup {
 		Rewrite::get_instance();
 		Rsvp_Occurrence::get_instance();
 		Series::get_instance();
+		Splitter::get_instance();
 	}
 
 	/**

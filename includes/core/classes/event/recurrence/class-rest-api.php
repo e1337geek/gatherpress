@@ -116,6 +116,81 @@ final class Rest_Api {
 		return array(
 			$this->occurrences_route(),
 			$this->occurrence_status_route(),
+			$this->split_series_route(),
+			$this->recurrence_impact_route(),
+		);
+	}
+
+	/**
+	 * Get the forward-split route definition.
+	 *
+	 * REQ-13's "apply going forward". Authorized exactly as the status route is —
+	 * `edit_post` on the series — and scoped by the same composite key, since the
+	 * split's own occurrence lookup goes through `find_in_series()` and refuses a
+	 * recurrence ID that belongs to no post of this series.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array The route definition, including its `args` and `permission_callback`.
+	 */
+	protected function split_series_route(): array {
+		return array(
+			'route' => 'split-series',
+			'args'  => array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'callback'            => array( $this, 'split_series' ),
+				'permission_callback' => array( $this, 'has_edit_permission' ),
+				'args'                => array(
+					'post_id'       => array(
+						'required'          => true,
+						'type'              => 'integer',
+						'validate_callback' => array( Validate::class, 'event_post_id' ),
+					),
+					'recurrence_id' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'validate_callback' => static function ( $param ): bool {
+							return 1 === preg_match( '/^\d{8}T\d{6}$/', (string) $param );
+						},
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+			),
+		);
+	}
+
+	/**
+	 * Get the rule-impact route definition.
+	 *
+	 * REQ-13's last acceptance criterion is a product requirement, not an
+	 * implementation detail: an organizer whose rule change would strand RSVPs is
+	 * told how many **before** they commit, and the RSVPs are not migrated. This
+	 * route answers that question without writing anything.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array The route definition, including its `args` and `permission_callback`.
+	 */
+	protected function recurrence_impact_route(): array {
+		return array(
+			'route' => 'recurrence-impact',
+			'args'  => array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'get_recurrence_impact' ),
+				'permission_callback' => array( $this, 'has_edit_permission' ),
+				'args'                => array(
+					'post_id'    => array(
+						'required'          => true,
+						'type'              => 'integer',
+						'validate_callback' => array( Validate::class, 'event_post_id' ),
+					),
+					'recurrence' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+			),
 		);
 	}
 
@@ -371,6 +446,77 @@ final class Rest_Api {
 					return current_user_can( 'edit_post', (int) $series_post_id );
 				}
 			)
+		);
+	}
+
+	/**
+	 * Split a series forward at one occurrence.
+	 *
+	 * Guarded by `Query::site_has_recurring_events()` (REQ-16) ahead of the
+	 * splitter's own occurrence lookup, so a request against a site that has
+	 * never authored a recurring event is refused without querying the
+	 * occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_REST_Request $request Request carrying `post_id` and `recurrence_id`.
+	 *
+	 * @return WP_REST_Response|WP_Error The split result, or an error when nothing can be split.
+	 */
+	public function split_series( WP_REST_Request $request ) {
+		if ( ! Query::site_has_recurring_events() ) {
+			return new WP_Error(
+				'gatherpress_not_recurring',
+				__( 'This event does not carry a recurrence rule to split.', 'gatherpress' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$result = Splitter::get_instance()->split_forward(
+			(int) $request->get_param( 'post_id' ),
+			(string) $request->get_param( 'recurrence_id' )
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return new WP_REST_Response( $result );
+	}
+
+	/**
+	 * Report how many RSVPs a candidate rule would strand.
+	 *
+	 * Read-only. A candidate rule that does not decode into a valid `Rule` is
+	 * reported as affecting nothing rather than as an error: the editor calls
+	 * this while the organizer is mid-edit, and a rule that is momentarily
+	 * incomplete is not a failure to surface.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_REST_Request $request Request carrying `post_id` and the candidate `recurrence` blob.
+	 *
+	 * @return WP_REST_Response The stranded occurrence identifiers and their RSVP count.
+	 */
+	public function get_recurrence_impact( WP_REST_Request $request ): WP_REST_Response {
+		$empty = array(
+			'removed'    => array(),
+			'rsvp_count' => 0,
+		);
+
+		if ( ! Query::site_has_recurring_events() ) {
+			return new WP_REST_Response( $empty );
+		}
+
+		$values = json_decode( (string) $request->get_param( 'recurrence' ), true );
+		$rule   = is_array( $values ) ? Rule::from_array( $values ) : null;
+
+		if ( ! $rule instanceof Rule ) {
+			return new WP_REST_Response( $empty );
+		}
+
+		return new WP_REST_Response(
+			Splitter::get_instance()->rsvp_impact( (int) $request->get_param( 'post_id' ), $rule )
 		);
 	}
 
