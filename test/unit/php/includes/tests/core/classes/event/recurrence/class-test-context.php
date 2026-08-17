@@ -1899,12 +1899,12 @@ class Test_Context extends Base {
 			'Failed to assert that the Google Calendar payload carries the occurrence datetime.'
 		);
 		$this->assertStringContainsString(
-			'DTSTART:20260915T220000Z',
+			'DTSTART;TZID=America/New_York:20260915T180000',
 			$calendar->get_ical_event_string(),
 			'Failed to assert that the iCal payload carries the occurrence datetime.'
 		);
 		$this->assertStringNotContainsString(
-			'DTSTART:20260903T220000Z',
+			'20260903T180000\r\n',
 			$calendar->get_ical_event_string(),
 			'Failed to assert that the iCal payload stopped carrying the series anchor datetime.'
 		);

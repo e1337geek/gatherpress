@@ -336,8 +336,8 @@ class Test_Calendar extends Base {
 
 		$this->assertStringStartsWith( 'BEGIN:VEVENT', $vevent );
 		$this->assertStringEndsWith( 'END:VEVENT', $vevent );
-		$this->assertStringContainsString( 'DTSTART:20300615T183000Z', $vevent );
-		$this->assertStringContainsString( 'DTEND:20300615T203000Z', $vevent );
+		$this->assertStringContainsString( 'DTSTART;TZID=America/New_York:20300615T143000', $vevent );
+		$this->assertStringContainsString( 'DTEND;TZID=America/New_York:20300615T163000', $vevent );
 		$this->assertStringContainsString( 'SUMMARY:Sample Event', $vevent );
 
 		// Address has a `;` and `,` which RFC 5545 requires escaped as `\;` `\,`.

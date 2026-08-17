@@ -9,6 +9,7 @@
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Expander;
 use GatherPress\Core\Event\Recurrence\Meta;
@@ -377,6 +378,38 @@ class Test_Rule extends Base {
 	}
 
 	/**
+	 * The series timezone every `to_rrule_string()` fixture in this file is
+	 * serialized against.
+	 *
+	 * Named, and not UTC: `UNTIL` is emitted as a UTC date-time derived from the
+	 * anchor's wall clock, so a fixture serialized in UTC could not tell a
+	 * correct conversion apart from no conversion at all (preamble rule 3a #8).
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeZone The fixture timezone.
+	 */
+	protected static function rrule_timezone(): DateTimeZone {
+		return new DateTimeZone( 'America/New_York' );
+	}
+
+	/**
+	 * The series anchor every `to_rrule_string()` fixture in this file is
+	 * serialized against.
+	 *
+	 * Pinned, deliberately: these are pure input-to-output fixtures whose
+	 * expected text is the specification, and nothing here is compared against
+	 * the clock (preamble rule 3a #7).
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable The fixture anchor start.
+	 */
+	protected static function rrule_anchor(): DateTimeImmutable {
+		return new DateTimeImmutable( '2026-06-15 19:00:00', self::rrule_timezone() );
+	}
+
+	/**
 	 * A yearly rule serializes to `FREQ=YEARLY` with no `BY*` part.
 	 *
 	 * @covers ::to_rrule_string
@@ -412,7 +445,7 @@ class Test_Rule extends Base {
 					'end_type'  => 'until',
 					'until'     => '2031-02-28',
 				),
-				'expected' => 'FREQ=YEARLY;UNTIL=20310228',
+				'expected' => 'FREQ=YEARLY;UNTIL=20310301T000000Z',
 			),
 		);
 
@@ -424,7 +457,10 @@ class Test_Rule extends Base {
 				$rule,
 				'Fixture rule failed to build: ' . wp_json_encode( $fixture['values'] )
 			);
-			$this->assertSame( $fixture['expected'], $rule->to_rrule_string() );
+			$this->assertSame(
+				$fixture['expected'],
+				$rule->to_rrule_string( self::rrule_anchor(), self::rrule_timezone() )
+			);
 		}
 	}
 
@@ -1150,7 +1186,7 @@ class Test_Rule extends Base {
 					'end_type'  => 'until',
 					'until'     => '2026-12-31',
 				),
-				'expected' => 'FREQ=DAILY;INTERVAL=3;UNTIL=20261231',
+				'expected' => 'FREQ=DAILY;INTERVAL=3;UNTIL=20270101T000000Z',
 			),
 			// Weekly, never-ending, multiple weekdays, interval 1.
 			array(
@@ -1183,7 +1219,7 @@ class Test_Rule extends Base {
 					'end_type'     => 'until',
 					'until'        => '2027-06-15',
 				),
-				'expected' => 'FREQ=MONTHLY;BYMONTHDAY=15;UNTIL=20270615',
+				'expected' => 'FREQ=MONTHLY;BYMONTHDAY=15;UNTIL=20270615T230000Z',
 			),
 			// Monthly nth-weekday, "last", never-ending.
 			array(
@@ -1207,7 +1243,10 @@ class Test_Rule extends Base {
 				$rule,
 				'Fixture rule failed to build: ' . wp_json_encode( $fixture['values'] )
 			);
-			$this->assertSame( $fixture['expected'], $rule->to_rrule_string() );
+			$this->assertSame(
+				$fixture['expected'],
+				$rule->to_rrule_string( self::rrule_anchor(), self::rrule_timezone() )
+			);
 		}
 	}
 
@@ -1328,6 +1367,53 @@ class Test_Rule extends Base {
 		);
 		$this->assertFalse(
 			Utility::invoke_hidden_method( $never_with_stray_count, 'is_valid_end_shape' )
+		);
+	}
+
+	/**
+	 * Direct `Utility::invoke_hidden_method()` coverage for
+	 * `until_as_utc_datetime()`, whose body xdebug does not trace through
+	 * `to_rrule_string()`'s same-class delegation.
+	 *
+	 * The two cases differ only in which side of a daylight saving change the
+	 * end date sits on, and they must produce different UTC clock times from
+	 * the same wall clock -- which is the whole reason the offset is resolved
+	 * on the end date rather than on the anchor's.
+	 *
+	 * @covers ::until_as_utc_datetime
+	 *
+	 * @return void
+	 */
+	public function test_until_as_utc_datetime_direct_invoke_resolves_the_end_date_offset(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = new DateTimeImmutable( '2026-06-15 19:00:00', $timezone );
+		$rule     = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'until',
+				'until'     => '2026-06-30',
+			)
+		);
+
+		$this->assertInstanceOf( Rule::class, $rule );
+		$this->assertSame(
+			'20260630T230000Z',
+			Utility::invoke_hidden_method(
+				$rule,
+				'until_as_utc_datetime',
+				array( new DateTimeImmutable( '2026-06-30' ), $anchor, $timezone )
+			),
+			'A summer end date takes the daylight saving offset, so 19:00 local is 23:00 UTC.'
+		);
+		$this->assertSame(
+			'20261215T000000Z',
+			Utility::invoke_hidden_method(
+				$rule,
+				'until_as_utc_datetime',
+				array( new DateTimeImmutable( '2026-12-14' ), $anchor, $timezone )
+			),
+			'A winter end date takes the standard offset, so the same 19:00 local is midnight UTC the next day.'
 		);
 	}
 }
