@@ -1914,6 +1914,13 @@ class Test_Expander extends Base {
 						++$run;
 					}
 				}
+
+				// A run still open when the search window closes is an artifact
+				// of the window rather than a terminated gap, but folding it in
+				// keeps the measurement conservative: the bound must clear it
+				// either way, and discarding it could hide a longer gap that
+				// simply straddled the edge.
+				$worst = max( $worst, $run );
 			}
 		}
 
@@ -2035,14 +2042,22 @@ class Test_Expander extends Base {
 			),
 			'Failed to assert that a non-leap anniversary does not fall back to 28 February.'
 		);
+		// The off-interval case deliberately uses a non-leap anchor. Asserting it
+		// from the leap-day anchor instead would pass for the wrong reason: an
+		// implementation that took the step width as the raw interval rather than
+		// twelve times it would let 2026-02-28 through the guard at offset 24,
+		// then reject it anyway because 2026-02-29 does not exist. With a
+		// 2026-09-03 anchor nothing downstream can rescue the assertion -- offset
+		// 12 resolves to a real 2027-09-03 -- so the interval guard is the only
+		// thing that can produce false, which is the behavior under test.
 		$this->assertFalse(
 			Utility::invoke_hidden_method(
 				$expander,
 				'matches_monthly',
 				array(
 					$this->make_rule( $this->yearly_rule_values( 3 ) ),
-					new DateTimeImmutable( '2026-02-28', $utc ),
-					$anchor,
+					new DateTimeImmutable( '2027-09-03', $utc ),
+					new DateTimeImmutable( '2026-09-03', $utc ),
 				)
 			),
 			'Failed to assert that an off-interval year does not match.'

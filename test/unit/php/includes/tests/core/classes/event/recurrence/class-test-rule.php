@@ -445,14 +445,10 @@ class Test_Rule extends Base {
 	 * @return void
 	 */
 	public function test_yearly_iteration_budget_is_enforced_at_the_meta_boundary(): void {
-		// Guard the arithmetic itself rather than trusting the literals: if
-		// MAX_ITERATIONS ever moves, this fails loudly instead of silently
+		// Tie the boundary to `Expander::MAX_ITERATIONS` rather than to the
+		// literals 545 and 546: if the backstop ever moves, these two fail
+		// loudly instead of leaving the rule assertions below silently
 		// asserting the wrong boundary.
-		$this->assertSame(
-			199836,
-			( 545 * 366 * 1 ) + 366,
-			'Failed to assert the accepted-side budget arithmetic.'
-		);
 		$this->assertLessThanOrEqual(
 			Expander::MAX_ITERATIONS,
 			( 545 * 366 * 1 ) + 366,
