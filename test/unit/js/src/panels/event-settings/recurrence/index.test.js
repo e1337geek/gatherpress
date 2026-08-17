@@ -285,6 +285,47 @@ describe( 'RecurrencePanel', () => {
 		expect( blob.monthly_day ).toBe( 1 );
 	} );
 
+	test( 'CF-5: switching to Yearly clears weekly and monthly state and hides their controls', () => {
+		render( <RecurrencePanel /> );
+
+		fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+		fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+			target: { value: 'weekly' },
+		} );
+		fireEvent.click( screen.getByLabelText( 'Tuesday' ) );
+
+		expect( lastPersistedBlob().weekdays ).toEqual( [ 2 ] );
+
+		fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+			target: { value: 'monthly' },
+		} );
+		fireEvent.change( screen.getByLabelText( 'Day of the month' ), {
+			target: { value: '20' },
+		} );
+
+		expect( lastPersistedBlob().monthly_day ).toBe( 20 );
+
+		fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+			target: { value: 'yearly' },
+		} );
+
+		const blob = lastPersistedBlob();
+
+		expect( blob.frequency ).toBe( 'yearly' );
+		expect( blob.weekdays ).toEqual( [] );
+		expect( blob.monthly_day ).toBe( 1 );
+		expect( blob.monthly_mode ).toBe( 'day_of_month' );
+		expect( blob.monthly_ordinal ).toBe( 1 );
+		expect( blob.monthly_weekday ).toBe( 1 );
+
+		// The weekly/monthly-specific controls must not remain mounted once
+		// the frequency has moved on to Yearly.
+		expect( screen.queryByLabelText( 'Tuesday' ) ).not.toBeInTheDocument();
+		expect(
+			screen.queryByLabelText( 'Day of the month' ),
+		).not.toBeInTheDocument();
+	} );
+
 	test( 'never persists both an end date and a count, either direction', () => {
 		render( <RecurrencePanel /> );
 

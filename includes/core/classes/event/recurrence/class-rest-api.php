@@ -166,16 +166,9 @@ final class Rest_Api {
 						'sanitize_callback' => 'sanitize_text_field',
 					),
 					'status'        => array(
-						'required'          => true,
-						'type'              => 'string',
-						'enum'              => array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELLED ),
-						'validate_callback' => static function ( $param ): bool {
-							return in_array(
-								$param,
-								array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELLED ),
-								true
-							);
-						},
+						'required' => true,
+						'type'     => 'string',
+						'enum'     => array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELLED ),
 					),
 				),
 			),
@@ -189,6 +182,18 @@ final class Rest_Api {
 	 * the sidebar list is to offer a restore action, and a cancelled
 	 * occurrence that dropped out of the list would have no way back.
 	 *
+	 * Guarded by `Query::site_has_recurring_events()` (REQ-16): unlike the
+	 * write route, this one is reachable from every ordinary event's editor
+	 * screen the moment the sidebar mounts, not just when an organizer
+	 * explicitly acts on a recurring series. Without the guard, opening any
+	 * event on a site that has never authored a recurring one still pays an
+	 * uncached `SELECT` against the occurrence table.
+	 *
+	 * PRD C-2: reads `post_ids` from `Series::resolve_post_ids()` rather than
+	 * wrapping `$post_id` alone, so a future series split across posts
+	 * (REQ-18's `gatherpress_series_post_ids` seam) still lists every
+	 * sibling post's occurrences here.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param WP_REST_Request $request Request carrying `post_id`.
@@ -196,12 +201,17 @@ final class Rest_Api {
 	 * @return WP_REST_Response The upcoming occurrence rows, ordered ascending by start.
 	 */
 	public function get_occurrences( WP_REST_Request $request ): WP_REST_Response {
-		$post_id = (int) $request->get_param( 'post_id' );
-		$now     = current_time( 'mysql', true );
+		if ( ! Query::site_has_recurring_events() ) {
+			return new WP_REST_Response( array() );
+		}
+
+		$post_id  = (int) $request->get_param( 'post_id' );
+		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+		$now      = current_time( 'mysql', true );
 
 		$rows = array_values(
 			array_filter(
-				Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+				Occurrences::get_instance()->select_for_series( $post_ids ),
 				static function ( array $row ) use ( $now ): bool {
 					return $row['datetime_start_gmt'] >= $now;
 				}

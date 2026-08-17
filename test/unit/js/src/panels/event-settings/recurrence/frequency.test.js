@@ -128,7 +128,7 @@ describe( 'FrequencyControl', () => {
 		expect( onFrequencyChange ).toHaveBeenCalledWith( 'yearly' );
 	} );
 
-	test( 'renders the current yearly frequency without leaking weekly or monthly controls', () => {
+	test( 'renders the current yearly frequency', () => {
 		render(
 			<FrequencyControl
 				frequency="yearly"
@@ -139,11 +139,5 @@ describe( 'FrequencyControl', () => {
 		);
 
 		expect( screen.getByLabelText( 'Frequency' ) ).toHaveValue( 'yearly' );
-		// FrequencyControl renders only the frequency select and the interval
-		// input -- the weekly/monthly-specific controls live in the parent
-		// panel and are gated there, so a yearly selection here must not
-		// render or leak any weekday/monthly state of its own.
-		expect( screen.queryByLabelText( /weekday/i ) ).not.toBeInTheDocument();
-		expect( screen.queryByLabelText( /monthly/i ) ).not.toBeInTheDocument();
 	} );
 } );

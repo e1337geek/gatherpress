@@ -33,8 +33,6 @@ use WP_REST_Server;
  */
 class Test_Rest_Api extends Base {
 
-	use Occurrence_Fixtures;
-
 	/**
 	 * A five-occurrence daily rule, cheap to project and easy to reason about.
 	 *
@@ -321,20 +319,33 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * The `status` `validate_callback` accepts only the two known statuses.
+	 * The `status` arg's `enum` schema is enforced by WordPress's own
+	 * `rest_parse_request_arg` default (triggered by declaring `type` with no
+	 * explicit `sanitize_callback`), so the route needs no redundant
+	 * `validate_callback` of its own -- driven through the real dispatch
+	 * path, since that is where the schema actually gets applied
+	 * (`sanitize_params()`, not `has_valid_params()`).
 	 *
-	 * @covers ::occurrence_status_route
+	 * @covers ::update_occurrence_status
 	 *
 	 * @return void
 	 */
-	public function test_status_validate_callback_accepts_and_rejects(): void {
-		$instance = Rest_Api::get_instance();
-		$route    = Utility::invoke_hidden_method( $instance, 'occurrence_status_route' );
-		$callback = $route['args']['args']['status']['validate_callback'];
+	public function test_status_enum_rejects_an_unknown_value(): void {
+		list( $post_id, $recurrence_id ) = $this->create_event_with_occurrence();
 
-		$this->assertTrue( call_user_func( $callback, Occurrences::STATUS_SCHEDULED ) );
-		$this->assertTrue( call_user_func( $callback, Occurrences::STATUS_CANCELLED ) );
-		$this->assertFalse( call_user_func( $callback, 'deleted' ) );
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, 'deleted' ) );
+
+		$this->assertSame( 400, $response->get_status() );
+
+		$row = Occurrences::get_instance()->get( $post_id, $recurrence_id );
+		$this->assertSame(
+			Occurrences::STATUS_SCHEDULED,
+			$row['status'],
+			'An unknown status value must not reach set_status() at all.'
+		);
 	}
 
 	/**
@@ -390,13 +401,17 @@ class Test_Rest_Api extends Base {
 	/**
 	 * A bad `X-WP-Nonce` on an otherwise-authorized cookie session is
 	 * rejected by WordPress's own cookie-auth nonce check before the route's
-	 * own permission callback ever runs.
-	 *
-	 * @covers ::update_occurrence_status
+	 * own permission callback -- or `update_occurrence_status()` itself --
+	 * ever runs. This is not a property of our route: `rest_cookie_check_errors()`
+	 * gates every REST request the same way, so this test would pass even
+	 * against a completely unregistered route. It stays because the brief
+	 * asks for it and it does drive real dispatch machinery, but it proves
+	 * the inherited protection holds, not something specific to this class --
+	 * hence no `@covers` claim on our own callback.
 	 *
 	 * @return void
 	 */
-	public function test_cancel_route_rejects_a_bad_nonce(): void {
+	public function test_cookie_auth_rejects_a_bad_nonce_before_our_route_runs(): void {
 		global $wp_rest_auth_cookie;
 
 		list( $post_id, $recurrence_id ) = $this->create_event_with_occurrence();
@@ -551,6 +566,16 @@ class Test_Rest_Api extends Base {
 	 * REQ-12 is explicit that a cancelled occurrence's RSVPs are retained,
 	 * never deleted.
 	 *
+	 * Scope note: `Rsvp_Occurrence` (the comment taxonomy that ties an RSVP
+	 * to the specific occurrence it was made for) does not register its
+	 * hooks yet, so `save()` here does not tag the comment with an
+	 * occurrence identifier -- it proves "cancelling an occurrence does not
+	 * delete the event's comments" rather than the fully occurrence-scoped
+	 * claim in the method name. `Rsvp_Occurrence::assign()` is being wired up
+	 * in another lane; tighten this test to assert the specific occurrence's
+	 * RSVPs once that lands, rather than fixing it against a moving target
+	 * now.
+	 *
 	 * @covers ::update_occurrence_status
 	 *
 	 * @return void
@@ -671,6 +696,110 @@ class Test_Rest_Api extends Base {
 
 		$index = array_search( $recurrence_id, $recurrence_ids, true );
 		$this->assertSame( Occurrences::STATUS_CANCELLED, $data[ $index ]['status'] );
+	}
+
+	/**
+	 * REQ-16: a site that has never authored a recurring event pays no
+	 * occurrence-table query when the sidebar's occurrences route is hit.
+	 * Unlike the write route, this one runs from every ordinary event's
+	 * editor screen, so the guard belongs on the read path specifically.
+	 * Driven through the real server with the query count captured from the
+	 * actual SQL WordPress executes -- calling `get_occurrences()` directly
+	 * would prove the method's body runs, not that the real entry point
+	 * short-circuits before it reaches the database.
+	 *
+	 * @covers ::get_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_short_circuits_when_site_has_no_recurring_events(): void {
+		global $wpdb;
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$counter = static function ( string $query ) use ( &$seen, $table ): string {
+			if ( str_contains( $query, $table ) ) {
+				++$seen;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $counter );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$response = $this->dispatch( $request );
+
+		remove_filter( 'query', $counter );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( array(), $response->get_data() );
+		$this->assertSame(
+			0,
+			$seen,
+			'A site with no recurring events must issue zero occurrence-table queries from the occurrences route.'
+		);
+	}
+
+	/**
+	 * PRD C-2: `get_occurrences()` reads through `Series::resolve_post_ids()`
+	 * rather than wrapping `$post_id` alone in an array, so a series split
+	 * across posts by the `gatherpress_series_post_ids` seam (REQ-18) still
+	 * lists every sibling post's occurrences from the one open post. Without
+	 * the resolver, a sibling's occurrences become unreachable from the
+	 * restore UI.
+	 *
+	 * @covers ::get_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_lists_every_post_the_series_resolver_returns(): void {
+		list( $post_id, $recurrence_id )            = $this->create_event_with_occurrence();
+		list( $sibling_id, $sibling_recurrence_id ) = $this->create_event_with_occurrence( 10 );
+
+		$filter = static function ( array $post_ids, int $requested_post_id ) use ( $post_id, $sibling_id ): array {
+			return $post_id === $requested_post_id ? array( $post_id, $sibling_id ) : $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$response = $this->dispatch( $request );
+
+		remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+
+		$recurrence_ids = array_column( $response->get_data(), 'recurrence_id' );
+
+		$this->assertContains(
+			$recurrence_id,
+			$recurrence_ids,
+			"The requested post's own occurrence must be listed."
+		);
+		$this->assertContains(
+			$sibling_recurrence_id,
+			$recurrence_ids,
+			'A sibling post the resolver returns must also be listed -- this is what breaks without resolve_post_ids().'
+		);
 	}
 
 	/**

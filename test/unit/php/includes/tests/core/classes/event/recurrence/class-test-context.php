@@ -794,7 +794,120 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for a bare series request composing with bare-URL resolution.
+	 * REQ-12: a cancelled occurrence's rendered content carries a notice, not
+	 * just a resolving URL. `Test_Rewrite::test_cancelled_occurrence_url_resolves_rather_than_404()`
+	 * already pins the "resolves, not 404" half; this pins the "and says so" half.
+	 *
+	 * @covers ::maybe_prepend_cancelled_notice
+	 *
+	 * @return void
+	 */
+	public function test_cancelled_occurrence_content_carries_a_notice(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertTrue(
+			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
+			'Fixture setup: set_status() should find the freshly projected row.'
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		$this->assertTrue( have_posts(), 'Fixture assumption: the resolved request must have a post to loop over.' );
+
+		the_post();
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$content = apply_filters( 'the_content', get_the_content() );
+
+		$this->assertStringContainsString(
+			'This occurrence has been cancelled.',
+			$content,
+			'A cancelled occurrence must carry a cancellation notice in its rendered content.'
+		);
+	}
+
+	/**
+	 * A scheduled (non-cancelled) occurrence's content carries no notice.
+	 *
+	 * @covers ::maybe_prepend_cancelled_notice
+	 *
+	 * @return void
+	 */
+	public function test_scheduled_occurrence_content_carries_no_notice(): void {
+		$post_id = $this->create_and_project();
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		the_post();
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$content = apply_filters( 'the_content', get_the_content() );
+
+		$this->assertStringNotContainsString(
+			'This occurrence has been cancelled.',
+			$content,
+			'A scheduled occurrence must not carry a cancellation notice.'
+		);
+	}
+
+	/**
+	 * Outside occurrence context entirely, content is untouched.
+	 *
+	 * @covers ::maybe_prepend_cancelled_notice
+	 *
+	 * @return void
+	 */
+	public function test_content_untouched_outside_occurrence_context(): void {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		$this->go_to( (string) get_permalink( $post_id ) );
+
+		the_post();
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$content = apply_filters( 'the_content', get_the_content() );
+
+		$this->assertStringNotContainsString( 'This occurrence has been cancelled.', $content );
+	}
+
+	/**
+	 * An inner loop rendering a different post's content while the main
+	 * request's occurrence context is a cancelled occurrence must not
+	 * inherit that notice -- matching how `metadata()` scopes substitution to
+	 * the post the context belongs to, not to whatever post a loop reaches.
+	 *
+	 * @covers ::maybe_prepend_cancelled_notice
+	 *
+	 * @return void
+	 */
+	public function test_notice_does_not_leak_into_an_inner_loop_over_a_different_post(): void {
+		$post_id = $this->create_and_project();
+		$sibling = $this->create_and_project();
+
+		$this->assertTrue(
+			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
+			'Fixture setup: set_status() should find the freshly projected row.'
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		$loop = new WP_Query(
+			array(
+				'p'         => $sibling,
+				'post_type' => Event::POST_TYPE,
+			)
+		);
+		$loop->the_post();
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$content = apply_filters( 'the_content', get_the_content() );
+
+		$this->assertStringNotContainsString(
+			'This occurrence has been cancelled.',
+			$content,
+			'An inner loop over a different post must not inherit the main request\'s cancellation notice.'
+		);
+	}
+
+	/**
+	 * Coverage for a bare series request composing with PRD D-4.
 	 *
 	 * `Rewrite` resolves a bare series URL to the next upcoming occurrence and
 	 * sets the query var during `parse_request`; `Context` then establishes that
