@@ -18,9 +18,11 @@ use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
+use RuntimeException;
 use WP_Query;
 
 /**
@@ -81,6 +83,22 @@ class Test_Context extends Base {
 	 * @var string
 	 */
 	const ANCHOR_START_GMT = '2026-09-03 22:00:00';
+
+	/**
+	 * Series-level local start given to the sibling series, unmistakably its own.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const SIBLING_START = '2030-01-01 08:00:00';
+
+	/**
+	 * Series-level GMT start given to the sibling series.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const SIBLING_START_GMT = '2030-01-01 13:00:00';
 
 	/**
 	 * Ensure the occurrence table exists and no context leaks in from another test.
@@ -166,16 +184,16 @@ class Test_Context extends Base {
 				'callback' => array( $instance, 'sync' ),
 			),
 			array(
-				'type'     => 'action',
-				'name'     => 'the_post',
+				'type'     => 'filter',
+				'name'     => 'update_post_metadata',
 				'priority' => 10,
-				'callback' => array( $instance, 'sync' ),
+				'callback' => array( $instance, 'note_meta_write' ),
 			),
 			array(
-				'type'     => 'action',
-				'name'     => 'wp_reset_postdata',
+				'type'     => 'filter',
+				'name'     => 'add_post_metadata',
 				'priority' => 10,
-				'callback' => array( $instance, 'sync' ),
+				'callback' => array( $instance, 'note_meta_write' ),
 			),
 		);
 
@@ -810,7 +828,18 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for an inner loop over an unrelated post, and the reset afterwards.
+	 * Coverage for an inner loop over a sibling series sharing the recurrence identifier.
+	 *
+	 * `recurrence_id` is `Ymd\THis`, so two series projected from the same rule
+	 * share it — for weekly rules that is the common case, not an exotic one.
+	 * The sibling is therefore genuinely projected, and the assertion first
+	 * proves the colliding row exists: a fixture whose sibling has no occurrence
+	 * row makes `Occurrences::get()` return null whatever the scoping logic
+	 * does, so the test would pass against a leak.
+	 *
+	 * What is asserted is the requirement — each post reads its own datetime —
+	 * not the mechanism. Asserting that context is blanked mid-loop would forbid
+	 * binding context to the requested post, which is the correct design.
 	 *
 	 * Driven through a real secondary `WP_Query` rather than a bare
 	 * `do_action()`, because the whole point is that the loop's own wiring
@@ -818,46 +847,286 @@ class Test_Context extends Base {
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
-	 * @covers ::clear
+	 * @covers ::metadata
 	 *
 	 * @return void
 	 */
-	public function test_an_inner_loop_over_an_unrelated_post_does_not_inherit_context(): void {
+	public function test_an_inner_loop_over_a_sibling_series_does_not_leak_context(): void {
+		global $wpdb;
+
 		$post_id = $this->create_and_project();
-		$other   = $this->create_recurring_event( self::WEEKLY_RULE );
+		$sibling = $this->create_and_project();
+
+		update_post_meta( $sibling, 'gatherpress_datetime_start', self::SIBLING_START );
+
+		$this->assertNotNull(
+			Occurrences::get_instance()->get( $sibling, self::SECOND_ID ),
+			'Fixture is inert: the sibling series must carry a genuinely colliding recurrence identifier.'
+		);
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
 
 		$this->register_query_var();
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
-		$this->assertIsArray(
-			Context::get_instance()->current(),
-			'Failed to assert that the occurrence request established context.'
+		add_filter(
+			'query',
+			static function ( string $query ) use ( &$seen, $table ): string {
+				if ( str_contains( $query, $table ) ) {
+					++$seen;
+				}
+
+				return $query;
+			}
 		);
 
 		$loop = new WP_Query(
 			array(
-				'p'         => $other,
+				'p'         => $sibling,
 				'post_type' => Event::POST_TYPE,
 			)
 		);
 
 		$loop->the_post();
 
-		$this->assertNull(
-			Context::get_instance()->current(),
-			'Failed to assert that iterating an unrelated post clears occurrence context.'
+		$this->assertSame(
+			self::SIBLING_START,
+			get_post_meta( $sibling, 'gatherpress_datetime_start', true ),
+			'Failed to assert that a sibling series in an inner loop reads its own datetime.'
 		);
 		$this->assertSame(
-			$this->reference_anchor_start,
-			get_post_meta( $other, 'gatherpress_datetime_start', true ),
-			'Failed to assert that the unrelated post in the inner loop reads its own datetime.'
+			self::SECOND_START,
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Failed to assert that the queried post keeps serving its occurrence during an inner loop.'
+		);
+		$this->assertSame(
+			0,
+			$seen,
+			'Failed to assert that iterating a post issues no additional occurrence-table query.'
+		);
+
+		// An inner loop that forgets `wp_reset_postdata()` must not cost the
+		// rest of the request its occurrence context.
+		$this->assertSame(
+			self::SECOND_START,
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Failed to assert that occurrence context survives an unreset inner loop.'
 		);
 
 		wp_reset_postdata();
 
-		$this->assertIsArray(
+		$this->assertSame(
+			self::SECOND_START,
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Failed to assert that occurrence context survives wp_reset_postdata().'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16 on the read path: no recurring events, no query.
+	 *
+	 * `Occurrences::get()` is a raw uncached `$wpdb->get_row()`, so without a
+	 * guard any crawler appending the occurrence query string to an ordinary
+	 * event permalink hits the occurrence table on a site that has never
+	 * authored a recurring event.
+	 *
+	 * @covers ::sync
+	 * @covers ::maybe_set_from_request
+	 *
+	 * @return void
+	 */
+	public function test_no_occurrence_query_on_a_site_without_recurring_events(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Fixture is inert: the site must report no recurring events.'
+		);
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$this->register_query_var();
+
+		add_filter(
+			'query',
+			static function ( string $query ) use ( &$seen, $table ): string {
+				if ( str_contains( $query, $table ) ) {
+					++$seen;
+				}
+
+				return $query;
+			}
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		$this->assertSame(
+			0,
+			$seen,
+			'Failed to assert that a site with no recurring events never queries the occurrence table.'
+		);
+		$this->assertNull(
 			Context::get_instance()->current(),
-			'Failed to assert that resetting post data restores the request\'s occurrence context.'
+			'Failed to assert that no occurrence context is entered on a site with no recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for the `Event` datetime cache not colliding across series.
+	 *
+	 * PRD C-1 — identity is the composite `(series_post_id, recurrence_id)`. A
+	 * cache keyed on the recurrence identifier alone lets an `Event` for one
+	 * series cache its series datetime under an identifier that belongs to
+	 * another series' occurrence, and serve it back once context moves to its
+	 * own occurrence at that identifier.
+	 *
+	 * @covers ::set
+	 *
+	 * @return void
+	 */
+	public function test_event_cache_is_not_shared_between_series_sharing_a_recurrence_id(): void {
+		$post_id = $this->create_and_project();
+		$sibling = $this->create_and_project();
+
+		update_post_meta( $sibling, 'gatherpress_datetime_start_gmt', self::SIBLING_START_GMT );
+
+		$sibling_event = new Event( $sibling );
+
+		// Context belongs to the first series, so the sibling must read its own
+		// series value -- and must not cache it under the shared identifier.
+		Context::get_instance()->set( $post_id, self::SECOND_ID );
+
+		$this->assertSame(
+			self::SIBLING_START_GMT,
+			$sibling_event->get_datetime()['datetime_start_gmt'],
+			'Failed to assert that a sibling series reads its own datetime under another series\' context.'
+		);
+
+		Context::get_instance()->set( $sibling, self::SECOND_ID );
+
+		$this->assertSame(
+			self::SECOND_START_GMT,
+			$sibling_event->get_datetime()['datetime_start_gmt'],
+			'Failed to assert that the sibling reports its own occurrence rather than a cross-series cache hit.'
+		);
+	}
+
+	/**
+	 * Coverage for `cache_key()` on both arms of the composite-key decision.
+	 *
+	 * @covers ::cache_key
+	 *
+	 * @return void
+	 */
+	public function test_cache_key_is_scoped_to_the_context_s_own_series(): void {
+		$post_id  = $this->create_and_project();
+		$sibling  = $this->create_and_project();
+		$instance = Context::get_instance();
+
+		$this->assertSame(
+			'',
+			$instance->cache_key( $post_id ),
+			'Failed to assert that the cache key is the series slot outside occurrence context.'
+		);
+
+		$instance->set( $post_id, self::SECOND_ID );
+
+		$this->assertSame(
+			self::SECOND_ID,
+			$instance->cache_key( $post_id ),
+			'Failed to assert that the cache key is the occurrence identifier for the context\'s own post.'
+		);
+		$this->assertSame(
+			'',
+			$instance->cache_key( $sibling ),
+			'Failed to assert that another series falls back to the series slot despite a shared identifier.'
+		);
+	}
+
+	/**
+	 * Coverage for the re-entrancy flag surviving a throwing meta filter.
+	 *
+	 * A stuck flag silently disables occurrence substitution for the rest of the
+	 * request, which surfaces as a wrong date with no error anywhere.
+	 *
+	 * @covers ::read_series_meta
+	 *
+	 * @return void
+	 */
+	public function test_reading_flag_is_restored_when_a_meta_filter_throws(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i SET timezone = NULL WHERE series_post_id = %d AND recurrence_id = %s',
+				$table,
+				$post_id,
+				self::SECOND_ID
+			)
+		);
+
+		Context::get_instance()->set( $post_id, self::SECOND_ID );
+
+		$thrower = static function () {
+			throw new RuntimeException( 'Third-party meta filter exploded.' );
+		};
+
+		add_filter( 'get_post_metadata', $thrower, 11 );
+
+		$threw = false;
+
+		try {
+			get_post_meta( $post_id, 'gatherpress_timezone', true );
+		} catch ( RuntimeException $exception ) {
+			$threw = true;
+		}
+
+		remove_filter( 'get_post_metadata', $thrower, 11 );
+
+		$this->assertTrue( $threw, 'Fixture is inert: the third-party filter did not throw.' );
+		$this->assertSame(
+			self::SECOND_START,
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Failed to assert that occurrence substitution still works after a meta filter threw.'
+		);
+	}
+
+	/**
+	 * Coverage for a meta write whose new value equals the occurrence's value.
+	 *
+	 * `update_metadata()` short-circuits when the stored value already equals
+	 * the new one, and it discovers the stored value through `get_metadata_raw()`
+	 * — this same filter. Without a guard the comparison sees the occurrence's
+	 * value, and the write to the series is silently dropped.
+	 *
+	 * @covers ::metadata
+	 * @covers ::note_meta_write
+	 *
+	 * @return void
+	 */
+	public function test_a_meta_write_matching_the_occurrence_value_still_updates_the_series(): void {
+		$post_id = $this->create_and_project();
+
+		Context::get_instance()->set( $post_id, self::SECOND_ID );
+
+		update_post_meta( $post_id, 'gatherpress_datetime_start', self::SECOND_START );
+
+		Context::get_instance()->clear();
+
+		$this->assertSame(
+			self::SECOND_START,
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Failed to assert that a write matching the occurrence value still reached the series meta.'
 		);
 	}
 

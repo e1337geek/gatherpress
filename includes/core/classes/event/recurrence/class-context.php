@@ -21,7 +21,6 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Event;
 use GatherPress\Core\Traits\Singleton;
-use WP_Post;
 
 /**
  * Class Context.
@@ -90,6 +89,21 @@ final class Context {
 	protected bool $reading = false;
 
 	/**
+	 * The `array( $object_id, $meta_key )` pair a meta write is about to compare.
+	 *
+	 * `update_metadata()` and `add_metadata()` discover the currently stored
+	 * value through `get_metadata_raw()`, which fires this class's filter. With
+	 * context set, that comparison would see the occurrence's value, so a write
+	 * setting the series' start to the occurrence's current start would look
+	 * like a no-op and be dropped. The pair is noted on the way in and consumed
+	 * once, by the read the write itself performs.
+	 *
+	 * @since 0.36.0
+	 * @var array|null
+	 */
+	protected ?array $writing = null;
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -101,13 +115,19 @@ final class Context {
 	/**
 	 * Set up hooks for occurrence context.
 	 *
-	 * Context is established on `wp`, after the main query has resolved and
-	 * before `template_redirect` or any block renders. It is resynchronized on
-	 * `the_post` and `wp_reset_postdata`, both of which move the loop to a post
-	 * that may not be the requested occurrence's — a single callback clears
-	 * first and re-derives from the request, so a Query Loop over unrelated
-	 * events cannot inherit a stale occurrence value and a singular occurrence
-	 * request does not lose its context the moment the loop starts.
+	 * Context is established once, on `wp`, after the main query has resolved
+	 * and before `template_redirect` or any block renders. It deliberately does
+	 * not track the loop. Re-deriving on `the_post` would bind context to
+	 * whichever post the loop reached, and since `recurrence_id` is `Ymd\THis`
+	 * two series projected from the same rule share one — so an inner loop over
+	 * a sibling series would silently adopt the requested occurrence's date. It
+	 * would also cost an uncached occurrence query per iteration, and any inner
+	 * loop that forgot `wp_reset_postdata()` would drop the request's context
+	 * for every block below it.
+	 *
+	 * Isolation instead comes from `metadata()`, which serves the occurrence
+	 * only for the post the context belongs to. That is scoping by identity
+	 * rather than by loop position, which is what PRD C-1 asks for.
 	 *
 	 * @since 0.36.0
 	 *
@@ -116,8 +136,8 @@ final class Context {
 	protected function setup_hooks(): void {
 		add_filter( 'get_post_metadata', array( $this, 'metadata' ), 10, 4 );
 		add_action( 'wp', array( $this, 'sync' ) );
-		add_action( 'the_post', array( $this, 'sync' ) );
-		add_action( 'wp_reset_postdata', array( $this, 'sync' ) );
+		add_filter( 'update_post_metadata', array( $this, 'note_meta_write' ), 10, 3 );
+		add_filter( 'add_post_metadata', array( $this, 'note_meta_write' ), 10, 3 );
 	}
 
 	/**
@@ -161,40 +181,46 @@ final class Context {
 	}
 
 	/**
-	 * Resynchronize occurrence context with the request and the current post.
+	 * Establish occurrence context from the resolved request.
 	 *
-	 * Hooked to `wp`, `the_post` and `wp_reset_postdata`. Each of those is a
-	 * point where the post being rendered can change, so the context is dropped
-	 * and then re-derived rather than merely cleared: dropping alone would kill
-	 * a singular occurrence render the moment the loop started.
+	 * Hooked to `wp`. Clears first so a previous request in the same process
+	 * cannot leak, then derives context from the post the request actually
+	 * named — never from whatever post a loop later reaches.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param mixed $post The post the loop moved to on `the_post`, or the `WP` instance on `wp`.
-	 *
 	 * @return void
 	 */
-	public function sync( $post = null ): void {
+	public function sync(): void {
 		$this->clear();
 
-		$post_id = ( $post instanceof WP_Post ) ? $post->ID : get_queried_object_id();
-
-		$this->maybe_set_from_request( (int) $post_id );
+		$this->maybe_set_from_request( get_queried_object_id() );
 	}
 
 	/**
 	 * Enter occurrence context when the request asks for one on this post.
 	 *
+	 * The `site_has_recurring_events()` check is REQ-16 on the read path, and it
+	 * is evaluated here at callback time rather than at `setup_hooks()` so a
+	 * mid-request flip of the option is honored. Without it, any crawler or
+	 * referrer-spam bot appending the occurrence query string to an ordinary
+	 * event permalink would reach `Occurrences::get()` — a raw, uncached
+	 * `$wpdb->get_row()` — on a site that has never authored a recurring event.
+	 *
+	 * The remaining two arms never change the resulting context, since
+	 * `Occurrences::get()` matches nothing for an empty identifier or a post ID
+	 * of zero. They exist solely to skip that query.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param int $post_id Post ID the loop or the main query is on.
+	 * @param int $post_id Post ID the request resolved to.
 	 *
 	 * @return void
 	 */
 	protected function maybe_set_from_request( int $post_id ): void {
 		$recurrence_id = (string) get_query_var( self::QUERY_VAR );
 
-		if ( '' === $recurrence_id || 1 > $post_id ) {
+		if ( ! Query::site_has_recurring_events() || '' === $recurrence_id || 1 > $post_id ) {
 			return;
 		}
 
@@ -220,6 +246,17 @@ final class Context {
 	 * @return mixed The occurrence's value in context, otherwise the value unchanged.
 	 */
 	public function metadata( $value, int $object_id, string $meta_key, bool $single ) {
+		// Stand aside for the read a meta write makes to decide whether the
+		// stored value already equals the value being written. Checked and
+		// consumed before every other guard, and unconditionally, so a note can
+		// never outlive the write that left it and disable substitution for
+		// that key later.
+		if ( array( $object_id, $meta_key ) === $this->writing ) {
+			$this->writing = null;
+
+			return $value;
+		}
+
 		// Stand aside while already reading meta of our own (see `$reading`),
 		// outside occurrence context, for keys the occurrence record does not
 		// own, and for any post other than the one the context belongs to.
@@ -235,6 +272,27 @@ final class Context {
 		$result = $this->occurrence_value( $meta_key );
 
 		return $single ? $result : array( $result );
+	}
+
+	/**
+	 * Note the post and key a meta write is about to compare against.
+	 *
+	 * Filters `update_post_metadata` and `add_post_metadata`, both of which fire
+	 * immediately before core reads the currently stored value. The value passes
+	 * through untouched — this is a notification, not a short-circuit.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param mixed  $check     Short-circuit value, null when nothing has filtered yet.
+	 * @param int    $object_id Post ID being written to.
+	 * @param string $meta_key  Meta key being written.
+	 *
+	 * @return mixed The short-circuit value, unchanged.
+	 */
+	public function note_meta_write( $check, int $object_id, string $meta_key ) {
+		$this->writing = array( $object_id, $meta_key );
+
+		return $check;
 	}
 
 	/**
@@ -271,6 +329,11 @@ final class Context {
 	 * triggers sees the flag and returns the value untouched, so the read
 	 * reaches core.
 	 *
+	 * The `finally` is load-bearing. Any third-party `get_post_metadata` filter
+	 * that throws would otherwise leave the flag raised for the rest of the
+	 * request, silently disabling occurrence substitution everywhere below —
+	 * a wrong date with no error anywhere to explain it.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id  Series post ID.
@@ -280,10 +343,37 @@ final class Context {
 	 */
 	protected function read_series_meta( int $post_id, string $meta_key ) {
 		$this->reading = true;
-		$value         = get_post_meta( $post_id, $meta_key, true );
-		$this->reading = false;
 
-		return $value;
+		try {
+			return get_post_meta( $post_id, $meta_key, true );
+		} finally {
+			$this->reading = false;
+		}
+	}
+
+	/**
+	 * Build the datetime-cache key a post's `Event` instance should use.
+	 *
+	 * `Event::$datetime_cache` is keyed by this rather than held in a single
+	 * slot, because nothing stops a plugin or theme from constructing an `Event`
+	 * and reading its datetime before context is established on `wp`; a single
+	 * slot would hand that instance the series' values for the rest of its life.
+	 *
+	 * The post ID is part of the decision because a `recurrence_id` is
+	 * `Ymd\THis`, so two series share one whenever they occur at the same
+	 * moment. Keying on the identifier alone would let one series' `Event` serve
+	 * another series' cached entry — PRD C-1, identity is the composite.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID the `Event` instance wraps.
+	 *
+	 * @return string The occurrence's identifier when the context is this post's, otherwise an empty string.
+	 */
+	public function cache_key( int $post_id ): string {
+		return ( null !== $this->occurrence && (int) $this->occurrence['series_post_id'] === $post_id )
+			? (string) $this->occurrence['recurrence_id']
+			: '';
 	}
 
 	/**

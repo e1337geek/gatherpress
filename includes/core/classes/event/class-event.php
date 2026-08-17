@@ -556,7 +556,9 @@ class Event {
 
 		// Cache per occurrence, so an instance warmed outside occurrence context
 		// does not keep serving the series' values once context is established.
-		$cache_key = Context::get_instance()->current()['recurrence_id'] ?? '';
+		// Context owns the key, because deciding when an occurrence identity
+		// applies to a given post is PRD C-1's composite-key rule.
+		$cache_key = Context::get_instance()->cache_key( $this->event->ID );
 
 		if ( isset( $this->datetime_cache[ $cache_key ] ) ) {
 			return $this->datetime_cache[ $cache_key ];
