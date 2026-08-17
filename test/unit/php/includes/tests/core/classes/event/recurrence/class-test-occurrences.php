@@ -14,6 +14,8 @@ use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrence_Ref;
 use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Projection_Cron;
+use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
@@ -1723,5 +1725,461 @@ class Test_Occurrences extends Base {
 		rsort( $sorted );
 
 		$this->assertSame( $sorted, $starts, 'Failed to assert that past occurrences are ordered descending.' );
+	}
+
+	/**
+	 * Create a "never"-ending weekly series anchored a few weeks in the past,
+	 * projected with a short horizon so it starts out needing a top-up once
+	 * the horizon filter is restored to its default.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array{0: int, 1: DateTimeImmutable} The post ID and its anchor.
+	 */
+	protected function create_short_horizon_never_ending_series(): array {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 weeks' );
+
+		$short_horizon = static fn() => 1;
+		add_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'never',
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
+
+		return array( $post_id, $anchor );
+	}
+
+	/**
+	 * Coverage for REQ-6: a scheduled sweep re-runs `project()` for a
+	 * long-running series whose projected horizon is running short,
+	 * extending it, while every occurrence already in the past survives --
+	 * attendees' RSVPs hang off past occurrences.
+	 *
+	 * @covers ::top_up
+	 * @covers ::select_series_needing_top_up
+	 * @covers ::resolve_top_up_cutoff
+	 *
+	 * @return void
+	 */
+	public function test_scheduled_top_up_extends_the_horizon_and_retains_past_occurrences(): void {
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+
+		$before   = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$now_gmt  = current_time( 'mysql', true );
+		$past_ids = wp_list_pluck(
+			array_filter( $before, static fn( $row ) => $row['datetime_start_gmt'] < $now_gmt ),
+			'recurrence_id'
+		);
+
+		$this->assertNotEmpty(
+			$past_ids,
+			'Failed to assert that the fixture produced a past occurrence to protect.'
+		);
+
+		$far_future = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '+6 months' )
+			->format( 'Y-m-d H:i:s' );
+
+		$this->assertEmpty(
+			array_filter( $before, static fn( $row ) => $row['datetime_start_gmt'] > $far_future ),
+			'Failed to assert that the short-horizon fixture had nothing projected six months out yet.'
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		do_action( Projection_Cron::SWEEP_ACTION );
+
+		$after     = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$after_ids = wp_list_pluck( $after, 'recurrence_id' );
+
+		foreach ( $past_ids as $recurrence_id ) {
+			$this->assertContains(
+				$recurrence_id,
+				$after_ids,
+				'Failed to assert that a past occurrence survived the scheduled top-up.'
+			);
+		}
+
+		$this->assertNotEmpty(
+			array_filter( $after, static fn( $row ) => $row['datetime_start_gmt'] > $far_future ),
+			'Failed to assert that the scheduled top-up extended the horizon six months out.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: the scheduled sweep must issue no query against the
+	 * occurrence table at all on a site with no recurring events -- checked
+	 * via a `$wpdb->queries` capture, not the sweep's return value, matching
+	 * the CF-1 zero-query test above for the save path.
+	 *
+	 * @covers ::run_sweep
+	 *
+	 * @return void
+	 */
+	public function test_scheduled_job_performs_no_writes_on_a_site_with_no_recurring_events(): void {
+		global $wpdb;
+
+		Query::refresh_has_recurring_events();
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert that the fixture site has no recurring events.'
+		);
+
+		$occurrences_table  = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$query_count_before = count( $wpdb->queries );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		do_action( Projection_Cron::SWEEP_ACTION );
+
+		$queries_since       = array_slice( $wpdb->queries, $query_count_before );
+		$touched_occurrences = array_values(
+			array_filter(
+				$queries_since,
+				static function ( $query ) use ( $occurrences_table ) {
+					return str_contains( $query[0], $occurrences_table );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$touched_occurrences,
+			'Failed to assert that the scheduled sweep issued no query against the occurrence table.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: a `COUNT`-bounded rule is already complete and must
+	 * never be re-projected by the sweep, however far its (fixed, final)
+	 * latest occurrence sits in the past.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_count_bounded_rule_is_not_re_projected_by_the_sweep(): void {
+		global $wpdb;
+
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$far_past = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 years' );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $far_past->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => 3,
+			),
+			$far_past,
+			$far_past->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$before = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$this->assertCount( 3, $before, 'Failed to assert the count-bounded fixture wrote exactly 3 rows.' );
+
+		$this->assertNotContains(
+			$post_id,
+			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
+			'Failed to assert that select_series_needing_top_up excludes a count-bounded series.'
+		);
+
+		Query::refresh_has_recurring_events();
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		do_action( Projection_Cron::SWEEP_ACTION );
+
+		$after = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$this->assertSame(
+			$before,
+			$after,
+			'Failed to assert that the count-bounded series rows were untouched by the sweep.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `select_series_needing_top_up()`'s `LIMIT`: only up
+	 * to the requested number of stale series are returned.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_select_series_needing_top_up_respects_the_limit(): void {
+		$this->create_short_horizon_never_ending_series();
+		$this->create_short_horizon_never_ending_series();
+
+		$candidates = Occurrences::get_instance()->select_series_needing_top_up( 1 );
+
+		$this->assertCount( 1, $candidates, 'Failed to assert that select_series_needing_top_up respects its limit.' );
+	}
+
+	/**
+	 * Coverage for the `gatherpress_recurrence_top_up_margin_days` filter.
+	 *
+	 * @covers ::resolve_top_up_cutoff
+	 *
+	 * @return void
+	 */
+	public function test_resolve_top_up_cutoff_is_filterable_by_margin_days(): void {
+		$filter = static fn() => 0;
+		add_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
+
+		$cutoff = Utility::invoke_hidden_method( Occurrences::get_instance(), 'resolve_top_up_cutoff' );
+
+		remove_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
+
+		$expected = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '+' . Occurrences::PROJECTION_HORIZON_MONTHS . ' months' );
+
+		$this->assertSame(
+			$expected->format( 'Y-m-d H:i' ),
+			$cutoff->format( 'Y-m-d H:i' ),
+			'Failed to assert that a zero margin leaves the cutoff at the horizon itself.'
+		);
+	}
+
+	/**
+	 * Coverage for the `gatherpress_recurrence_top_up_batch_size` filter.
+	 *
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_top_up_batch_size_is_filterable(): void {
+		$this->create_short_horizon_never_ending_series();
+		$this->create_short_horizon_never_ending_series();
+
+		$filter = static fn() => 1;
+		add_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
+
+		$written = Occurrences::get_instance()->top_up();
+
+		remove_filter( 'gatherpress_recurrence_top_up_batch_size', $filter );
+
+		$this->assertSame( 1, $written, 'Failed to assert that top_up honors the batch-size filter default.' );
+	}
+
+	/**
+	 * Direct coverage for `top_up()`'s explicit-limit branch, bypassing the filter.
+	 *
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_top_up_uses_an_explicit_limit_when_given_one(): void {
+		$this->create_short_horizon_never_ending_series();
+		$this->create_short_horizon_never_ending_series();
+
+		$written = Occurrences::get_instance()->top_up( 1 );
+
+		$this->assertSame( 1, $written, 'Failed to assert that top_up respects an explicit limit argument.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s count-bounded branch.
+	 *
+	 * @covers ::is_series_stale
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_false_for_a_count_bounded_series(): void {
+		$post_id = $this->create_and_project();
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertFalse( $stale, 'Failed to assert that a count-bounded series is never reported stale.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s non-recurring branch.
+	 *
+	 * @covers ::is_series_stale
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_false_for_a_non_recurring_post(): void {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertFalse( $stale, 'Failed to assert that a non-recurring post is never reported stale.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s fresh-never-ending branch.
+	 *
+	 * @covers ::is_series_stale
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_false_for_a_freshly_projected_series(): void {
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( 2, 4 ),
+				'end_type'  => 'never',
+			),
+			new DateTimeImmutable( 'now', new DateTimeZone( 'America/New_York' ) ),
+			( new DateTimeImmutable( 'now', new DateTimeZone( 'America/New_York' ) ) )->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertFalse( $stale, 'Failed to assert that a freshly projected series is not stale.' );
+	}
+
+	/**
+	 * Direct coverage for `is_series_stale()`'s stale branch.
+	 *
+	 * @covers ::is_series_stale
+	 *
+	 * @return void
+	 */
+	public function test_is_series_stale_returns_true_for_a_short_horizon_series(): void {
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		$stale = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'is_series_stale',
+			array( $post_id )
+		);
+
+		$this->assertTrue( $stale, 'Failed to assert that a series projected with a short horizon is reported stale.' );
+	}
+
+	/**
+	 * Coverage for REQ-6: reading a stale series through `select_upcoming()`
+	 * -- the real production read path -- triggers exactly one repair, and a
+	 * second read within the debounce window is suppressed.
+	 *
+	 * @covers ::select_by_horizon
+	 * @covers ::maybe_lazy_repair
+	 * @covers ::maybe_repair_stale_series
+	 *
+	 * @return void
+	 */
+	public function test_lazy_repair_triggers_once_then_is_suppressed_for_the_debounce_window(): void {
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+		delete_transient( sprintf( 'gatherpress_projected_%d', $post_id ) );
+
+		$calls  = 0;
+		$filter = static function ( $months ) use ( &$calls ) {
+			++$calls;
+
+			return $months;
+		};
+		add_filter( 'gatherpress_recurrence_horizon_months', $filter );
+
+		Occurrences::get_instance()->select_upcoming( 50 );
+
+		$this->assertSame( 1, $calls, 'Failed to assert that the first stale read triggered exactly one repair.' );
+		$this->assertNotFalse(
+			get_transient( sprintf( 'gatherpress_projected_%d', $post_id ) ),
+			'Failed to assert that the debounce transient was set after the repair.'
+		);
+
+		Occurrences::get_instance()->select_upcoming( 50 );
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $filter );
+
+		$this->assertSame(
+			1,
+			$calls,
+			'Failed to assert that a second read within the debounce window did not trigger another repair.'
+		);
+
+		$far_future = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '+6 months' )
+			->format( 'Y-m-d H:i:s' );
+		$rows       = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$this->assertNotEmpty(
+			array_filter( $rows, static fn( $row ) => $row['datetime_start_gmt'] > $far_future ),
+			'Failed to assert that the triggered repair actually extended the horizon.'
+		);
+	}
+
+	/**
+	 * Coverage for `maybe_lazy_repair()`'s site-wide short-circuit: no
+	 * repair is attempted when the site has no recurring events.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_select_upcoming_does_not_repair_when_site_has_no_recurring_events(): void {
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$calls  = 0;
+		$filter = static function ( $months ) use ( &$calls ) {
+			++$calls;
+
+			return $months;
+		};
+		add_filter( 'gatherpress_recurrence_horizon_months', $filter );
+
+		Occurrences::get_instance()->select_upcoming( 50 );
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $filter );
+
+		$this->assertSame(
+			0,
+			$calls,
+			'Failed to assert that select_upcoming never attempts a repair when the site has no recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for `select_by_horizon()`'s `$upcoming` gate: `select_past()`
+	 * never triggers the lazy repair, only `select_upcoming()` does.
+	 *
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_select_past_does_not_trigger_lazy_repair(): void {
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		Query::refresh_has_recurring_events();
+		delete_transient( sprintf( 'gatherpress_projected_%d', $post_id ) );
+
+		Occurrences::get_instance()->select_past( 50 );
+
+		$this->assertFalse(
+			get_transient( sprintf( 'gatherpress_projected_%d', $post_id ) ),
+			'Failed to assert that select_past never sets the lazy-repair debounce transient.'
+		);
 	}
 }
