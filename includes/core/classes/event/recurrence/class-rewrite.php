@@ -152,6 +152,41 @@ final class Rewrite {
 		);
 
 		add_rewrite_rule( $reg_ex, $rewrite_url, 'top' );
+		$this->maybe_flush_rewrite_rules( $reg_ex, $rewrite_url );
+	}
+
+	/**
+	 * Flush the rewrite_rules option when the stored rules do not already
+	 * contain this exact pattern/target pair.
+	 *
+	 * `add_rewrite_rule()` only ever mutates `$wp_rewrite->extra_rules_top`
+	 * in memory -- `WP_Rewrite::wp_rewrite_rules()` returns the persisted
+	 * `rewrite_rules` option verbatim whenever it is non-empty, so on every
+	 * request after the *first* one this rule is registered for, the option
+	 * already exists (built at plugin activation, or by any other rewrite
+	 * consumer) without this rule in it, and it never gets added on an
+	 * upgrading site until *something* deletes the option and forces a
+	 * regeneration. Mirrors `Calendar\Endpoint::maybe_flush_rewrite_rules()`
+	 * -- the same in-place compare-and-delete pattern GatherPress already
+	 * uses for its other custom endpoints, since `Setup::schedule_rewrite_flush()`
+	 * is private and out of this class's reach. Once the option is
+	 * regenerated with this pattern's exact target, the comparison is true
+	 * and the condition never fires again, so this cannot flush on every
+	 * request.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $reg_ex      The regular expression pattern this rule was registered under.
+	 * @param string $rewrite_url The target URL this pattern should map to.
+	 *
+	 * @return void
+	 */
+	protected function maybe_flush_rewrite_rules( string $reg_ex, string $rewrite_url ): void {
+		$rules = get_option( 'rewrite_rules' );
+
+		if ( ! isset( $rules[ $reg_ex ] ) || $rules[ $reg_ex ] !== $rewrite_url ) {
+			delete_option( 'rewrite_rules' );
+		}
 	}
 
 	/**
@@ -224,6 +259,13 @@ final class Rewrite {
 	 * rows -- a non-recurring event, or a series that has run out -- is left
 	 * untouched so it renders exactly as it does today.
 	 *
+	 * REQ-16: `Query::site_has_recurring_events()` guards *before*
+	 * `resolve_post_id_from_query_vars()` runs, not after -- this method is
+	 * the bare-URL branch of `parse_request()`, which every non-occurrence
+	 * request on the site falls through to, so without this guard first,
+	 * every plain event permalink pays a `get_page_by_path()` lookup plus an
+	 * occurrence-table query on a site with no recurring events at all.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param WP $wp The main WP request object, mutated in place.
@@ -231,6 +273,10 @@ final class Rewrite {
 	 * @return void
 	 */
 	protected function maybe_resolve_bare_series( WP $wp ): void {
+		if ( ! Query::site_has_recurring_events() ) {
+			return;
+		}
+
 		$post_id = $this->resolve_post_id_from_query_vars( $wp->query_vars );
 
 		if ( null === $post_id ) {

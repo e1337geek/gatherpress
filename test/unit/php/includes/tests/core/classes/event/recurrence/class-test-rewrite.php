@@ -15,9 +15,11 @@ use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
+use GatherPress\Core\Settings;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
@@ -29,8 +31,6 @@ use WP;
  * @coversDefaultClass \GatherPress\Core\Event\Recurrence\Rewrite
  */
 class Test_Rewrite extends Base {
-
-	use Occurrence_Fixtures;
 
 	/**
 	 * Set up test environment: create the occurrence table, and put the
@@ -186,9 +186,12 @@ class Test_Rewrite extends Base {
 
 	/**
 	 * Coverage for `get_occurrence_url`: it composes onto the *configured*
-	 * rewrite slug rather than a hardcoded `/event/`. This is the test that
-	 * catches a hardcoded `/event/` regression -- the default slug alone
-	 * would pass even with `/event/` baked in.
+	 * rewrite slug rather than a hardcoded `/event/`. This only exercises
+	 * URL composition (`get_occurrence_url()` -> `get_permalink()`) -- it
+	 * does NOT exercise routing, since `add_rewrite_rule_for_post_type()`'s
+	 * own runtime slug read is a different code path entirely. See
+	 * `test_occurrence_url_routes_under_a_non_default_rewrite_slug()` below
+	 * for the routing-side guarantee.
 	 *
 	 * @covers ::get_occurrence_url
 	 *
@@ -218,6 +221,122 @@ class Test_Rewrite extends Base {
 		delete_option( 'gatherpress_settings' );
 		unregister_post_type( Event::POST_TYPE );
 		Event_Setup::get_instance()->register_post_type();
+	}
+
+	/**
+	 * Coverage for the actual correctness claim of REQ-8: an occurrence URL
+	 * under a *non-default* `events_url` slug actually ROUTES -- drives a
+	 * real request through `add_rewrite_rule_for_post_type()`'s runtime
+	 * slug read at `class-rewrite.php:138`, the line that matters, rather
+	 * than through `get_occurrence_url()`'s independent composition path.
+	 * Substituting a hardcoded `'event'` literal for `$slug` at that line
+	 * turns this test (and only this test) red.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_routes_under_a_non_default_rewrite_slug(): void {
+		global $wp_rewrite;
+
+		update_option( 'gatherpress_settings', array( 'events_url' => 'meetups' ) );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+		$recurrence_id                  = Occurrences::recurrence_id( $anchor_start );
+		$url                            = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
+
+		$this->assertStringContainsString(
+			'/meetups/',
+			$url,
+			'Fixture setup: the occurrence URL should be composed under the meetups slug.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'An occurrence URL under a non-default slug must not 404.' );
+		$this->assertTrue(
+			is_singular( Event::POST_TYPE ),
+			'An occurrence URL under a non-default slug should render the event single template.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'The occurrence query var should resolve under a non-default slug.'
+		);
+
+		// Restore the default slug for every later test in this class/process.
+		delete_option( 'gatherpress_settings' );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+	}
+
+	/**
+	 * Coverage for a *localized* `events_url` slug -- `Settings::get('events_url')`
+	 * falls back to `Event\Setup::get_localized_post_type_slug()` when the
+	 * option is unset, and that is a live, reachable configuration on any
+	 * non-English site that has not explicitly overridden the events slug.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_routes_under_a_localized_rewrite_slug(): void {
+		global $wp_rewrite;
+
+		$filter_localized_label = static function ( $labels ) {
+			$labels->singular_name = 'Veranstaltung';
+
+			return $labels;
+		};
+		add_filter( 'post_type_labels_gatherpress_event', $filter_localized_label );
+
+		// Settings::get_defaults_map() caches the resolved default for the
+		// remainder of the request the first time anything reads a setting
+		// -- almost certainly already true by this point in the suite --
+		// so the localized-slug default must be forced to recompute or the
+		// filter above has no effect on events_url's default.
+		$settings = Settings::get_instance();
+		Utility::set_and_get_hidden_property( $settings, 'defaults_cache', null );
+
+		delete_option( 'gatherpress_settings' );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+		$recurrence_id                  = Occurrences::recurrence_id( $anchor_start );
+		$url                            = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
+
+		$this->assertStringContainsString(
+			'/veranstaltung/',
+			$url,
+			'Fixture setup: the occurrence URL should be composed under the localized slug.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'An occurrence URL under a localized slug must not 404.' );
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'The occurrence query var should resolve under a localized slug.'
+		);
+
+		remove_filter( 'post_type_labels_gatherpress_event', $filter_localized_label );
+		Utility::set_and_get_hidden_property( $settings, 'defaults_cache', null );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
 	}
 
 	/**
@@ -302,6 +421,93 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Coverage for the upgrade path: `WP_Rewrite::wp_rewrite_rules()` reads
+	 * the persisted `rewrite_rules` option verbatim on every request when it
+	 * is non-empty -- `add_rewrite_rule()` alone only ever mutates
+	 * `$wp_rewrite->extra_rules_top` in memory, so on a site that already
+	 * has a populated `rewrite_rules` option (every existing GatherPress
+	 * site, the moment this code deploys), the occurrence rule would never
+	 * reach the persisted option -- and therefore never match a real
+	 * request -- without `maybe_flush_rewrite_rules()` correcting it.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::maybe_flush_rewrite_rules
+	 *
+	 * @return void
+	 */
+	public function test_add_rewrite_rules_self_heals_a_stale_persisted_option(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+		$recurrence_id                  = Occurrences::recurrence_id( $anchor_start );
+		$url                            = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
+
+		// Simulate an existing site upgrading: strip the occurrence pattern
+		// back out of the persisted option, as if this plugin version had
+		// never registered it and the site's rules were never otherwise
+		// regenerated since. `extra_rules_top` in memory is untouched --
+		// exactly what happens between one request finishing and the next
+		// one's `wp_loaded` firing.
+		$reg_ex = sprintf( '%s/([^/]+)/(%s)/?$', 'event', Rewrite::RECURRENCE_ID_REGEX );
+		$stale  = get_option( 'rewrite_rules' );
+		$this->assertArrayHasKey(
+			$reg_ex,
+			$stale,
+			'Fixture setup: the occurrence rule should already be persisted before it is stripped back out.'
+		);
+		unset( $stale[ $reg_ex ] );
+		update_option( 'rewrite_rules', $stale );
+
+		// Before: WP_Rewrite::wp_rewrite_rules() reads the stale option
+		// verbatim -- add_rewrite_rules() has not run again yet, matching a
+		// request that lands between deploy and the next full request
+		// bootstrap.
+		$this->go_to( $url );
+		$this->assertTrue(
+			is_404(),
+			'BEFORE: a stale persisted rewrite_rules option missing the occurrence rule must 404 the occurrence URL.'
+		);
+
+		// This is exactly what fires on `wp_loaded` for every real request.
+		Rewrite::get_instance()->add_rewrite_rules();
+
+		// After: the mismatch triggered delete_option(), so the next read
+		// via wp_rewrite_rules() regenerates the option from the rules
+		// still held in extra_rules_top -- including this one.
+		$this->go_to( $url );
+		$this->assertFalse(
+			is_404(),
+			'AFTER: add_rewrite_rules() must self-heal a stale persisted option so the occurrence URL resolves.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'AFTER: the occurrence query var should resolve once the option is healed.'
+		);
+	}
+
+	/**
+	 * Coverage for `maybe_flush_rewrite_rules` when the persisted option
+	 * already matches -- the comparison must be a no-op, or this would
+	 * flush on every single request.
+	 *
+	 * @covers ::maybe_flush_rewrite_rules
+	 *
+	 * @return void
+	 */
+	public function test_maybe_flush_rewrite_rules_is_a_no_op_when_already_correct(): void {
+		// setUp() already ran add_rewrite_rules() + flush_rules(), so the
+		// option is already correct for the default slug.
+		$before = get_option( 'rewrite_rules' );
+
+		Rewrite::get_instance()->add_rewrite_rules();
+
+		$this->assertSame(
+			$before,
+			get_option( 'rewrite_rules' ),
+			'add_rewrite_rules() must not touch an already-correct rewrite_rules option.'
+		);
+	}
+
+	/**
 	 * Coverage for REQ-8: a well-formed `Ymd\THis` segment that is not an
 	 * actual occurrence of that series 404s rather than silently rendering
 	 * the series at its anchor date.
@@ -314,11 +520,21 @@ class Test_Rewrite extends Base {
 		list( $post_id, ) = $this->create_relative_daily_series( 5, 7, 3 );
 
 		// Well-formed Ymd\THis, but never produced by this series' rule.
-		$this->go_to( Rewrite::get_occurrence_url( $post_id, '19991231T235959' ) );
+		$url = Rewrite::get_occurrence_url( $post_id, '19991231T235959' );
+		$this->go_to( $url );
 
 		$this->assertTrue(
 			is_404(),
 			'A well-formed but non-occurrence datetime segment should 404.'
+		);
+
+		// parse_request() must have neutralized redirect_canonical() on this
+		// 404, or WP would 301 the miss back to the bare series URL instead
+		// of letting the 404 stand -- go_to() itself never fires
+		// template_redirect, so this has to be asserted directly.
+		$this->assertNull(
+			redirect_canonical( $url, false ),
+			'redirect_canonical() must be neutralized so a non-occurrence 404 is not silently redirected.'
 		);
 	}
 
@@ -348,6 +564,52 @@ class Test_Rewrite extends Base {
 			$expected_recurrence_id,
 			get_query_var( Context::QUERY_VAR ),
 			'The bare series URL should resolve the occurrence query var to the next upcoming occurrence.'
+		);
+	}
+
+	/**
+	 * Coverage for `next_upcoming_recurrence_id`'s `series_post_id === $post_id`
+	 * check: `select_for_series()` can legitimately return rows from more
+	 * than one post (PRD C-2 / REQ-18's forward split, reachable today via
+	 * the `gatherpress_series_post_ids` filter), interleaved by start time
+	 * across posts. A sibling post's row that sorts earlier than this
+	 * post's own next occurrence must not be mistaken for it.
+	 *
+	 * @covers ::next_upcoming_recurrence_id
+	 *
+	 * @return void
+	 */
+	public function test_bare_series_url_skips_an_earlier_sibling_series_row(): void {
+		// The sibling's own occurrence is closer to "now" than this post's,
+		// so it sorts first in the combined, interleaved result set.
+		list( $sibling_post_id, )       = $this->create_relative_daily_series( 3, 7, 1 );
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 10, 7, 1 );
+		$expected_recurrence_id         = Occurrences::recurrence_id( $anchor_start );
+
+		$make_siblings = static function (
+			array $post_ids,
+			int $resolved_post_id
+		) use (
+			$post_id,
+			$sibling_post_id
+): array {
+			if ( $resolved_post_id === $post_id ) {
+				return array( $post_id, $sibling_post_id );
+			}
+
+			return $post_ids;
+		};
+		add_filter( 'gatherpress_series_post_ids', $make_siblings, 10, 2 );
+
+		$this->go_to( get_permalink( $post_id ) );
+
+		remove_filter( 'gatherpress_series_post_ids', $make_siblings, 10 );
+
+		$this->assertFalse( is_404(), 'The bare series URL must not 404.' );
+		$this->assertSame(
+			$expected_recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'The sibling series row must not be mistaken for this post\'s own next occurrence.'
 		);
 	}
 
@@ -399,6 +661,54 @@ class Test_Rewrite extends Base {
 			'',
 			(string) get_query_var( Context::QUERY_VAR ),
 			'A non-recurring event has no occurrence rows, so the query var must stay unset.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16: a plain event permalink request on a site with no
+	 * recurring events at all must never query the occurrence table.
+	 * `Query::site_has_recurring_events()` is the authoritative, cheap
+	 * (single autoloaded option read) guard `maybe_resolve_bare_series()`
+	 * checks *before* `resolve_post_id_from_query_vars()` -- which itself
+	 * costs a `get_page_by_path()` lookup -- runs at all, on every request
+	 * that has no occurrence segment (i.e. every ordinary event permalink on
+	 * the entire site).
+	 *
+	 * @covers ::maybe_resolve_bare_series
+	 *
+	 * @return void
+	 */
+	public function test_bare_series_resolution_skips_occurrence_query_without_recurring_events(): void {
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		global $wpdb;
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$query_count       = 0;
+		$count_queries     = static function ( string $query ) use ( $occurrences_table, &$query_count ): string {
+			if ( str_contains( $query, $occurrences_table ) ) {
+				++$query_count;
+			}
+
+			return $query;
+		};
+		add_filter( 'query', $count_queries );
+
+		$this->go_to( get_permalink( $post_id ) );
+
+		remove_filter( 'query', $count_queries );
+
+		$this->assertFalse( is_404(), 'A plain event permalink must not 404.' );
+		$this->assertSame(
+			0,
+			$query_count,
+			'A plain event permalink request must not query the occurrence table when the site has no recurring events.'
 		);
 	}
 
@@ -678,6 +988,13 @@ class Test_Rewrite extends Base {
 	 * @return void
 	 */
 	public function test_bare_series_resolution_is_a_no_op_for_non_event_requests(): void {
+		// The site DOES have a recurring event elsewhere, so
+		// maybe_resolve_bare_series() clears Query::site_has_recurring_events()'s
+		// guard and reaches resolve_post_id_from_query_vars() -- which must
+		// still find nothing to resolve for a request that identifies no
+		// post at all.
+		$this->create_relative_daily_series( 5, 7, 3 );
+
 		$this->go_to( home_url( '/' ) );
 
 		$this->assertFalse( is_404(), 'The home page must not 404.' );
