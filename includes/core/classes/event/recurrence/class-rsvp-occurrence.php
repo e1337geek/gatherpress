@@ -110,9 +110,21 @@ final class Rsvp_Occurrence {
 	 *
 	 * REQ-16 lives on the first guard: a site with no recurring events never
 	 * reaches the occurrence context at all, so every RSVP read and write runs
-	 * exactly the SQL it ran before this class existed. The identity comparison
-	 * is kept as the fast path ahead of the resolver, so a one-post series — the
-	 * whole of today's traffic — never reaches the filter either.
+	 * exactly the SQL it ran before this class existed.
+	 *
+	 * **The row's own stamp wins over the request's occurrence**, matching
+	 * `Context::resolve()` — see its docblock for why, and for why the reverse
+	 * order is a defect rather than a preference. The stamp is per-row and
+	 * unambiguous; the request has one occurrence for the whole response, so
+	 * preferring it collapses every row of a loop rendered on a singular
+	 * occurrence page onto the requested date.
+	 *
+	 * The request arm keeps its widened-series membership check, and that
+	 * admission is deliberate: once REQ-18's forward split moves an occurrence
+	 * onto a sibling post, the context legitimately holds a row whose
+	 * `series_post_id` is not the post the request named. The identity
+	 * comparison stays ahead of `resolve_post_ids()`, so a one-post series — the
+	 * whole of today's traffic — never reaches the filter.
 	 *
 	 * @since 0.36.0
 	 *
@@ -126,37 +138,37 @@ final class Rsvp_Occurrence {
 			return null;
 		}
 
-		$occurrence     = Context::get_instance()->current();
-		$series_post_id = ( null === $occurrence ) ? 0 : (int) $occurrence['series_post_id'];
+		// The occurrence the current loop iteration was stamped with, which is
+		// pure property access on the result object and already scoped to the
+		// post it was stamped onto, so it needs no membership check of its own.
+		$occurrence = Context::get_instance()->loop_occurrence( $post_id );
 
-		// The request's occurrence only applies when it belongs to this post or
-		// to a sibling post of its series. When it does not -- and on an archive
-		// or Query Loop, where there is no request occurrence at all -- fall
-		// back to the occurrence the current loop iteration was stamped with.
-		//
-		// Without that fallback every row of a loop reads the same series-wide
-		// RSVP state, because `current()` answers null for all of them: an
-		// attendee on the 18th appears to be attending every date in the series.
-		// `loop_occurrence()` is already scoped to the post it was stamped onto,
-		// so it needs no membership check of its own.
-		if (
-			null === $occurrence
-			|| (
-				$series_post_id !== $post_id
-				&& ! in_array( $series_post_id, Series::get_instance()->resolve_post_ids( $post_id ), true )
-			)
-		) {
-			$occurrence = Context::get_instance()->loop_occurrence( $post_id );
+		if ( null === $occurrence ) {
+			$request        = Context::get_instance()->current();
+			$series_post_id = ( null === $request ) ? 0 : (int) $request['series_post_id'];
 
-			if ( null === $occurrence ) {
-				return null;
+			// The request's occurrence applies only when it belongs to this
+			// post or to a sibling post of its series. On an archive or Query
+			// Loop there is no request occurrence at all, and without the stamp
+			// above every row would read the same series-wide RSVP state: an
+			// attendee on the 18th appears to be attending every date.
+			if (
+				null !== $request
+				&& (
+					$series_post_id === $post_id
+					|| in_array( $series_post_id, Series::get_instance()->resolve_post_ids( $post_id ), true )
+				)
+			) {
+				$occurrence = $request;
 			}
+		}
 
-			$series_post_id = (int) $occurrence['series_post_id'];
+		if ( null === $occurrence ) {
+			return null;
 		}
 
 		return array(
-			'series_post_id' => $series_post_id,
+			'series_post_id' => (int) $occurrence['series_post_id'],
 			'recurrence_id'  => (string) $occurrence['recurrence_id'],
 		);
 	}
