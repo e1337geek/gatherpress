@@ -24,6 +24,7 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Setup as Event_Setup;
+use GatherPress\Core\Settings;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
@@ -57,13 +58,19 @@ class Test_Archive extends Base {
 	 * Ensure the occurrence table exists before every test.
 	 *
 	 * The archive requests below travel the plain-permalink form of the post
-	 * type archive URL — `?post_type=gatherpress_event&paged=2`. That is a
-	 * deliberate choice, not a shortcut: the rewrite layer is not implicated
-	 * in this defect, which lives entirely in what `WP::handle_404()` decides
-	 * before `template_redirect` runs, and re-registering the post type under
-	 * a pretty permastruct once per test accumulates duplicate archive rules
-	 * in `$wp_rewrite->extra_rules_top`, which reorders them and makes the
-	 * suite depend on execution order. Both URL forms parse to the same
+	 * type archive URL — `?post_type=gatherpress_event&paged=2` — because the
+	 * pretty form does not exist in this harness. Measured, rather than
+	 * assumed: with `/%postname%/` set and rules flushed,
+	 * `$wp_rewrite->wp_rewrite_rules()` returns 85 rules and not one of them
+	 * maps to `post_type=gatherpress_event`, so `/event/page/2/` resolves to
+	 * `name=event&paged=2` and never reaches an archive at all. On a real site
+	 * the rules are present and correctly ordered — `event/page/([0-9]{1,})/?$`
+	 * at index 12 of 154, well ahead of the single-event rule at index 50 — and
+	 * pretty pagination works end to end.
+	 *
+	 * The deviation is safe because the rewrite layer is not implicated in this
+	 * defect, which lives entirely in what `WP::handle_404()` decides before
+	 * `template_redirect` runs. Both URL forms parse to the same
 	 * `is_post_type_archive` + `paged` query, which is the input this file is
 	 * about.
 	 *
@@ -616,6 +623,154 @@ class Test_Archive extends Base {
 		$this->assertTrue(
 			$wp_query->is_404(),
 			'Failed to assert a paged substituted query with no rows falls back to a 404.'
+		);
+	}
+
+	/**
+	 * Coverage for the branch where a page holds the events slug without being an archive.
+	 *
+	 * `defer_event_archive_404()` suppresses core's 404 for every request that
+	 * reaches `handle_event_archive_redirect()`, including the one that ends up
+	 * serving an ordinary page. Measured on a real site before this test
+	 * existed: `/event/`, `/event/page/2/` and `/event/page/50/` all answered
+	 * `200` with identical content, where the first was `200` and the other two
+	 * `404` without the deferral.
+	 *
+	 * The `<!--nextpage-->` half of the fixture is what makes the assertion
+	 * about the required bound rather than about "anything past page one"
+	 * (rule 3a #8): a flat "paged is a 404" rule and core's rule agree on the
+	 * unsplit page and disagree on the split one, so the split page is asserted
+	 * in both directions.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::maybe_404_paged_page
+	 *
+	 * @return void
+	 */
+	public function test_page_holding_the_events_slug_404s_past_its_content_pages(): void {
+		$page_id = $this->factory->post->create(
+			array(
+				'post_type'    => 'page',
+				'post_status'  => 'publish',
+				'post_title'   => 'Event Landing',
+				'post_name'    => (string) Settings::get_instance()->get( 'events_url' ),
+				'post_content' => 'Landing copy.',
+			)
+		);
+
+		$first = $this->request_archive_page( 1 );
+
+		$this->assertFalse(
+			$first->is_404(),
+			'Failed to assert the page holding the events slug is served at page one.'
+		);
+		$this->assertTrue(
+			$first->is_page,
+			'Failed to assert the events slug serves the page rather than an archive.'
+		);
+		$this->assertSame(
+			$page_id,
+			$first->queried_object_id,
+			'Failed to assert the page is the queried object.'
+		);
+
+		$this->assertTrue(
+			$this->request_archive_page( 2 )->is_404(),
+			'Failed to assert page two of an unsplit landing page is a 404.'
+		);
+		$this->assertTrue(
+			$this->request_archive_page( 50 )->is_404(),
+			'Failed to assert a high page number of an unsplit landing page is a 404.'
+		);
+
+		// Two content pages now, so core's bound moves and the flat rule does not.
+		wp_update_post(
+			array(
+				'ID'           => $page_id,
+				'post_content' => 'Part one.<!--nextpage-->Part two.',
+			)
+		);
+
+		$second = $this->request_archive_page( 2 );
+
+		$this->assertFalse(
+			$second->is_404(),
+			'Failed to assert page two of a split landing page is served.'
+		);
+		$this->assertSame(
+			2,
+			(int) $second->get( 'page' ),
+			'Failed to assert the requested page number reaches the content paginator.'
+		);
+		$this->assertTrue(
+			$this->request_archive_page( 3 )->is_404(),
+			'Failed to assert page three of a two-page landing page is a 404.'
+		);
+	}
+
+	/**
+	 * Coverage for the designated archive page: it orders by occurrence datetime too.
+	 *
+	 * The designated-page rewrite reaches `substitute_archive_query()` through a
+	 * different branch than the archive-mode fallback, and nothing asserted its
+	 * ordering through a real request: the pre-existing
+	 * `Test_Setup::test_handle_event_archive_redirect_designated_archive_page`
+	 * sets `is_post_type_archive` by hand and calls the method directly, so it
+	 * crosses neither `go_to()` nor `template_redirect`.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::substitute_archive_query
+	 *
+	 * @return void
+	 */
+	public function test_designated_archive_page_orders_by_occurrence_datetime(): void {
+		$slug    = (string) Settings::get_instance()->get( 'events_url' );
+		$page_id = $this->factory->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_title'  => 'Upcoming Events',
+				'post_name'   => $slug,
+			)
+		);
+
+		update_option(
+			'gatherpress_settings',
+			array(
+				'upcoming_events' => wp_json_encode(
+					array(
+						array(
+							'id'    => $page_id,
+							'slug'  => $slug,
+							'value' => 'Upcoming Events',
+						),
+					)
+				),
+			)
+		);
+
+		$fixture  = $this->build_archive_fixture();
+		$expected = $this->expected_entries( $fixture );
+
+		$first = $this->request_archive_page( 1 );
+
+		$this->assertSame(
+			$page_id,
+			$first->queried_object_id,
+			'Failed to assert the designated page stays the queried object.'
+		);
+		$this->assertSame(
+			array_slice( $expected, 0, 10 ),
+			$this->entries( $first ),
+			'Failed to assert the designated archive page lists the ten earliest occurrences.'
+		);
+
+		$second = $this->request_archive_page( 2 );
+
+		$this->assertSame(
+			array_slice( $expected, 10, 10 ),
+			$this->entries( $second ),
+			'Failed to assert page two of the designated archive page continues the same ordering.'
 		);
 	}
 
