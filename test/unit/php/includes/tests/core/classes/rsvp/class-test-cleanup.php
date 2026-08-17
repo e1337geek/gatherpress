@@ -51,6 +51,12 @@ class Test_Cleanup extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'reschedule_cleanup_cron' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'delete_comment',
+				'priority' => 10,
+				'callback' => array( $instance, 'delete_term_relationships' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );

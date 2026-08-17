@@ -235,11 +235,21 @@ class Test_Storage_Scaling extends Base {
 	/**
 	 * Priming caches an empty answer for a comment holding no RSVP terms.
 	 *
+	 * The cached value is asserted, and then the thing the cached value exists
+	 * for: `get_value_from_object_terms()` distinguishes "not primed" (`false`)
+	 * from "primed empty" (`array()`) precisely so the empty case costs no
+	 * query, and only a query-count window can tell the two apart. Asserting
+	 * the cache contents alone leaves that branch verified by nothing —
+	 * relaxing the check to `empty( $terms )` passes it.
+	 *
 	 * @covers ::prime_term_cache
+	 * @covers ::get_value_from_object_terms
 	 *
 	 * @return void
 	 */
 	public function test_prime_term_cache_caches_the_empty_answer(): void {
+		global $wpdb;
+
 		$comment_id = (int) $this->factory->comment->create();
 		$storage    = new Storage( $this->create_event() );
 
@@ -251,6 +261,23 @@ class Test_Storage_Scaling extends Base {
 			array(),
 			get_object_term_cache( $comment_id, Status::TAXONOMY ),
 			'Failed to assert a comment with no status term caches an empty answer rather than a miss.'
+		);
+
+		$before = count( $wpdb->queries );
+		$value  = Utility::invoke_hidden_method(
+			$storage,
+			'get_value_from_object_terms',
+			array( $comment_id, Status::TAXONOMY )
+		);
+
+		$this->assertNull(
+			$value,
+			'Failed to assert a comment with no status term reads back as no status.'
+		);
+		$this->assertSame(
+			0,
+			count( $wpdb->queries ) - $before,
+			'Failed to assert the cached empty answer is served without a query of its own.'
 		);
 	}
 

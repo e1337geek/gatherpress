@@ -57,6 +57,7 @@ import {
 	activateOnSpace,
 	sendRsvpApiRequest,
 	getNonce,
+	withRecurrenceId,
 } from '@src/helpers/interactivity';
 
 /**
@@ -540,5 +541,97 @@ describe( 'activateOnSpace', () => {
 
 		expect( event.preventDefault ).not.toHaveBeenCalled();
 		expect( ref.click ).not.toHaveBeenCalled();
+	} );
+} );
+
+describe( 'withRecurrenceId', () => {
+	afterEach( () => {
+		delete mockInteractivityState.recurrenceId;
+	} );
+
+	it( 'contributes nothing when the page is not rendering an occurrence', () => {
+		expect( withRecurrenceId() ).toEqual( {} );
+	} );
+
+	it( 'contributes nothing when the emitted identifier is empty', () => {
+		mockInteractivityState.recurrenceId = '';
+
+		expect( withRecurrenceId() ).toEqual( {} );
+	} );
+
+	it( 'carries the occurrence the page is rendering', () => {
+		mockInteractivityState.recurrenceId = '20260903T180000';
+
+		expect( withRecurrenceId() ).toEqual( {
+			recurrence_id: '20260903T180000',
+		} );
+	} );
+} );
+
+describe( 'sendRsvpApiRequest occurrence scoping', () => {
+	let state;
+
+	beforeEach( () => {
+		getNonce.clearCache();
+
+		state = { posts: { 123: {} } };
+		window.alert = jest.fn();
+		jest.spyOn( console, 'warn' ).mockImplementation( () => {} );
+
+		global.fetch = jest.fn( ( url ) => {
+			if ( url.endsWith( '/nonce' ) ) {
+				return Promise.resolve( {
+					json: () => Promise.resolve( { nonce: 'test-nonce' } ),
+				} );
+			}
+
+			return Promise.resolve( {
+				status: 200,
+				json: () =>
+					Promise.resolve( {
+						success: true,
+						status: 'attending',
+						guests: 0,
+						anonymous: false,
+						responses: {},
+					} ),
+			} );
+		} );
+	} );
+
+	afterEach( () => {
+		jest.restoreAllMocks();
+		delete global.fetch;
+		delete mockInteractivityState.recurrenceId;
+	} );
+
+	const rsvpRequestBody = () => {
+		const call = global.fetch.mock.calls.find( ( [ url ] ) =>
+			url.endsWith( '/rsvp' )
+		);
+
+		return JSON.parse( call[ 1 ].body );
+	};
+
+	it( 'sends the occurrence identifier the page is rendering', async () => {
+		mockInteractivityState.recurrenceId = '20260903T180000';
+
+		await sendRsvpApiRequest(
+			123,
+			{ status: 'attending', guests: 0, anonymous: false },
+			state
+		);
+
+		expect( rsvpRequestBody().recurrence_id ).toBe( '20260903T180000' );
+	} );
+
+	it( 'leaves the request body untouched off an occurrence page', async () => {
+		await sendRsvpApiRequest(
+			123,
+			{ status: 'attending', guests: 0, anonymous: false },
+			state
+		);
+
+		expect( rsvpRequestBody() ).not.toHaveProperty( 'recurrence_id' );
 	} );
 } );

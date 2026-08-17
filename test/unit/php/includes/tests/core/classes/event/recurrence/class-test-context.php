@@ -16,6 +16,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use GatherPress\Core\Assets;
 use GatherPress\Core\Calendar\Calendar;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Query as Event_Query;
@@ -1966,6 +1967,140 @@ class Test_Context extends Base {
 			self::ANCHOR_START_GMT,
 			$event->get_datetime()['datetime_start_gmt'],
 			'Failed to assert that the pre-warmed instance returns to the series datetime after clear.'
+		);
+	}
+
+	/**
+	 * `set_for_series()` enters context for an occurrence a request names.
+	 *
+	 * The REST counterpart to `sync()`. A REST request never fires `wp` —
+	 * core's `rest_api_loaded()` runs on `parse_request` and ends in `die()` —
+	 * so without this nothing on that surface could ever be occurrence-scoped.
+	 *
+	 * @covers ::set_for_series
+	 * @covers ::resolve_in_series
+	 *
+	 * @return void
+	 */
+	public function test_set_for_series_enters_the_named_occurrence(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertTrue(
+			Context::get_instance()->set_for_series( $post_id, self::SECOND_ID ),
+			'Failed to assert a real occurrence is entered.'
+		);
+		$this->assertSame(
+			self::SECOND_ID,
+			Context::get_instance()->current()['recurrence_id'],
+			'Failed to assert the entered context is the occurrence that was named.'
+		);
+	}
+
+	/**
+	 * `set_for_series()` refuses anything that does not resolve to a row.
+	 *
+	 * @covers ::set_for_series
+	 * @covers ::resolve_in_series
+	 *
+	 * @return void
+	 */
+	public function test_set_for_series_refuses_what_does_not_resolve(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertFalse(
+			Context::get_instance()->set_for_series( $post_id, '20991231T235959' ),
+			'Failed to assert an unknown identifier does not enter context.'
+		);
+		$this->assertFalse(
+			Context::get_instance()->set_for_series( $post_id, '' ),
+			'Failed to assert an empty identifier does not enter context.'
+		);
+		$this->assertFalse(
+			Context::get_instance()->set_for_series( 0, self::SECOND_ID ),
+			'Failed to assert an unusable post ID does not enter context.'
+		);
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert a refused entry leaves no context behind.'
+		);
+	}
+
+	/**
+	 * REQ-16: a site with no recurring events resolves nothing and queries nothing.
+	 *
+	 * @covers ::resolve_in_series
+	 *
+	 * @return void
+	 */
+	public function test_resolve_in_series_short_circuits_off_a_recurring_site(): void {
+		global $wpdb;
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		Query::refresh_has_recurring_events();
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$before            = count( $wpdb->queries );
+		$resolved          = Context::resolve_in_series( $post_id, self::SECOND_ID );
+		$since             = array_slice( $wpdb->queries, $before );
+
+		$this->assertNull( $resolved, 'Failed to assert a non-recurring site resolves no occurrence.' );
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$since,
+					static function ( array $query ) use ( $occurrences_table ): bool {
+						return str_contains( $query[0], $occurrences_table );
+					}
+				)
+			),
+			'Failed to assert a non-recurring site never queries the occurrence table to resolve one.'
+		);
+	}
+
+	/**
+	 * The occurrence is emitted to the front end only on an occurrence page.
+	 *
+	 * The front end has to send this back on its RSVP requests: a REST request
+	 * never fires `wp`, so the server cannot derive the occurrence from the
+	 * request on its own. Off an occurrence page the key is withheld entirely
+	 * rather than emitted empty, which is what keeps every other page's state
+	 * payload byte-identical.
+	 *
+	 * The two halves run in one test, negative first, because
+	 * `wp_interactivity_state()` accumulates into a per-process store — once a
+	 * key is written it cannot be withdrawn, so the absence must be observed
+	 * before the presence.
+	 *
+	 * @covers \GatherPress\Core\Assets::add_interactivity_state
+	 *
+	 * @return void
+	 */
+	public function test_interactivity_state_carries_the_occurrence_only_in_context(): void {
+		$post_id = $this->create_and_project();
+
+		Context::get_instance()->clear();
+		Assets::get_instance()->add_interactivity_state();
+
+		$this->assertArrayNotHasKey(
+			'recurrenceId',
+			wp_interactivity_state( 'gatherpress' ),
+			'Failed to assert the occurrence is withheld from the state off an occurrence page.'
+		);
+
+		Context::get_instance()->set( $post_id, self::SECOND_ID );
+		Assets::get_instance()->add_interactivity_state();
+
+		$this->assertSame(
+			self::SECOND_ID,
+			wp_interactivity_state( 'gatherpress' )['recurrenceId'],
+			'Failed to assert the occurrence being rendered is emitted to the front end.'
 		);
 	}
 	/**

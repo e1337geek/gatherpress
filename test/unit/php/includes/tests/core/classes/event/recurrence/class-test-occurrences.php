@@ -3358,6 +3358,38 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * `find_in_series()` matches on the composite key across every post of a series.
+	 *
+	 * The lookup that validates a request-supplied `recurrence_id`. It takes an
+	 * array of post IDs rather than one (PRD C-2), so a forward split that
+	 * moves an occurrence onto a sibling post does not make the identifier
+	 * stop resolving.
+	 *
+	 * @covers ::find_in_series
+	 *
+	 * @return void
+	 */
+	public function test_find_in_series_matches_the_composite_key(): void {
+		$post_id = $this->create_and_project();
+		$found   = Occurrences::get_instance()->find_in_series(
+			array( $post_id + 1000, $post_id ),
+			'20260915T180000'
+		);
+
+		$this->assertIsArray( $found, 'Failed to assert an occurrence of the series resolves.' );
+		$this->assertSame(
+			'20260915T180000',
+			$found['recurrence_id'],
+			'Failed to assert the resolved row is the one the identifier named.'
+		);
+		$this->assertSame(
+			$post_id,
+			(int) $found['series_post_id'],
+			'Failed to assert the resolved row belongs to the post that owns it.'
+		);
+	}
+
+	/**
 	 * Coverage for the rowless-repair blocker on the lazy path: an
 	 * upcoming-events read that surfaces a rowless series through
 	 * `select_by_horizon()`'s no-rows fallback must repair it. The fallback
@@ -4590,6 +4622,7 @@ class Test_Occurrences extends Base {
 			'Failed to assert that top_up reports zero when every projection failed.'
 		);
 	}
+
 	/**
 	 * Coverage for both single-post writes reporting a refused statement.
 	 *
@@ -4647,6 +4680,35 @@ class Test_Occurrences extends Base {
 			0,
 			$instance->delete_for_post( -1 ),
 			'Failed to assert a post with no rows still reports zero rather than false.'
+		);
+	}
+
+	/**
+	 * `find_in_series()` resolves nothing for an unusable or unmatched lookup.
+	 *
+	 * @covers ::find_in_series
+	 *
+	 * @return void
+	 */
+	public function test_find_in_series_returns_null_when_nothing_matches(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+
+		$this->assertNull(
+			$instance->find_in_series( array(), '20260915T180000' ),
+			'Failed to assert an empty series resolves nothing.'
+		);
+		$this->assertNull(
+			$instance->find_in_series( array( $post_id ), '' ),
+			'Failed to assert an empty identifier resolves nothing.'
+		);
+		$this->assertNull(
+			$instance->find_in_series( array( $post_id ), '20991231T235959' ),
+			'Failed to assert an identifier the series does not carry resolves nothing.'
+		);
+		$this->assertNull(
+			$instance->find_in_series( array( $post_id + 1000 ), '20260915T180000' ),
+			'Failed to assert an occurrence of another series does not resolve here.'
 		);
 	}
 }

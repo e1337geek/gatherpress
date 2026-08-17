@@ -28,6 +28,7 @@ use GatherPress\Core\Rsvp\Response\Provider\Base as Provider;
 use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Rsvp\Rsvp;
 use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
+use GatherPress\Core\Rsvp\Token;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
@@ -591,6 +592,127 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
+	 * Approving an RSVP through its token invalidates the occurrence's cache key.
+	 *
+	 * `handle_rsvp_token()` runs on `init`, before `wp`, so there is no
+	 * occurrence context for `Cache::delete()` to resolve from — the occurrence
+	 * has to come off the comment's own term instead. Without that, the
+	 * occurrence key survives the approval and serves stale counts for the
+	 * length of `Cache::CACHE_EXPIRATION`, to every visitor at once under a
+	 * persistent object cache.
+	 *
+	 * @covers ::recurrence_id_for_comment
+	 * @covers ::recurrence_id_from_slug
+	 * @covers \GatherPress\Core\Rsvp\Token::approve_comment
+	 *
+	 * @return void
+	 */
+	public function test_token_approval_invalidates_the_occurrence_cache_key(): void {
+		$post_id    = $this->create_and_project();
+		$user_id    = $this->factory->user->create();
+		$comment_id = (int) $this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id )['comment_id'];
+
+		wp_update_comment(
+			array(
+				'comment_ID'       => $comment_id,
+				'comment_approved' => '0',
+			)
+		);
+
+		// Warm both keys, then leave occurrence context — the token handler
+		// runs on `init`, where no context has been established.
+		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ) );
+		Cache::set( $post_id, array( 'all' => array( 'count' => 42 ) ), self::OCCURRENCE_A );
+
+		Context::get_instance()->clear();
+
+		( new Token( $comment_id ) )->approve_comment();
+
+		$this->assertNull(
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to assert token approval invalidated the occurrence-scoped cache key.'
+		);
+		$this->assertNull(
+			Cache::get( $post_id ),
+			'Failed to assert token approval invalidated the series-wide cache key.'
+		);
+	}
+
+	/**
+	 * The occurrence recovered from a comment is the canonical identifier.
+	 *
+	 * `term_slug()` runs the composite through `sanitize_title()`, which
+	 * lowercases the `T` of `Ymd\THis`. Handing that form back would compose a
+	 * cache key no write has ever produced, so the round trip is asserted
+	 * against the canonical value rather than against the slug.
+	 *
+	 * @covers ::recurrence_id_for_comment
+	 * @covers ::recurrence_id_from_slug
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_id_for_comment_recovers_the_canonical_identifier(): void {
+		$post_id    = $this->create_and_project();
+		$user_id    = $this->factory->user->create();
+		$comment_id = (int) $this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id )['comment_id'];
+
+		$this->assertSame(
+			self::OCCURRENCE_A,
+			Rsvp_Occurrence::recurrence_id_for_comment( $comment_id ),
+			'Failed to assert the occurrence recovered from a comment is the canonical identifier.'
+		);
+	}
+
+	/**
+	 * A comment with no occurrence term, and an unusable ID, resolve to null.
+	 *
+	 * @covers ::recurrence_id_for_comment
+	 * @covers ::recurrence_id_from_slug
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_id_for_comment_returns_null_without_a_term(): void {
+		$this->create_and_project();
+
+		$comment_id = (int) $this->factory->comment->create();
+
+		$this->assertNull(
+			Rsvp_Occurrence::recurrence_id_for_comment( $comment_id ),
+			'Failed to assert a comment carrying no occurrence term resolves to null.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::recurrence_id_for_comment( 0 ),
+			'Failed to assert an unusable comment ID resolves to null.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::recurrence_id_from_slug( 'no-separator-here-' ),
+			'Failed to assert a slug ending in the separator carries no identifier.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::recurrence_id_from_slug( '20260903t180000' ),
+			'Failed to assert a slug with no separator at all carries no identifier.'
+		);
+	}
+
+	/**
+	 * On a non-recurring site the comment is never asked for an occurrence.
+	 *
+	 * @covers ::recurrence_id_for_comment
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_id_for_comment_is_null_off_a_recurring_site(): void {
+		$comment_id = (int) $this->factory->comment->create();
+
+		Recurrence_Query::refresh_has_recurring_events();
+
+		$this->assertNull(
+			Rsvp_Occurrence::recurrence_id_for_comment( $comment_id ),
+			'Failed to assert a non-recurring site resolves no occurrence for a comment.'
+		);
+	}
+
+	/**
 	 * The attendance limit and the waiting list are counted per occurrence.
 	 *
 	 * @covers ::assign
@@ -624,31 +746,40 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
-	 * Coverage for `__construct` and `setup_hooks`.
+	 * The `delete_comment` relationship cleanup is owned by `Rsvp\Cleanup`.
+	 *
+	 * It clears all three RSVP comment taxonomies, only one of which is about
+	 * recurrence, so it belongs beside the hard-delete cron rather than on a
+	 * class named for the occurrence link. Asserted rather than described: a
+	 * move back here would leave this failing.
 	 *
 	 * @covers ::__construct
-	 * @covers ::setup_hooks
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::setup_hooks
 	 *
 	 * @return void
 	 */
-	public function test_setup_hooks(): void {
-		$instance = Rsvp_Occurrence::get_instance();
-		$hooks    = array(
-			array(
-				'type'     => 'action',
-				'name'     => 'delete_comment',
-				'priority' => 10,
-				'callback' => array( $instance, 'delete_term_relationships' ),
-			),
-		);
+	public function test_relationship_cleanup_is_hooked_from_the_rsvp_cleanup_class(): void {
+		// The singleton is built once per process, so whichever test happens to
+		// reach it first is the only one xdebug credits. Invoking the (now
+		// empty) constructor directly is the documented way to trace it from
+		// the test that is actually about it.
+		Utility::invoke_hidden_method( Rsvp_Occurrence::get_instance(), '__construct' );
 
-		$this->assert_hooks( $hooks, $instance );
+		$this->assertSame(
+			10,
+			has_action( 'delete_comment', array( Cleanup::get_instance(), 'delete_term_relationships' ) ),
+			'Failed to assert Rsvp\Cleanup owns the delete_comment relationship cleanup.'
+		);
+		$this->assertFalse(
+			has_action( 'delete_comment', array( Rsvp_Occurrence::get_instance(), 'delete_term_relationships' ) ),
+			'Failed to assert Rsvp_Occurrence no longer hooks the relationship cleanup.'
+		);
 	}
 
 	/**
 	 * Deleting a comment that is not an RSVP touches no term relationships.
 	 *
-	 * @covers ::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
 	 *
 	 * @return void
 	 */
@@ -667,8 +798,8 @@ class Test_Rsvp_Occurrence extends Base {
 		// A plain comment reaching the callback, and the same call with no
 		// comment object at all — the shape WordPress uses in a few legacy
 		// `do_action( 'delete_comment', $id )` call sites.
-		Rsvp_Occurrence::get_instance()->delete_term_relationships( $comment_id, get_comment( $comment_id ) );
-		Rsvp_Occurrence::get_instance()->delete_term_relationships( $comment_id );
+		Cleanup::get_instance()->delete_term_relationships( $comment_id, get_comment( $comment_id ) );
+		Cleanup::get_instance()->delete_term_relationships( $comment_id );
 
 		$this->assertSame(
 			1,
@@ -680,7 +811,7 @@ class Test_Rsvp_Occurrence extends Base {
 	/**
 	 * On a non-recurring site the cleanup never names the occurrence taxonomy.
 	 *
-	 * @covers ::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
 	 *
 	 * @return void
 	 */
@@ -742,7 +873,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * deleting anything.
 	 *
 	 * @covers ::assign
-	 * @covers ::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
 	 *
 	 * @return void
 	 */
@@ -778,7 +909,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * The RSVP cleanup cron's hard delete leaves no orphaned term relationships.
 	 *
 	 * @covers ::assign
-	 * @covers ::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
 	 *
 	 * @return void
 	 */
@@ -818,7 +949,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * The list table's bulk delete leaves no orphaned term relationships.
 	 *
 	 * @covers ::assign
-	 * @covers ::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
 	 *
 	 * @return void
 	 */
