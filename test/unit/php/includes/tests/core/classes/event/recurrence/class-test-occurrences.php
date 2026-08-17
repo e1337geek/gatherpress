@@ -1798,7 +1798,7 @@ class Test_Occurrences extends Base {
 			'Failed to assert that the short-horizon fixture had nothing projected six months out yet.'
 		);
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
 		do_action( Projection_Cron::SWEEP_ACTION );
 
 		$after     = Occurrences::get_instance()->select_for_series( array( $post_id ) );
@@ -1824,7 +1824,7 @@ class Test_Occurrences extends Base {
 	 * via a `$wpdb->queries` capture, not the sweep's return value, matching
 	 * the CF-1 zero-query test above for the save path.
 	 *
-	 * @covers ::run_sweep
+	 * @covers \GatherPress\Core\Event\Recurrence\Projection_Cron::run_sweep
 	 *
 	 * @return void
 	 */
@@ -1840,7 +1840,7 @@ class Test_Occurrences extends Base {
 		$occurrences_table  = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 		$query_count_before = count( $wpdb->queries );
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
 		do_action( Projection_Cron::SWEEP_ACTION );
 
 		$queries_since       = array_slice( $wpdb->queries, $query_count_before );
@@ -1900,7 +1900,7 @@ class Test_Occurrences extends Base {
 
 		Query::refresh_has_recurring_events();
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
 		do_action( Projection_Cron::SWEEP_ACTION );
 
 		$after = Occurrences::get_instance()->select_for_series( array( $post_id ) );
@@ -2094,17 +2094,26 @@ class Test_Occurrences extends Base {
 		Query::refresh_has_recurring_events();
 		delete_transient( sprintf( 'gatherpress_projected_%d', $post_id ) );
 
+		// The margin-days filter fires exactly once per maybe_repair_stale_series()
+		// attempt (inside is_series_stale() -> resolve_top_up_cutoff()), unlike
+		// the horizon-months filter, which also fires from project()'s own
+		// resolve_horizon() call whenever a repair actually re-projects -- so
+		// this is the precise "one attempt" signal the debounce governs.
 		$calls  = 0;
-		$filter = static function ( $months ) use ( &$calls ) {
+		$filter = static function ( $days ) use ( &$calls ) {
 			++$calls;
 
-			return $months;
+			return $days;
 		};
-		add_filter( 'gatherpress_recurrence_horizon_months', $filter );
+		add_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
 
 		Occurrences::get_instance()->select_upcoming( 50 );
 
-		$this->assertSame( 1, $calls, 'Failed to assert that the first stale read triggered exactly one repair.' );
+		$this->assertSame(
+			1,
+			$calls,
+			'Failed to assert that the first stale read triggered exactly one repair attempt.'
+		);
 		$this->assertNotFalse(
 			get_transient( sprintf( 'gatherpress_projected_%d', $post_id ) ),
 			'Failed to assert that the debounce transient was set after the repair.'
@@ -2112,12 +2121,12 @@ class Test_Occurrences extends Base {
 
 		Occurrences::get_instance()->select_upcoming( 50 );
 
-		remove_filter( 'gatherpress_recurrence_horizon_months', $filter );
+		remove_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
 
 		$this->assertSame(
 			1,
 			$calls,
-			'Failed to assert that a second read within the debounce window did not trigger another repair.'
+			'Failed to assert that a second read within the debounce window did not trigger another repair attempt.'
 		);
 
 		$far_future = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )

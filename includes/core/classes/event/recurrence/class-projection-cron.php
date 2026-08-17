@@ -1,0 +1,164 @@
+<?php
+/**
+ * Scheduling for occurrence-horizon top-up (REQ-6).
+ *
+ * `Occurrences::project()` is idempotent and callable with no request
+ * context, and `Occurrences::resolve_horizon()` measures from
+ * `max( anchor, now )`, so re-running it genuinely extends an open-ended
+ * series' projected horizon over time. This class owns *when* that re-run
+ * happens -- a recurring scheduled sweep and its deactivation cleanup -- kept
+ * separate from `Occurrences` so the repository class stays a storage and
+ * projection API, and the scheduling concern (cron registration, WP-Cron vs.
+ * Action Scheduler, deactivation) lives on its own, matching the existing
+ * split between `Venue\Map` (renderer) and `Venue\Map\Prewarm` (scheduler).
+ *
+ * Scheduling follows the plugin's existing precedent (`Geocoding`,
+ * `Venue\Map\Prewarm`): WP-Cron is the always-available default, and a
+ * `null`-passthrough filter is the entire seam by which a companion plugin
+ * can route the sweep through Action Scheduler instead. Neither existing
+ * class calls an `as_*` function directly, so this class does not either --
+ * there is no in-repo precedent for a `function_exists( 'as_enqueue_async_action' )`
+ * check, only for the filter short-circuit.
+ *
+ * @package GatherPress\Core\Event\Recurrence
+ * @since 0.36.0
+ */
+
+namespace GatherPress\Core\Event\Recurrence;
+
+// Exit if accessed directly.
+defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
+
+use GatherPress\Core\Traits\Singleton;
+
+/**
+ * Class Projection_Cron.
+ *
+ * Singleton owning the scheduled top-up sweep and its deactivation cleanup.
+ *
+ * @since 0.36.0
+ */
+final class Projection_Cron {
+
+	/**
+	 * Enforces a single instance of this class.
+	 */
+	use Singleton;
+
+	/**
+	 * Cron action fired for the scheduled top-up sweep.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const SWEEP_ACTION = 'gatherpress_recurrence_top_up_sweep';
+
+	/**
+	 * WP-Cron recurrence for the sweep.
+	 *
+	 * Hourly is frequent enough that a series never drifts far past
+	 * `Occurrences::TOP_UP_MARGIN_DAYS` of its horizon between sweeps, and
+	 * infrequent enough that `run_sweep()`'s own `site_has_recurring_events()`
+	 * short-circuit is the only cost most sites ever pay for it.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const SWEEP_RECURRENCE = 'hourly';
+
+	/**
+	 * Class constructor.
+	 *
+	 * @since 0.36.0
+	 */
+	public function __construct() {
+		$this->setup_hooks();
+	}
+
+	/**
+	 * Set up hooks for the scheduled sweep and its deactivation cleanup.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function setup_hooks(): void {
+		add_action( 'init', array( $this, 'maybe_schedule_sweep' ) );
+		add_action( self::SWEEP_ACTION, array( $this, 'run_sweep' ) );
+
+		register_deactivation_hook( GATHERPRESS_CORE_FILE, array( $this, 'deactivate' ) );
+	}
+
+	/**
+	 * Schedule the recurring sweep, deduped via `wp_next_scheduled()`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function maybe_schedule_sweep(): void {
+		/**
+		 * Filters the sweep schedule call to take over scheduling.
+		 *
+		 * Return any non-null value from this filter to suppress the
+		 * `wp_next_scheduled()` dedup check and the `wp_schedule_event()`
+		 * call -- a companion plugin that hooks this filter (e.g. one that
+		 * routes the sweep through Action Scheduler) owns the full
+		 * scheduling path end-to-end, including its own dedup. Mirrors
+		 * `gatherpress_async_geocode_pre_enqueue_job`'s convention: `null`
+		 * means "pass through to the default"; everything else short-circuits.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param mixed  $short_circuit Non-null to suppress the default WP-Cron scheduling.
+		 * @param string $hook          Action hook name fired when the sweep runs.
+		 *
+		 * @return mixed Non-null to suppress the default WP-Cron scheduling.
+		 */
+		$short_circuit = apply_filters( 'gatherpress_recurrence_top_up_pre_schedule_sweep', null, self::SWEEP_ACTION );
+
+		if ( null !== $short_circuit ) {
+			return;
+		}
+
+		if ( false !== wp_next_scheduled( self::SWEEP_ACTION ) ) {
+			return;
+		}
+
+		wp_schedule_event( time(), self::SWEEP_RECURRENCE, self::SWEEP_ACTION );
+	}
+
+	/**
+	 * Run the scheduled sweep.
+	 *
+	 * Short-circuits on `Query::site_has_recurring_events()` before touching
+	 * anything else, so a site with no recurring events issues no query at
+	 * all against the occurrence table (REQ-6's own acceptance criterion).
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function run_sweep(): void {
+		if ( ! Query::site_has_recurring_events() ) {
+			return;
+		}
+
+		Occurrences::get_instance()->top_up();
+	}
+
+	/**
+	 * Unschedule the sweep on plugin deactivation.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function deactivate(): void {
+		$timestamp = wp_next_scheduled( self::SWEEP_ACTION );
+
+		if ( false !== $timestamp ) {
+			wp_unschedule_event( $timestamp, self::SWEEP_ACTION );
+		}
+	}
+}

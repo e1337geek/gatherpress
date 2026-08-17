@@ -98,6 +98,55 @@ final class Occurrences {
 	const PROJECTION_HORIZON_MONTHS = 12;
 
 	/**
+	 * How many days of margin before the horizon a series is topped up.
+	 *
+	 * A series is treated as needing a top-up once its latest projected
+	 * occurrence is within this many days of `resolve_horizon()`'s own
+	 * horizon, rather than waiting until the horizon has already been
+	 * reached. Filterable via `gatherpress_recurrence_top_up_margin_days`.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const TOP_UP_MARGIN_DAYS = 30;
+
+	/**
+	 * Maximum number of series re-projected by one sweep.
+	 *
+	 * `top_up()` calls `project()` once per candidate, and each `project()`
+	 * call can upsert a full horizon's worth of rows for one series (e.g. a
+	 * weekly rule over a 12-month horizon is ~52 rows). A batch this size
+	 * bounds one sweep's worst case to roughly the same order of magnitude
+	 * as `Venue\Map\Prewarm::CONTENT_SCAN_BATCH_SIZE`'s heavier-per-row scan,
+	 * scaled down for `project()`'s multi-row-per-candidate cost. Filterable
+	 * via `gatherpress_recurrence_top_up_batch_size`.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const TOP_UP_BATCH_SIZE = 50;
+
+	/**
+	 * How long a lazy repair attempt is suppressed for one series.
+	 *
+	 * Bounds `maybe_repair_stale_series()` to at most one attempt per series
+	 * per window, regardless of how many reads hit that series while the
+	 * scheduled sweep has not yet caught up to it.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const LAZY_REPAIR_TTL = 6 * HOUR_IN_SECONDS;
+
+	/**
+	 * Transient key format for the lazy-repair debounce, taking a post ID.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const LAZY_REPAIR_TRANSIENT_FORMAT = 'gatherpress_projected_%d';
+
+	/**
 	 * Posts whose recurrence blob had not landed yet when a save tried to project it.
 	 *
 	 * `wp_after_insert_post` can fire before the request's meta writes have
@@ -125,10 +174,19 @@ final class Occurrences {
 	/**
 	 * Class constructor.
 	 *
+	 * Bootstraps `Projection_Cron` here rather than from `Recurrence\Setup`:
+	 * the sweep/lazy-repair scheduler it owns exists solely to keep this
+	 * class's own `project()` re-running over time (REQ-6), so wiring it up
+	 * alongside the class it serves keeps that relationship in one file
+	 * instead of splitting it across this class and the subsystem's shared
+	 * `Setup::instantiate_classes()`.
+	 *
 	 * @since 0.36.0
 	 */
 	public function __construct() {
 		$this->setup_hooks();
+
+		Projection_Cron::get_instance();
 	}
 
 	/**
@@ -363,7 +421,237 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
-		return array_map( array( $this, 'row_to_ref' ), null === $rows ? array() : $rows );
+		$refs = array_map( array( $this, 'row_to_ref' ), null === $rows ? array() : $rows );
+
+		// Lazy repair (REQ-6) only runs off an upcoming-events read -- a
+		// past-only read has nothing forward-looking to repair, and gating
+		// it here keeps select_past() genuinely read-only.
+		if ( $upcoming ) {
+			$this->maybe_lazy_repair( $refs );
+		}
+
+		return $refs;
+	}
+
+	/**
+	 * Debounced lazy repair (REQ-6): attempt one repair per stale series
+	 * encountered by an upcoming-events read, at most once per
+	 * `LAZY_REPAIR_TTL` window.
+	 *
+	 * Short-circuits on `Query::site_has_recurring_events()` first, so a
+	 * site with no recurring events never pays even the transient lookup.
+	 * Only refs carrying a non-null `recurrence_id` name an actual series --
+	 * a non-recurring event's ref has nothing to repair.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param Occurrence_Ref[] $refs Refs produced by this read.
+	 *
+	 * @return void
+	 */
+	protected function maybe_lazy_repair( array $refs ): void {
+		if ( ! Query::site_has_recurring_events() ) {
+			return;
+		}
+
+		$post_ids = array();
+
+		foreach ( $refs as $ref ) {
+			if ( null !== $ref->recurrence_id ) {
+				$post_ids[ $ref->post_id ] = true;
+			}
+		}
+
+		foreach ( array_keys( $post_ids ) as $post_id ) {
+			$this->maybe_repair_stale_series( $post_id );
+		}
+	}
+
+	/**
+	 * Attempt one repair for a series, then suppress further attempts for
+	 * `LAZY_REPAIR_TTL`.
+	 *
+	 * The transient governs attempt frequency only -- it is never read as an
+	 * oracle for whether the series is actually stale. When it is missing,
+	 * this checks real storage via `is_series_stale()` rather than assuming
+	 * either state, so a fresh series costs one cheap `SELECT` and no write,
+	 * and a genuinely stale one gets exactly one `project()` call per window.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID encountered by a read.
+	 *
+	 * @return void
+	 */
+	protected function maybe_repair_stale_series( int $post_id ): void {
+		$transient_key = sprintf( self::LAZY_REPAIR_TRANSIENT_FORMAT, $post_id );
+
+		if ( false !== get_transient( $transient_key ) ) {
+			return;
+		}
+
+		set_transient( $transient_key, time(), self::LAZY_REPAIR_TTL );
+
+		if ( $this->is_series_stale( $post_id ) ) {
+			$this->project( $post_id );
+		}
+	}
+
+	/**
+	 * Report whether a series' projected horizon has run short.
+	 *
+	 * A `COUNT`-bounded rule is already complete by design and is never
+	 * reported stale, however far in the past its fixed, final occurrence
+	 * sits -- re-projecting it would be a no-op at best and a rewrite of the
+	 * same rows forever at worst. An empty end type means the post carries
+	 * no recurrence rule at all.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID to check.
+	 *
+	 * @return bool True when the series' latest projected occurrence is
+	 *              within `TOP_UP_MARGIN_DAYS` of the horizon, or beyond it.
+	 */
+	protected function is_series_stale( int $post_id ): bool {
+		global $wpdb;
+
+		$end_type = (string) get_post_meta( $post_id, 'gatherpress_recurrence_end_type', true );
+
+		if ( '' === $end_type || Rule::END_TYPE_COUNT === $end_type ) {
+			return false;
+		}
+
+		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$latest = $wpdb->get_var(
+			$wpdb->prepare( 'SELECT MAX(datetime_start_gmt) FROM %i WHERE series_post_id = %d', $table, $post_id )
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		return null !== $latest && $latest < $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+	}
+
+	/**
+	 * Resolve the cutoff below which a series' latest occurrence counts as stale.
+	 *
+	 * `TOP_UP_MARGIN_DAYS` before `resolve_horizon()`'s own horizon (measured
+	 * from "now" in UTC, since this is not anchored to any one series'
+	 * timezone), so a top-up happens with margin to spare rather than only
+	 * once the horizon has already been reached.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable The cutoff datetime, in UTC.
+	 */
+	protected function resolve_top_up_cutoff(): DateTimeImmutable {
+		/** This filter is documented in resolve_horizon(). */
+		$months = (int) apply_filters( 'gatherpress_recurrence_horizon_months', self::PROJECTION_HORIZON_MONTHS );
+
+		/**
+		 * Filters how many days of margin before the horizon a series is topped up.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param int $days Number of days, default `Occurrences::TOP_UP_MARGIN_DAYS`.
+		 *
+		 * @return int Number of days.
+		 */
+		$margin_days = (int) apply_filters( 'gatherpress_recurrence_top_up_margin_days', self::TOP_UP_MARGIN_DAYS );
+
+		$now = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+
+		return $now->modify( sprintf( '+%d months', $months ) )->modify( sprintf( '-%d days', $margin_days ) );
+	}
+
+	/**
+	 * Select series whose projected horizon is running short.
+	 *
+	 * A maintenance aggregate for the scheduled sweep, distinct from the
+	 * event-listing joins in `select_by_horizon()`: this produces
+	 * `series_post_id` candidates only, never rows for display, so
+	 * `GROUP BY` / `HAVING MAX()` is the correct tool here rather than a
+	 * violation of the "never aggregate a result set of event rows" rule.
+	 * `COUNT`-bounded rules are excluded in SQL via the `end_type` mirror, so
+	 * a completed series is never even a candidate.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $limit Maximum number of series to return.
+	 *
+	 * @return int[] Series post IDs needing a top-up, oldest-horizon first is not guaranteed.
+	 */
+	public function select_series_needing_top_up( int $limit ): array {
+		global $wpdb;
+
+		$table  = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+		$cutoff = $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+
+		$sql = 'SELECT o.series_post_id FROM %i o'
+			. ' INNER JOIN %i pm ON pm.post_id = o.series_post_id AND pm.meta_key = %s'
+			. ' WHERE pm.meta_value != %s'
+			. ' GROUP BY o.series_post_id'
+			. ' HAVING MAX( o.datetime_start_gmt ) < %s'
+			. ' LIMIT %d';
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from %i/%s/%d placeholders only.
+		$rows = $wpdb->get_col(
+			$wpdb->prepare(
+				$sql,
+				$table,
+				$wpdb->postmeta,
+				'gatherpress_recurrence_end_type',
+				Rule::END_TYPE_COUNT,
+				$cutoff,
+				$limit
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		return array_map( 'intval', $rows );
+	}
+
+	/**
+	 * Re-project every series whose horizon is running short, up to a batch limit.
+	 *
+	 * The entry point the scheduled sweep (`Projection_Cron::run_sweep()`)
+	 * calls. `project()` is idempotent, so calling it again for a candidate
+	 * genuinely extends its horizon without disturbing rows the rule still
+	 * produces -- including every past occurrence, which `Expander::expand()`
+	 * regenerates identically because it always walks forward from the
+	 * series' own anchor, never from "now".
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $limit Maximum series to top up, or 0 to use the
+	 *                    `gatherpress_recurrence_top_up_batch_size` filter default.
+	 *
+	 * @return int Number of series topped up.
+	 */
+	public function top_up( int $limit = 0 ): int {
+		if ( $limit <= 0 ) {
+			/**
+			 * Filters the maximum number of series topped up by one scheduled sweep.
+			 *
+			 * @since 0.36.0
+			 *
+			 * @param int $batch_size Batch size, default `Occurrences::TOP_UP_BATCH_SIZE`.
+			 *
+			 * @return int Batch size.
+			 */
+			$limit = (int) apply_filters( 'gatherpress_recurrence_top_up_batch_size', self::TOP_UP_BATCH_SIZE );
+		}
+
+		$post_ids = $this->select_series_needing_top_up( $limit );
+
+		foreach ( $post_ids as $post_id ) {
+			$this->project( $post_id );
+		}
+
+		return count( $post_ids );
 	}
 
 	/**

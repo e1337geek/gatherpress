@@ -10,9 +10,12 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Projection_Cron;
 use GatherPress\Core\Event\Recurrence\Query;
+use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
@@ -49,6 +52,49 @@ class Test_Projection_Cron extends Base {
 		wp_clear_scheduled_hook( Projection_Cron::SWEEP_ACTION );
 
 		parent::tearDown();
+	}
+
+	/**
+	 * Create and project a recurring event anchored relative to "now".
+	 *
+	 * Duplicated from `Test_Occurrences` rather than added to
+	 * `Occurrence_Fixtures` -- this lane's file scope is the `Occurrences`
+	 * class, its test, and this new test file, not the shared trait.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array             $rule     Recurrence rule values.
+	 * @param DateTimeImmutable $start    Anchor start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Anchor end, in `$timezone`.
+	 * @param string            $timezone Named tz-database identifier for the series.
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_relative_recurring_event(
+		array $rule,
+		DateTimeImmutable $start,
+		DateTimeImmutable $end,
+		string $timezone = 'America/New_York'
+	): int {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
+					'timezone'      => $timezone,
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $rule ) );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return $post_id;
 	}
 
 	/**
@@ -152,7 +198,7 @@ class Test_Projection_Cron extends Base {
 	public function test_run_sweep_does_nothing_when_site_has_no_recurring_events(): void {
 		Query::refresh_has_recurring_events();
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
 		do_action( Projection_Cron::SWEEP_ACTION );
 
 		$this->assertFalse(
@@ -192,7 +238,7 @@ class Test_Projection_Cron extends Base {
 
 		Query::refresh_has_recurring_events();
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- testing the real cron hook.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
 		do_action( Projection_Cron::SWEEP_ACTION );
 
 		$far_future = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
