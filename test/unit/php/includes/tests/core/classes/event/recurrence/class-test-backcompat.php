@@ -1,0 +1,690 @@
+<?php
+/**
+ * Class handles unit tests proving REQ-16's back-compat guarantee: a site with
+ * no recurring events pays nothing, and converting a plain event to/from a
+ * recurring one never disturbs its identity, permalink, or RSVPs.
+ *
+ * Every entry point the recurrence subsystem adds to WordPress's request
+ * lifecycle is covered here against a site whose
+ * `gatherpress_has_recurring_events` option is `'0'`: the `posts_clauses` and
+ * `the_posts` filters, both branches of the `parse_request` handler, the
+ * `init` cron scheduler, and the lazy-repair path a read can trigger.
+ *
+ * @package GatherPress\Core\Event\Recurrence
+ * @since 0.36.0
+ */
+
+namespace GatherPress\Tests\Core\Event\Recurrence;
+
+use GatherPress\Core\Event;
+use GatherPress\Core\Event\Query as Event_Query;
+use GatherPress\Core\Event\Recurrence\Meta;
+use GatherPress\Core\Event\Recurrence\Occurrence_Ref;
+use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Projection_Cron;
+use GatherPress\Core\Event\Recurrence\Query;
+use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Setup as Event_Setup;
+use GatherPress\Core\Rsvp\Rsvp;
+use GatherPress\Core\Setup;
+use GatherPress\Tests\Base;
+use PMC\Unit_Test\Utility;
+use WP_Query;
+
+/**
+ * Class Test_Backcompat.
+ *
+ * @since 0.36.0
+ */
+class Test_Backcompat extends Base {
+
+	/**
+	 * The reference daily rule: five consecutive daily occurrences.
+	 *
+	 * @since 0.36.0
+	 * @var array
+	 */
+	const DAILY_RULE = array(
+		'frequency' => 'daily',
+		'interval'  => 1,
+		'end_type'  => 'count',
+		'count'     => 5,
+	);
+
+	/**
+	 * Ensure the occurrence table exists and the flag starts at '0' for every
+	 * test in this file, independent of execution order.
+	 *
+	 * @return void
+	 */
+	public function setUp(): void {
+		parent::setUp();
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+	}
+
+	/**
+	 * Create a published, non-recurring event with a datetime range.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $start Local start, `Y-m-d H:i:s`.
+	 * @param string $end   Local end, `Y-m-d H:i:s`.
+	 * @param array  $args  Extra factory args, e.g. `post_name`.
+	 *
+	 * @return int The created post ID.
+	 */
+	protected function create_event( string $start, string $end, array $args = array() ): int {
+		$post_id = $this->factory->post->create(
+			array_merge(
+				array(
+					'post_type'   => Event::POST_TYPE,
+					'post_status' => 'publish',
+				),
+				$args
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start,
+					'dateTimeEnd'   => $end,
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * Turn on pretty permalinks and register the occurrence rewrite rule, so
+	 * `parse_request` scenarios exercise the same regex-matched request path
+	 * a real front end request takes.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function enable_pretty_permalinks(): void {
+		global $wp_rewrite;
+
+		update_option( 'permalink_structure', '/%postname%/' );
+		$wp_rewrite->init();
+		$wp_rewrite->set_permalink_structure( '/%postname%/' );
+
+		do_action( 'init' ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound
+
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+	}
+
+	/**
+	 * Reduce `$wpdb->queries` entries to their bare SQL strings.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $queries A slice of `$wpdb->queries`.
+	 *
+	 * @return string[] The SQL text of each query, in order.
+	 */
+	protected function query_sql( array $queries ): array {
+		return array_column( $queries, 0 );
+	}
+
+	/**
+	 * Run a callback and return the SQL text of every query it issued.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param callable $callback Callback to run.
+	 *
+	 * @return string[] The SQL text of every query issued while the callback ran.
+	 */
+	protected function capture_sql( callable $callback ): array {
+		global $wpdb;
+
+		$before = count( $wpdb->queries );
+
+		$callback();
+
+		return $this->query_sql( array_slice( $wpdb->queries, $before ) );
+	}
+
+	/**
+	 * Filter a list of SQL strings down to the ones mentioning a table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string[] $queries SQL strings to filter.
+	 * @param string   $table   Unprefixed-format table name to search for.
+	 *
+	 * @return string[] The subset of queries mentioning the table.
+	 */
+	protected function queries_touching( array $queries, string $table ): array {
+		return array_values(
+			array_filter(
+				$queries,
+				static function ( string $sql ) use ( $table ): bool {
+					return str_contains( $sql, $table );
+				}
+			)
+		);
+	}
+
+	/**
+	 * The occurrence table name for the current test database prefix.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string The occurrence table name.
+	 */
+	protected function occurrence_table(): string {
+		global $wpdb;
+
+		return sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+	}
+
+	/**
+	 * Build the arguments for an "upcoming events" list query, the read this
+	 * whole file's REQ-16 guarantee is measured against.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array The query arguments.
+	 */
+	protected function upcoming_events_args(): array {
+		return array(
+			'post_type'                    => Event::POST_TYPE,
+			Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+			'posts_per_page'               => 20,
+			'orderby'                      => 'datetime',
+			'order'                        => 'ASC',
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16 / PRD success metric 5: rendering the upcoming-events
+	 * list on a site with no recurring events produces byte-identical SQL and
+	 * an identical query count to a baseline with the recurrence hooks removed
+	 * entirely.
+	 *
+	 * The baseline is produced by removing `Query::expand_event_clauses()` from
+	 * `posts_clauses` and `Query::attach_occurrences()` from `the_posts` for the
+	 * duration of one query, then re-adding them -- the "hooks not registered
+	 * at all" side of the comparison the task brief offers as an alternative to
+	 * removing every recurrence hook process-wide, which would also tear down
+	 * hooks this file's other tests depend on.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::attach_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_no_recurring_events_means_zero_additional_queries(): void {
+		$this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$args = $this->upcoming_events_args();
+
+		// A persistent-shaped object cache serves the second identical
+		// WP_Query from its split-query cache with no SQL at all, which
+		// would make the comparison trivially pass by starving it of any
+		// query to compare -- flushing before each capture keeps both runs
+		// cold, so the comparison is between two real SQL query lists.
+		wp_cache_flush();
+
+		$with_hooks = $this->capture_sql(
+			static function () use ( $args ): void {
+				new WP_Query( $args );
+			}
+		);
+
+		remove_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11 );
+		remove_filter( 'the_posts', array( Query::get_instance(), 'attach_occurrences' ), 10 );
+
+		wp_cache_flush();
+
+		$without_hooks = $this->capture_sql(
+			static function () use ( $args ): void {
+				new WP_Query( $args );
+			}
+		);
+
+		add_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11, 2 );
+		add_filter( 'the_posts', array( Query::get_instance(), 'attach_occurrences' ), 10, 2 );
+
+		$this->assertCount(
+			count( $without_hooks ),
+			$with_hooks,
+			'Failed to assert the query count is identical with and without the recurrence hooks registered.'
+		);
+		$this->assertSame(
+			$without_hooks,
+			$with_hooks,
+			'Failed to assert the SQL text of every query is byte-identical with and without the recurrence hooks.'
+		);
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $with_hooks, $this->occurrence_table() ),
+			'Failed to assert no query with the hooks registered references the occurrence table.'
+		);
+	}
+
+	/**
+	 * Coverage for the `posts_clauses` and `the_posts` entry points: rendering
+	 * the upcoming-events list issues no query mentioning the occurrence table
+	 * when the site has no recurring events.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::attach_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_posts_clauses_and_the_posts_do_not_touch_occurrence_table(): void {
+		$this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+
+		$args = $this->upcoming_events_args();
+
+		$sql = $this->capture_sql(
+			static function () use ( $args ): void {
+				new WP_Query( $args );
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert rendering the upcoming-events list issues no query against the occurrence table.'
+		);
+	}
+
+	/**
+	 * Coverage for the `parse_request` handler's bare-URL branch
+	 * (`Rewrite::maybe_resolve_bare_series()`): visiting a plain event's own
+	 * permalink issues no query against the occurrence table.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
+	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::maybe_resolve_bare_series
+	 *
+	 * @return void
+	 */
+	public function test_parse_request_bare_series_branch_does_not_touch_occurrence_table(): void {
+		$post_id = $this->create_event(
+			'2026-09-03 18:00:00',
+			'2026-09-03 20:00:00',
+			array( 'post_name' => 'plain-event' )
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$url = get_permalink( $post_id );
+
+		$sql = $this->capture_sql(
+			function () use ( $url ): void {
+				$this->go_to( $url );
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert visiting a plain event permalink issues no query against the occurrence table.'
+		);
+	}
+
+	/**
+	 * Coverage for the `parse_request` handler's occurrence-segment branch: a
+	 * request carrying a well-formed occurrence segment for a plain,
+	 * non-recurring event.
+	 *
+	 * KNOWN DEFECT (flagged, not fixed -- this is a test-only task): unlike the
+	 * bare-URL branch above, `Rewrite::parse_request()`'s occurrence-segment
+	 * branch carries no `Query::site_has_recurring_events()` guard at all. It
+	 * unconditionally calls `Occurrences::get()`, which queries the occurrence
+	 * table directly, the moment `resolve_post_id_from_query_vars()` resolves a
+	 * post -- which it does for *any* post of a `gatherpress-event-date`
+	 * post type, recurring or not, because the occurrence rewrite rule itself
+	 * is registered unconditionally in `Rewrite::add_rewrite_rules()`. On a
+	 * site with zero recurring events, a single crafted or stale
+	 * `/{event}/{slug}/{Ymd\THis}/` request against any real event slug still
+	 * pays an occurrence-table query. This assertion is expected to FAIL
+	 * against the current tree; see this task's final report for full
+	 * reproduction and the exact query captured.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_parse_request_occurrence_segment_branch_does_not_touch_occurrence_table(): void {
+		$post_id = $this->create_event(
+			'2026-09-03 18:00:00',
+			'2026-09-03 20:00:00',
+			array( 'post_name' => 'plain-event-occurrence-segment' )
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$url = Rewrite::get_occurrence_url( $post_id, '20260903T180000' );
+
+		$sql = $this->capture_sql(
+			function () use ( $url ): void {
+				$this->go_to( $url );
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert visiting a well-formed occurrence URL for a non-recurring event issues no query'
+				. ' against the occurrence table. This currently fails: see this task\'s final report.'
+		);
+	}
+
+	/**
+	 * Coverage for the `init` cron scheduler: `maybe_schedule_sweep()` neither
+	 * schedules the sweep nor writes the `wp_options` row scheduling it would
+	 * perform, when the site has no recurring events.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Projection_Cron::maybe_schedule_sweep
+	 *
+	 * @return void
+	 */
+	public function test_init_cron_scheduler_does_not_schedule_when_option_is_zero(): void {
+		$this->assertFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert the sweep is not scheduled before the cron hook runs.'
+		);
+
+		Projection_Cron::get_instance()->maybe_schedule_sweep();
+
+		$this->assertFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert the sweep stays unscheduled on a site with no recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for the lazy-repair path: `maybe_lazy_repair()` short-circuits
+	 * before setting a debounce transient or reading storage, when the site
+	 * has no recurring events.
+	 *
+	 * Invoked directly with a fabricated ref carrying a non-null
+	 * `recurrence_id`, since a genuinely non-recurring site's own reads never
+	 * produce one -- this isolates the guard itself rather than depending on
+	 * it being reachable end-to-end, matching how `select_by_horizon()` always
+	 * calls this method regardless of what its own read returned.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_lazy_repair_short_circuits_when_option_is_zero(): void {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$transient_key = sprintf( Occurrences::LAZY_REPAIR_TRANSIENT_FORMAT, $post_id );
+
+		$this->assertFalse(
+			get_transient( $transient_key ),
+			'Failed to assert no debounce transient exists before the read runs.'
+		);
+
+		$ref = new Occurrence_Ref( $post_id, '20260903T180000', '2026-09-03 18:00:00' );
+
+		$sql = $this->capture_sql(
+			function () use ( $ref ): void {
+				Utility::invoke_hidden_method(
+					Occurrences::get_instance(),
+					'maybe_lazy_repair',
+					array( array( $ref ) )
+				);
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to assert the lazy-repair guard issues no query against the occurrence table.'
+		);
+		$this->assertFalse(
+			get_transient( $transient_key ),
+			'Failed to assert the lazy-repair guard sets no debounce transient on a site with no recurring events.'
+		);
+	}
+
+	/**
+	 * Coverage for the options surface: rendering the upcoming-events list,
+	 * visiting a plain event's permalink, and running the cron scheduler
+	 * together write no option at all when the site has no recurring events.
+	 *
+	 * Diffs `wp_load_alloptions()` before and after, per the task brief's own
+	 * suggested technique, rather than asserting against one option in
+	 * isolation.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
+	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
+	 * @covers \GatherPress\Core\Event\Recurrence\Projection_Cron::maybe_schedule_sweep
+	 *
+	 * @return void
+	 */
+	public function test_no_options_are_written_across_read_entry_points_when_option_is_zero(): void {
+		$post_id = $this->create_event(
+			'2026-09-03 18:00:00',
+			'2026-09-03 20:00:00',
+			array( 'post_name' => 'plain-event-options' )
+		);
+
+		$this->enable_pretty_permalinks();
+
+		wp_cache_delete( 'alloptions', 'options' );
+		$before = wp_load_alloptions();
+
+		new WP_Query( $this->upcoming_events_args() );
+		$this->go_to( get_permalink( $post_id ) );
+		Projection_Cron::get_instance()->maybe_schedule_sweep();
+
+		wp_cache_delete( 'alloptions', 'options' );
+		$after = wp_load_alloptions();
+
+		$this->assertSame(
+			array_keys( $before ),
+			array_keys( $after ),
+			'Failed to assert no option was added or removed by the read entry points.'
+		);
+		$this->assertSame(
+			'0',
+			$after[ Query::HAS_RECURRING_OPTION ] ?? '0',
+			'Failed to assert the has-recurring-events flag is still 0 after the read entry points ran.'
+		);
+		$this->assertSame(
+			$before,
+			$after,
+			'Failed to assert no option value changed either -- not merely that the key set is unchanged'
+				. ' (the "cron" option, for one, already exists on every site, so a spurious scheduled sweep'
+				. ' would only ever change its value, never add a new key).'
+		);
+		$this->assertFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert the sweep is not scheduled by any of the read entry points.'
+		);
+	}
+
+	/**
+	 * Coverage for an upgrade on a site with zero recurring events: the
+	 * `check_plugin_version()` self-heal recreates the occurrence table but
+	 * writes zero rows to it and adds no unexpected option.
+	 *
+	 * Simulates the upgrade by dropping the occurrence table and storing a
+	 * stale `gatherpress_version`, then calling the same public method
+	 * `admin_init` calls in production.
+	 *
+	 * @covers \GatherPress\Core\Setup::check_plugin_version
+	 *
+	 * @return void
+	 */
+	public function test_upgrade_writes_no_data_and_creates_no_occurrence_rows(): void {
+		global $wpdb;
+
+		$this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+
+		$table = $this->occurrence_table();
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- simulating a pre-upgrade site.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		update_option( 'gatherpress_version', '0.0.1' );
+
+		Setup::get_instance()->check_plugin_version();
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- asserting the self-heal recreated the table.
+		$table_exists = $wpdb->get_var( "SHOW TABLES LIKE '{$table}'" );
+		$this->assertSame(
+			$table,
+			$table_exists,
+			'Failed to assert the upgrade self-heal recreated the occurrence table.'
+		);
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- asserting the recreated table is empty.
+		$row_count = $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+		$this->assertSame(
+			'0',
+			$row_count,
+			'Failed to assert the recreated occurrence table holds zero rows.'
+		);
+		$this->assertSame(
+			'0',
+			get_option( Query::HAS_RECURRING_OPTION, '0' ),
+			'Failed to assert the has-recurring-events flag is still 0 after the upgrade.'
+		);
+		$this->assertSame(
+			defined( 'GATHERPRESS_VERSION' ) ? GATHERPRESS_VERSION : '0.0.1',
+			get_option( 'gatherpress_version' ),
+			'Failed to assert the stored plugin version was updated by the upgrade.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-16's identity guarantee going forward: converting a
+	 * plain event to a recurring one preserves its post ID, permalink, and
+	 * RSVPs.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::project
+	 *
+	 * @return void
+	 */
+	public function test_enabling_recurrence_preserves_post_id_permalink_and_rsvps(): void {
+		$post_id = $this->create_event(
+			'2026-09-03 18:00:00',
+			'2026-09-03 20:00:00',
+			array( 'post_name' => 'convert-to-recurring' )
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$permalink_before = get_permalink( $post_id );
+
+		$user_id = $this->factory->user->create();
+		$rsvp    = new Rsvp( $post_id );
+
+		$rsvp->save( $user_id, 'attending' );
+
+		$rsvp_before = $rsvp->get( $user_id );
+
+		$this->assertSame(
+			'attending',
+			$rsvp_before['status'],
+			'Failed to assert the RSVP fixture saved as attending.'
+		);
+
+		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( self::DAILY_RULE ) );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert enabling recurrence actually projected occurrence rows.'
+		);
+		$this->assertSame(
+			$post_id,
+			(int) get_post( $post_id )->ID,
+			'Failed to assert the post ID is unchanged after enabling recurrence.'
+		);
+		$this->assertSame(
+			$permalink_before,
+			get_permalink( $post_id ),
+			'Failed to assert the permalink is unchanged after enabling recurrence.'
+		);
+		$this->assertSame(
+			$rsvp_before,
+			$rsvp->get( $user_id ),
+			'Failed to assert the RSVP data is unchanged after enabling recurrence.'
+		);
+	}
+
+	/**
+	 * Coverage for the inverse of the test above: disabling recurrence on a
+	 * series removes its occurrence rows and restores plain-event behavior.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::project
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::resolve_projectable
+	 *
+	 * @return void
+	 */
+	public function test_disabling_recurrence_removes_occurrences_and_restores_plain_behavior(): void {
+		$post_id = $this->create_event( '2026-09-03 18:00:00', '2026-09-03 20:00:00' );
+
+		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( self::DAILY_RULE ) );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the fixture series projected occurrence rows.'
+		);
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site reports recurring events.'
+		);
+
+		Utility::invoke_hidden_method( Meta::get_instance(), 'clear_mirrors', array( $post_id ) );
+		Occurrences::get_instance()->project( $post_id );
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert disabling recurrence removed every occurrence row.'
+		);
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the site no longer reports recurring events once the only series is disabled.'
+		);
+
+		$query = new WP_Query( $this->upcoming_events_args() );
+		$ids   = wp_list_pluck( $query->posts, 'ID' );
+
+		$this->assertSame(
+			array( $post_id ),
+			$ids,
+			'Failed to assert the disabled series appears exactly once, like a plain event.'
+		);
+		$this->assertFalse(
+			property_exists( $query->posts[0], 'gatherpress_recurrence_id' ),
+			'Failed to assert the disabled series carries no occurrence identity, matching plain-event behavior.'
+		);
+	}
+}
