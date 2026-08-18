@@ -17,6 +17,8 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Recurrence\Series;
+use GatherPress\Core\Event\Recurrence\Splitter;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Core\Settings;
@@ -63,6 +65,10 @@ class Test_Rewrite extends Base {
 
 		Rewrite::get_instance()->add_rewrite_rules();
 		$wp_rewrite->flush_rules();
+
+		Context::get_instance()->clear();
+		Context::flush_resolved();
+		Series::get_instance()->flush_memo();
 	}
 
 	/**
@@ -75,6 +81,10 @@ class Test_Rewrite extends Base {
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '' );
 		$wp_rewrite->flush_rules();
+
+		Context::get_instance()->clear();
+		Context::flush_resolved();
+		Series::get_instance()->flush_memo();
 
 		parent::tearDown();
 	}
@@ -834,7 +844,95 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Visiting a recurring series at its bare permalink
+	 * REQ-13: a permalink minted before a forward split still reaches its
+	 * occurrence afterwards, by 301 to the sibling post that now owns the row.
+	 *
+	 * This is the whole point of recycling occurrence records rather than
+	 * regenerating them -- REQ-13 names permalinks first in the list of things
+	 * that must survive a split. The row still exists under the same
+	 * `recurrence_id`; only the post that owns it changed. Resolving through
+	 * `find_in_series()` over `Series::resolve_post_ids()` is precisely what
+	 * distinguishes that from a stale or hand-typed identifier, which must still
+	 * 404 (see `test_non_occurrence_datetime_returns_404()`).
+	 *
+	 * The occurrence chosen is one the split **moves**, and the URL is captured
+	 * **before** the split runs, so nothing about the assertion can be satisfied
+	 * by the origin post still owning the row.
+	 *
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_a_permalink_minted_before_a_split_redirects_to_the_new_owner(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 6 );
+
+		// Occurrences land at +5/+12/+19/+26/+33/+40 days. The split happens at
+		// the fourth, so the fifth is a row that moves.
+		$split_at = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
+		$moved    = Occurrences::recurrence_id( $anchor_start->modify( '+28 days' ) );
+		$before   = Rewrite::get_occurrence_url( $post_id, $moved );
+
+		$this->assertNotEmpty( $before, 'Fixture setup: the pre-split occurrence URL should exist.' );
+
+		$result  = Splitter::get_instance()->split_forward( $post_id, $split_at );
+		$forward = (int) $result['forward_post_id'];
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+
+		$expected = Rewrite::get_occurrence_url( $forward, $moved );
+
+		$this->assertNotSame(
+			$before,
+			$expected,
+			'Fixture setup: the occurrence must genuinely live at a different URL after the split.'
+		);
+
+		$this->assert_redirect_to(
+			$expected,
+			function () use ( $before ): void {
+				$this->go_to( $before );
+			},
+			301
+		);
+	}
+
+	/**
+	 * An occurrence the split leaves behind keeps resolving on its own post,
+	 * with no redirect at all.
+	 *
+	 * The control for the test above: without it, a `parse_request()` that
+	 * redirected unconditionally would pass that one.
+	 *
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_an_occurrence_left_behind_by_a_split_does_not_redirect(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 6 );
+
+		$split_at = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
+		$stayed   = Occurrences::recurrence_id( $anchor_start->modify( '+7 days' ) );
+
+		Splitter::get_instance()->split_forward( $post_id, $split_at );
+
+		$url = Rewrite::get_occurrence_url( $post_id, $stayed );
+
+		$this->assert_not_redirect(
+			function () use ( $url ): void {
+				$this->go_to( $url );
+			}
+		);
+
+		$this->assertFalse( is_404(), 'An occurrence still owned by the origin post must not 404 after a split.' );
+		$this->assertSame(
+			$stayed,
+			get_query_var( Context::QUERY_VAR ),
+			'An occurrence still owned by the origin post should resolve on the origin post.'
+		);
+	}
+
+	/**
+	 * Coverage for D-4: visiting a recurring series at its bare permalink
 	 * (no occurrence segment) resolves to the next upcoming occurrence.
 	 *
 	 * @covers ::parse_request

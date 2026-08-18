@@ -22,6 +22,22 @@ jest.mock( '@wordpress/api-fetch', () => ( {
 	default: ( args ) => mockApiFetch( args ),
 } ) );
 
+const mockIsEditedPostDirty = jest.fn( () => false );
+
+jest.mock( '@wordpress/data', () => ( {
+	useSelect: ( callback ) =>
+		callback( () => ( {
+			isEditedPostDirty: mockIsEditedPostDirty,
+		} ) ),
+} ) );
+
+jest.mock( '@wordpress/url', () => ( {
+	addQueryArgs: ( path, args ) =>
+		`${ path }?${ Object.entries( args )
+			.map( ( [ key, value ] ) => `${ key }=${ value }` )
+			.join( '&' ) }`,
+} ) );
+
 jest.mock( '@wordpress/components', () => ( {
 	Button: ( { children, onClick, disabled, isBusy } ) => (
 		<button
@@ -95,6 +111,7 @@ const rows = [
 
 beforeEach( () => {
 	jest.clearAllMocks();
+	mockIsEditedPostDirty.mockReturnValue( false );
 } );
 
 describe( 'ApplyScope', () => {
@@ -121,7 +138,7 @@ describe( 'ApplyScope', () => {
 
 		await waitFor( () =>
 			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
-				'20260903T180000',
+				'20260917T180000',
 			),
 		);
 		expect( mockApiFetch ).toHaveBeenCalledWith( {
@@ -311,5 +328,154 @@ describe( 'ApplyScope', () => {
 
 		await waitFor( () => expect( mockApiFetch ).toHaveBeenCalled() );
 		expect( screen.getByText( 'Split series' ) ).toBeDisabled();
+	} );
+	test( 'defaults past the first listed occurrence so the first click is never a guaranteed no-op', async () => {
+		mockApiFetch.mockResolvedValue( rows );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		// rows[ 0 ] is the series' first date whenever the series has not
+		// started, and splitting there degrades to "Nothing was split" -- so it
+		// is never the default.
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+		expect(
+			screen.queryByText(
+				'If this is the series\u2019 first date, splitting here applies the change to the whole series.',
+			),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'explains the degradation before the click when only one occurrence is listed', async () => {
+		mockApiFetch.mockResolvedValue( [ rows[ 0 ] ] );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260903T180000',
+			),
+		);
+		expect(
+			screen.getByText(
+				'If this is the series\u2019 first date, splitting here applies the change to the whole series.',
+			),
+		).toBeInTheDocument();
+	} );
+
+	test( 'refuses to split while the editor holds unsaved changes', async () => {
+		mockIsEditedPostDirty.mockReturnValue( true );
+		mockApiFetch.mockResolvedValue( rows );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		expect( screen.getByText( 'Split series' ) ).toBeDisabled();
+		expect(
+			screen.getByText(
+				'Save or discard your current changes before splitting.',
+			),
+		).toBeInTheDocument();
+	} );
+
+	test( 'allows the split once the editor is clean', async () => {
+		mockApiFetch.mockResolvedValue( rows );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		expect( screen.getByText( 'Split series' ) ).not.toBeDisabled();
+		expect(
+			screen.queryByText(
+				'Save or discard your current changes before splitting.',
+			),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'links to the forward event once a split completes', async () => {
+		mockApiFetch.mockResolvedValueOnce( rows ).mockResolvedValueOnce( {
+			split: true,
+			reason: '',
+			moved: 4,
+			forward_post_id: 99,
+			forward_recurring: true,
+		} );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Edit the new event' ) ).toHaveAttribute(
+				'href',
+				'post.php?post=99&action=edit',
+			),
+		);
+	} );
+
+	test( 'offers no forward link when nothing was split', async () => {
+		mockApiFetch.mockResolvedValueOnce( rows ).mockResolvedValueOnce( {
+			split: false,
+			reason: 'first_occurrence',
+			moved: 0,
+			forward_post_id: 0,
+			forward_recurring: false,
+		} );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'This is the first occurrence, so applying the change forward is the same as applying it to the whole series. Nothing was split.',
+				),
+			).toBeInTheDocument(),
+		);
+		expect(
+			screen.queryByText( 'Edit the new event' ),
+		).not.toBeInTheDocument();
 	} );
 } );

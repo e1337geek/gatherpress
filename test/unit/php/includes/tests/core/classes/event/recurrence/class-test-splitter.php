@@ -1278,4 +1278,144 @@ class Test_Splitter extends Base {
 			'Failed to assert the forward post kept its open-ended rule.'
 		);
 	}
+	/**
+	 * A split driven from one post at an occurrence a sibling post owns splits
+	 * the sibling, not the post the request named.
+	 *
+	 * REQ-18's multi-post case, and the reason `split_forward()` reads
+	 * `$row['series_post_id']` rather than reusing `$post_id`. It is reachable
+	 * from the editor without any contrivance: `Rest_Api::get_occurrences()`
+	 * resolves through `Series::resolve_post_ids()`, so the "Split from"
+	 * dropdown rendered on post A lists occurrences post B owns, and choosing one
+	 * posts A's ID with B's identifier.
+	 *
+	 * Substituting `$post_id` for `$row['series_post_id']` turns this into
+	 * `{"split":false,"reason":"first_occurrence","moved":0}` -- a silent no-op
+	 * reported to the organizer as "Nothing was split" -- because A's own row
+	 * list does not contain the identifier at all and `array_search()` answers
+	 * `false`, which casts to index 0.
+	 *
+	 * @covers ::split_forward
+	 * @covers ::split_owned_series
+	 *
+	 * @return void
+	 */
+	public function test_a_split_from_a_sibling_owned_occurrence_splits_the_owning_post(): void {
+		$post_a = $this->create_and_project();
+		$post_b = (int) Splitter::get_instance()->split_forward( $post_a, '20260917T180000' )['forward_post_id'];
+
+		Series::get_instance()->flush_memo();
+		Context::flush_resolved();
+
+		$this->assertSame(
+			array( '20260917T180000', '20260929T180000', '20261001T180000', '20261013T180000' ),
+			$this->identifiers_for( $post_b ),
+			'Failed to arrange a sibling post owning the occurrence the second split is driven from.'
+		);
+
+		// Driven from post A, at an occurrence post B owns.
+		$result = Splitter::get_instance()->split_forward( $post_a, '20261001T180000' );
+
+		$this->assertTrue(
+			$result['split'],
+			'Failed to assert a split at a sibling-owned occurrence splits rather than degrading to a no-op.'
+		);
+		$this->assertSame(
+			$post_b,
+			(int) $result['origin_post_id'],
+			'Failed to assert the split was performed on the post that owns the occurrence, not the post named.'
+		);
+		$this->assertSame(
+			2,
+			$result['moved'],
+			'Failed to assert the two occurrences at and after the split point moved.'
+		);
+
+		$post_c = (int) $result['forward_post_id'];
+
+		$this->assertSame(
+			array( '20260903T180000', '20260915T180000' ),
+			$this->identifiers_for( $post_a ),
+			'Failed to assert the first post is untouched by a split of its sibling.'
+		);
+		$this->assertSame(
+			array( '20260917T180000', '20260929T180000' ),
+			$this->identifiers_for( $post_b ),
+			'Failed to assert the sibling kept the occurrences before the split point.'
+		);
+		$this->assertSame(
+			array( '20261001T180000', '20261013T180000' ),
+			$this->identifiers_for( $post_c ),
+			'Failed to assert the third post carries the occurrences from the split point onward.'
+		);
+	}
+
+	/**
+	 * Only approved RSVPs are counted among the ones a change would strand.
+	 *
+	 * Two mechanisms, and they are not the same one stated twice:
+	 *
+	 * - A **trashed** RSVP keeps its `_gatherpress_occurrence` relationship row,
+	 *   so `term_taxonomy.count` would still include it. Counting comments is
+	 *   what excludes it, and an organizer told "2 RSVPs affected" when one of
+	 *   them is in the trash has been told the wrong thing.
+	 * - A **pending** RSVP is excluded by the query's `'status' => 'approve'`.
+	 *   That is the arm the trashed case cannot reach: `WP_Comment_Query`
+	 *   interprets an absent status as `all`, which is
+	 *   `comment_approved IN ( '0', '1' )` -- trash and spam are already out, but
+	 *   an unapproved RSVP is in. Deleting `'status' => 'approve'` therefore
+	 *   changes nothing about a trashed RSVP and everything about a pending one.
+	 *
+	 * A pending RSVP is ordinary, reachable data rather than a contrivance:
+	 * `Rsvp\Form::prepare_comment_data()` inserts a guest RSVP with
+	 * `comment_approved => 0`, and hooks `pre_comment_approved` to
+	 * `__return_zero` whenever the submitted email does not match the logged-in
+	 * user.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::count_rsvps
+	 *
+	 * @return void
+	 */
+	public function test_count_rsvps_counts_only_approved_rsvps(): void {
+		$origin_id = $this->create_and_project();
+		$instance  = Rsvp_Occurrence::get_instance();
+
+		$approved = $this->rsvp_on( $origin_id, '20260903T180000' );
+		$trashed  = $this->rsvp_on( $origin_id, '20260903T180000' );
+		$pending  = $this->rsvp_on( $origin_id, '20260903T180000' );
+
+		$this->assertSame(
+			3,
+			$instance->count_rsvps( $origin_id, array( '20260903T180000' ) ),
+			'Failed to arrange three counted RSVPs before any of them is trashed or held.'
+		);
+
+		wp_trash_comment( $trashed );
+		wp_set_comment_status( $pending, 'hold' );
+
+		$this->assertNotEmpty(
+			wp_get_object_terms( $trashed, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'ids' ) ),
+			'Failed to assert trashing leaves the occurrence relationship in place -- if it did not, the'
+				. ' count below would fall for a reason that has nothing to do with counting comments.'
+		);
+		$this->assertNotEmpty(
+			wp_get_object_terms( $pending, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'ids' ) ),
+			'Failed to assert holding an RSVP leaves its occurrence relationship in place.'
+		);
+		$this->assertSame(
+			'0',
+			(string) get_comment( $pending )->comment_approved,
+			'Failed to arrange an RSVP that is pending rather than trashed.'
+		);
+		$this->assertSame(
+			1,
+			$instance->count_rsvps( $origin_id, array( '20260903T180000' ) ),
+			'Failed to assert only the approved RSVP is counted once one is trashed and one is pending.'
+		);
+		$this->assertSame(
+			'1',
+			(string) get_comment( $approved )->comment_approved,
+			'Failed to assert the surviving RSVP is the approved one.'
+		);
+	}
 }
