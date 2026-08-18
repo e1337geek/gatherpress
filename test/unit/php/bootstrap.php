@@ -9,6 +9,19 @@
 
 // phpcs:disable Squiz.Commenting.FileComment.Missing
 
+// Record every query so the suite's query-capture assertions have something to
+// read. Several tests slice `$wpdb->queries` to prove a code path issues the
+// SQL it claims to -- with SAVEQUERIES off that property stays null and those
+// tests error on `count( null )` instead of asserting. This has to happen
+// before `Bootstrap::start()` loads wp-config and boots `$wpdb`, and it is
+// guarded so an environment that already turns query recording on (a wp-env
+// override, a CI config, or the WordPress test config) keeps its own value.
+// Applies to the single-site and multisite runs alike -- both configs load
+// this same bootstrap.
+if ( ! defined( 'SAVEQUERIES' ) ) {
+	define( 'SAVEQUERIES', true ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound
+}
+
 // Enable WP-CLI stub so CLI code paths are covered in tests.
 if ( ! defined( 'WP_CLI' ) ) {
 	define( 'WP_CLI', true ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound
