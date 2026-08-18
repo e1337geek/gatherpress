@@ -441,8 +441,11 @@ final class Form {
 	 * Bind a freshly inserted RSVP comment to the occurrence in play.
 	 *
 	 * A no-op outside occurrence context, and on every site with no recurring
-	 * events, since `current_recurrence_id()` short-circuits on the autoloaded
+	 * events, since `current_occurrence()` short-circuits on the autoloaded
 	 * `gatherpress_has_recurring_events` option (REQ-16).
+	 *
+	 * The term is keyed on the occurrence's own `series_post_id`, not on the
+	 * post the request named — PRD C-2, see `Rsvp_Occurrence::current_occurrence()`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -452,23 +455,30 @@ final class Form {
 	 * @return void
 	 */
 	private function assign_occurrence( int $comment_id, int $post_id ): void {
-		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $post_id );
+		$occurrence = Rsvp_Occurrence::current_occurrence( $post_id );
 
-		if ( null === $recurrence_id ) {
+		if ( null === $occurrence ) {
 			return;
 		}
 
-		Rsvp_Occurrence::get_instance()->assign( $comment_id, $post_id, $recurrence_id );
+		Rsvp_Occurrence::get_instance()->assign(
+			$comment_id,
+			$occurrence['series_post_id'],
+			$occurrence['recurrence_id']
+		);
 	}
 
 	/**
 	 * Build the clause narrowing the duplicate check to one occurrence.
 	 *
 	 * Returns null outside occurrence context — and on every site with no
-	 * recurring events at all, since `current_recurrence_id()` short-circuits
+	 * recurring events at all, since `current_occurrence()` short-circuits
 	 * on the `gatherpress_has_recurring_events` option (REQ-16). The query
 	 * string is then byte-identical to the one this method's caller has always
 	 * built.
+	 *
+	 * The slug is keyed on the occurrence's own `series_post_id` so the check
+	 * matches the term `assign_occurrence()` writes (PRD C-2).
 	 *
 	 * The occurrence link is the `_gatherpress_occurrence` term on the comment,
 	 * so the narrowing is a term-relationship subquery rather than a new
@@ -484,9 +494,9 @@ final class Form {
 	private function duplicate_occurrence_clause( int $post_id ): ?array {
 		global $wpdb;
 
-		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $post_id );
+		$occurrence = Rsvp_Occurrence::current_occurrence( $post_id );
 
-		if ( null === $recurrence_id ) {
+		if ( null === $occurrence ) {
 			return null;
 		}
 
@@ -498,7 +508,7 @@ final class Form {
 				WHERE tt.taxonomy = %s AND t.slug = %s )",
 			'values' => array(
 				Rsvp_Occurrence::TAXONOMY,
-				Rsvp_Occurrence::term_slug( $post_id, $recurrence_id ),
+				Rsvp_Occurrence::term_slug( $occurrence['series_post_id'], $occurrence['recurrence_id'] ),
 			),
 		);
 	}
@@ -727,7 +737,8 @@ final class Form {
 			);
 		}
 
-		$comment_id = (int) $comment_id_result;
+		$comment_id      = (int) $comment_id_result;
+		$comment_post_id = intval( $data['post_id'] );
 
 		// Set RSVP status to attending.
 		wp_set_object_terms( $comment_id, Status::ATTENDING->value, Status::TAXONOMY );
@@ -735,10 +746,20 @@ final class Form {
 		// Bind the response to the occurrence the request is scoped to. This
 		// path inserts its comment directly rather than through
 		// `Rsvp\Storage::save()`, so it carries its own stamping.
-		$this->assign_occurrence( $comment_id, intval( $data['post_id'] ) );
+		$this->assign_occurrence( $comment_id, $comment_post_id );
 
 		// Process all fields.
 		$this->process_fields( $comment_id, $data );
+
+		// Drop the warm counts this insertion just invalidated. This path never
+		// reaches `Rsvp\Storage::save()`, which is where every other write does
+		// its invalidation, so an open-form submission used to leave the cached
+		// totals reading zero until the transient expired — for the length of
+		// `Cache::CACHE_EXPIRATION`, and shared across every visitor under a
+		// persistent object cache. Called after `assign_occurrence()` so the
+		// occurrence-scoped key is resolvable and gets dropped alongside the
+		// series-wide one.
+		Cache::delete( $comment_post_id );
 
 		// Generate and send confirmation email.
 		$rsvp_token = new Token( $comment_id );

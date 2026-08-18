@@ -1843,6 +1843,16 @@ final class Occurrences {
 	 * pins one post, which would refuse an occurrence that a forward split had
 	 * moved to a sibling post of the same series.
 	 *
+	 * `LIMIT 1` needs an `ORDER BY` to mean anything. Once REQ-18 makes a series
+	 * span several posts, an identifier can legitimately name a row under more
+	 * than one of them — two posts of one series projected from rules that meet
+	 * at the same moment — and without an ordering the row MySQL happens to
+	 * return is whatever the query plan produces. That choice is not cosmetic:
+	 * the returned `series_post_id` is what every downstream consumer keys the
+	 * RSVP's occurrence term off, so an unstable pick would move a responder's
+	 * RSVP between sibling posts from one request to the next. Lowest post ID
+	 * wins, which is stable and is the earliest post of the series.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int[]  $post_ids      Post IDs from `Series::resolve_post_ids()`.
@@ -1860,7 +1870,7 @@ final class Occurrences {
 		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$placeholders = implode( ', ', array_fill( 0, count( $post_ids ), '%d' ) );
 		$sql          = "SELECT * FROM %i WHERE series_post_id IN ( {$placeholders} )"
-			. ' AND recurrence_id = %s LIMIT 1';
+			. ' AND recurrence_id = %s ORDER BY series_post_id ASC LIMIT 1';
 		$values       = array_merge( array( $table ), $post_ids, array( $recurrence_id ) );
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching

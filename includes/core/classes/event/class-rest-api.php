@@ -28,6 +28,7 @@ use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\User;
 use GatherPress\Core\Utility;
 use GatherPress\Core\Validate;
+use WP_Error;
 use WP_Post;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -62,6 +63,17 @@ final class Rest_Api {
 	 * @var string
 	 */
 	const RECURRENCE_ID_PARAM = 'recurrence_id';
+
+	/**
+	 * The request that entered the current occurrence context, if any.
+	 *
+	 * Held so `leave_occurrence_context()` can tell the dispatch it is meant to
+	 * tear down from any other dispatch running inside it. See that method.
+	 *
+	 * @since 0.36.0
+	 * @var WP_REST_Request|null
+	 */
+	protected ?WP_REST_Request $occurrence_request = null;
 
 	/**
 	 * Class constructor.
@@ -419,9 +431,35 @@ final class Rest_Api {
 	 *
 	 * WordPress only runs a validate callback for a parameter the request
 	 * actually carries, so anything reaching here is a caller naming an
-	 * occurrence. A malformed or unknown identifier is refused with a 400
-	 * rather than silently falling back to the series, which would show the
-	 * caller the whole series' RSVPs and write their response against it.
+	 * occurrence.
+	 *
+	 * **The requirement: an unresolvable occurrence must fail closed.** A
+	 * malformed or unknown identifier is refused with a 400 rather than falling
+	 * back to the series, and the alternative is worse in both directions. On a
+	 * read, falling back would hand a caller who asked for one date the entire
+	 * series' attendee list — names and emails they did not ask for and, on a
+	 * private occurrence, may not be entitled to. On a write it is worse still:
+	 * the responder believes they have booked September 17th, the RSVP lands
+	 * series-wide with no occurrence term, and there is no error anywhere and no
+	 * way to tell it apart afterwards from a deliberate series RSVP. Silent
+	 * widening of a scope the caller narrowed is not a graceful degradation; it
+	 * is the data-corruption mode this whole subsystem is built to avoid.
+	 *
+	 * The two costs of failing closed are accepted knowingly:
+	 *
+	 * - **Staleness.** A page cached by a reverse proxy, or a rule edited
+	 *   between render and click, yields `rest_invalid_param` where the request
+	 *   would previously have succeeded. That is correct — the occurrence the
+	 *   page named genuinely no longer exists — and a 400 is a recoverable
+	 *   client error that a reload fixes, where a silent series-wide write is
+	 *   not recoverable at all.
+	 * - **An existence oracle.** `rsvp-form`'s `permission_callback` is
+	 *   `__return_true`, so the 400/200 split tells an unauthenticated caller
+	 *   whether a given `Ymd\THis` names a real occurrence of a given post. The
+	 *   post ID must already be a readable event for the request to get this
+	 *   far, and an event's occurrence dates are rendered on its public page
+	 *   and published in its feed — the oracle discloses nothing that
+	 *   `GET /{event}/` does not. It is noted rather than mitigated.
 	 *
 	 * @since 0.36.0
 	 *
@@ -466,22 +504,38 @@ final class Rest_Api {
 	 * byte-identical: nothing is resolved, no filter is registered, and no
 	 * occurrence machinery is touched.
 	 *
+	 * A failure to resolve is returned rather than swallowed. The validate
+	 * callback has already resolved this identifier once, so the second lookup
+	 * failing means the row went away between the two queries — and continuing
+	 * would serve the caller the **whole series** under a 200, which is
+	 * precisely the outcome the validate callback exists to prevent.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param WP_REST_Request $request Contains data from the request.
 	 *
-	 * @return void
+	 * @return WP_Error|null An error when the named occurrence could not be entered, otherwise null.
 	 */
-	private function enter_occurrence_context( WP_REST_Request $request ): void {
+	private function enter_occurrence_context( WP_REST_Request $request ): ?WP_Error {
 		$recurrence_id = (string) $request->get_param( self::RECURRENCE_ID_PARAM );
 
 		if ( '' === $recurrence_id ) {
-			return;
+			return null;
 		}
 
-		Context::get_instance()->set_for_series( $this->request_post_id( $request ), $recurrence_id );
+		if ( ! Context::get_instance()->set_for_series( $this->request_post_id( $request ), $recurrence_id ) ) {
+			return new WP_Error(
+				'gatherpress_occurrence_not_found',
+				__( 'The requested occurrence no longer exists.', 'gatherpress' ),
+				array( 'status' => 404 )
+			);
+		}
 
-		add_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ) );
+		$this->occurrence_request = $request;
+
+		add_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ), 10, 3 );
+
+		return null;
 	}
 
 	/**
@@ -492,16 +546,33 @@ final class Rest_Api {
 	 * an internal `rest_do_request()` call would leave the context set for
 	 * whatever ran next in the same process.
 	 *
+	 * The filter is global and fires for **every** dispatch, including one a
+	 * route makes internally while holding context — `rsvp_status_html()`
+	 * renders arbitrary blocks, any of which may call `rest_do_request()`.
+	 * Clearing on the inner request would drop the outer route's context
+	 * mid-callback and unhook this filter, so the rest of the outer route would
+	 * read and write series-wide, silently, and never clear at all. Comparing
+	 * the request identity is what confines the teardown to the dispatch that
+	 * actually entered the context.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param mixed $response The response the callback produced.
+	 * @param mixed           $response The response the callback produced.
+	 * @param array           $handler  The route handler that produced it.
+	 * @param WP_REST_Request $request  The request the response belongs to.
 	 *
 	 * @return mixed The response, unchanged.
 	 */
-	public function leave_occurrence_context( $response ) {
+	public function leave_occurrence_context( $response, $handler, $request ) {
+		if ( $request !== $this->occurrence_request ) {
+			return $response;
+		}
+
 		Context::get_instance()->clear();
 
-		remove_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ) );
+		$this->occurrence_request = null;
+
+		remove_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ), 10 );
 
 		return $response;
 	}
@@ -854,15 +925,19 @@ final class Rest_Api {
 	 *
 	 * @param WP_REST_Request $request Contains data from the request.
 	 *
-	 * @return WP_REST_Response An instance of WP_REST_Response containing the response data.
+	 * @return WP_REST_Response|WP_Error The response data, or a 404 when the named occurrence no longer resolves.
 	 */
-	public function update_rsvp( WP_REST_Request $request ): WP_REST_Response {
+	public function update_rsvp( WP_REST_Request $request ): WP_REST_Response|WP_Error {
 		// Prevent caching of RSVP updates.
 		nocache_headers();
 
 		// Scope every read and write below to the occurrence the visitor is
 		// looking at, when the request names one.
-		$this->enter_occurrence_context( $request );
+		$occurrence_error = $this->enter_occurrence_context( $request );
+
+		if ( null !== $occurrence_error ) {
+			return $occurrence_error;
+		}
 
 		$params          = $request->get_params();
 		$success         = false;
@@ -967,11 +1042,12 @@ final class Rest_Api {
 	 *                                 - post_id (int): The ID of the post associated with the RSVP.
 	 *                                 - block_data (string): JSON-encoded block data used to render the RSVP content.
 	 *
-	 * @return WP_REST_Response The REST API response containing:
+	 * @return WP_REST_Response|WP_Error A 404 when the named occurrence no longer resolves, otherwise
+	 *                                a response containing:
 	 *                          - success (bool): Whether the content was successfully generated.
 	 *                          - content (string): The dynamically rendered HTML markup for the RSVP responses.
 	 */
-	public function rsvp_status_html( WP_REST_Request $request ): WP_REST_Response {
+	public function rsvp_status_html( WP_REST_Request $request ): WP_REST_Response|WP_Error {
 		// Prevent caching for logged-in users or users with valid RSVP tokens.
 		$unparsed_token = $request->get_param( Token::NAME );
 		$rsvp_token     = Token::from_token_string( $unparsed_token );
@@ -981,7 +1057,11 @@ final class Rest_Api {
 		}
 
 		// Scope the rendered roster to the occurrence the visitor is looking at.
-		$this->enter_occurrence_context( $request );
+		$occurrence_error = $this->enter_occurrence_context( $request );
+
+		if ( null !== $occurrence_error ) {
+			return $occurrence_error;
+		}
 
 		$rsvp_template = Rsvp_Template::get_instance();
 		$params        = $request->get_params();
@@ -1026,15 +1106,19 @@ final class Rest_Api {
 	 *
 	 * @param WP_REST_Request $request The REST API request object.
 	 *
-	 * @return WP_REST_Response The response indicating success or failure.
+	 * @return WP_REST_Response|WP_Error Success or failure, or a 404 when the named occurrence no longer resolves.
 	 */
-	public function handle_rsvp_form_submission( WP_REST_Request $request ): WP_REST_Response {
+	public function handle_rsvp_form_submission( WP_REST_Request $request ): WP_REST_Response|WP_Error {
 		// Prevent caching of RSVP form submission responses.
 		nocache_headers();
 
 		// Scope the duplicate check, the written response and the returned
 		// counts to the occurrence the visitor is looking at.
-		$this->enter_occurrence_context( $request );
+		$occurrence_error = $this->enter_occurrence_context( $request );
+
+		if ( null !== $occurrence_error ) {
+			return $occurrence_error;
+		}
 
 		$params = $request->get_params();
 
@@ -1134,9 +1218,10 @@ final class Rest_Api {
 	 *
 	 * @param WP_REST_Request $request REST API request object containing post_id parameter.
 	 *
-	 * @return WP_REST_Response Response containing success status and RSVP data.
+	 * @return WP_REST_Response|WP_Error Success status and RSVP data, or a 404 when the named
+	 *                                occurrence no longer resolves.
 	 */
-	public function rsvp_responses( WP_REST_Request $request ): WP_REST_Response {
+	public function rsvp_responses( WP_REST_Request $request ): WP_REST_Response|WP_Error {
 		// Prevent caching for logged-in users or users with valid RSVP tokens.
 		$unparsed_token = $request->get_param( Token::NAME );
 		$rsvp_token     = Token::from_token_string( $unparsed_token );
@@ -1146,7 +1231,11 @@ final class Rest_Api {
 		}
 
 		// Scope the returned roster to the occurrence the caller named.
-		$this->enter_occurrence_context( $request );
+		$occurrence_error = $this->enter_occurrence_context( $request );
+
+		if ( null !== $occurrence_error ) {
+			return $occurrence_error;
+		}
 
 		$params    = $request->get_params();
 		$post_id   = intval( $params['post_id'] );

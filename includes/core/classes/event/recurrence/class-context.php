@@ -113,6 +113,18 @@ final class Context {
 	protected ?array $writing = null;
 
 	/**
+	 * Request-scoped memo of `resolve_in_series()` results.
+	 *
+	 * Keyed `{post_id}:{recurrence_id}`. Values are the resolved row or null,
+	 * so a miss is remembered as cheaply as a hit — a fabricated identifier
+	 * costs one query per request rather than one per lookup.
+	 *
+	 * @since 0.36.0
+	 * @var array<string, array|null>
+	 */
+	protected static array $resolved = array();
+
+	/**
 	 * The post ID whose occurrence permalink is currently being composed.
 	 *
 	 * `Rewrite::get_occurrence_url()` builds the occurrence URL on top of
@@ -240,6 +252,19 @@ final class Context {
 	 * returns without touching the occurrence table, so a request carrying a
 	 * fabricated `recurrence_id` costs nothing there.
 	 *
+	 * The result is memoized per `(post_id, recurrence_id)` for the life of the
+	 * request. A REST dispatch resolves the same pair twice — once in the
+	 * validate callback and once on entry — and the two stay separate
+	 * deliberately: WordPress runs validate callbacks inside
+	 * `has_valid_params()`, which is *before* `permission_callback`, so
+	 * resolving as a side effect of validation would enter context on requests
+	 * that then 403 with no teardown filter registered. The memo removes the
+	 * duplicated query without collapsing that separation.
+	 *
+	 * Memoizing is safe within a request because the occurrence table is only
+	 * written by projection, which is not something a read request performs;
+	 * the cache is per-process and dies with it.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Post ID the request names.
@@ -252,10 +277,31 @@ final class Context {
 			return null;
 		}
 
-		return Occurrences::get_instance()->find_in_series(
-			Series::get_instance()->resolve_post_ids( $post_id ),
-			$recurrence_id
-		);
+		$key = sprintf( '%d:%s', $post_id, $recurrence_id );
+
+		if ( ! array_key_exists( $key, self::$resolved ) ) {
+			self::$resolved[ $key ] = Occurrences::get_instance()->find_in_series(
+				Series::get_instance()->resolve_post_ids( $post_id ),
+				$recurrence_id
+			);
+		}
+
+		return self::$resolved[ $key ];
+	}
+
+	/**
+	 * Discard the request-scoped resolution memo.
+	 *
+	 * Production never needs this — the memo lives and dies with the request —
+	 * but a test process projects and re-projects occurrences inside one PHP
+	 * lifetime, so it needs a way to tell the memo that storage moved under it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public static function flush_resolved(): void {
+		self::$resolved = array();
 	}
 
 	/**

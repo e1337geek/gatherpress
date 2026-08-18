@@ -5,9 +5,6 @@
 	<!-- What to scan -->
 	<file>.</file>
 	<exclude-pattern>/.git/</exclude-pattern>
-	<!-- Untracked local scratch space (benchmarks, notes). CI never sees it, so
-	     scanning it here only makes the local gate fail for reasons the PR cannot. -->
-	<exclude-pattern>/.local-docs/</exclude-pattern>
 	<exclude-pattern>.gatherpress.org/playground-preview</exclude-pattern>
 	<exclude-pattern>*.asset.php</exclude-pattern>
 	<exclude-pattern>/data/credits.php</exclude-pattern>
@@ -15,6 +12,11 @@
 	<exclude-pattern>/node_modules/</exclude-pattern>
 	<exclude-pattern>/build/</exclude-pattern>
 	<exclude-pattern>/wp-core/</exclude-pattern>
+	<!-- Untracked local scratch space, in the same category as /build/ and
+	     /wp-core/ above. PHPCS scans the working tree and does not read
+	     .gitignore, so gitignoring the directory alone does not keep it out of
+	     the lint gate. -->
+	<exclude-pattern>/.local-docs/</exclude-pattern>
 	<exclude-pattern>/languages/</exclude-pattern>
 
 	<!-- How to scan -->

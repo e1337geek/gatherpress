@@ -179,11 +179,18 @@ final class Storage {
 
 		// Bind the response to the occurrence the request is rendering, so the
 		// same responder can hold an independent RSVP on every date in a
-		// series rather than one that follows them across all of them.
-		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $this->post_id );
+		// series rather than one that follows them across all of them. The term
+		// is keyed on the occurrence's own series post, not on the post the
+		// request named, so an occurrence a forward split has moved onto a
+		// sibling post is stamped with the slug its readers scope by (PRD C-2).
+		$occurrence = Rsvp_Occurrence::current_occurrence( $this->post_id );
 
-		if ( null !== $recurrence_id ) {
-			Rsvp_Occurrence::get_instance()->assign( $comment_id, $this->post_id, $recurrence_id );
+		if ( null !== $occurrence ) {
+			Rsvp_Occurrence::get_instance()->assign(
+				$comment_id,
+				$occurrence['series_post_id'],
+				$occurrence['recurrence_id']
+			);
 		}
 
 		if ( $intent->data->guests ) {
@@ -330,12 +337,19 @@ final class Storage {
 	 * is involved. Outside occurrence context — and on every site with no
 	 * recurring events at all — the args are returned untouched (REQ-16).
 	 *
-	 * `cache_domain` is set alongside it deliberately.
-	 * `WP_Comment_Query::get_comments()` builds its cache key from its own
-	 * declared query vars only, and `tax_query` is not one of them, so two
-	 * occurrences' queries would otherwise hash to the same key and the second
-	 * would be served the first one's comment IDs. `cache_domain` is a declared
-	 * var, so varying it is what actually varies the key.
+	 * No `cache_domain` is set here. `WP_Comment_Query::get_comments()` builds
+	 * its cache key from its declared query vars only, and `tax_query` is not
+	 * one of them, so a scoped query does need one — but `Rsvp\Query` derives it
+	 * for every taxonomy-scoped read in `ensure_cache_domain()`, from a hash of
+	 * the whole `tax_query`. Setting one here as well would win over that
+	 * derivation (it short-circuits on a non-empty `cache_domain`) and disable
+	 * the single funnel every RSVP read passes through, leaving two mechanisms
+	 * where one is enough — and the local one was the weaker of the two, keyed
+	 * on the identifier alone where the derived key covers the series post too.
+	 *
+	 * The `tax_query` is built from the occurrence's own `series_post_id` rather
+	 * than from `$this->post_id`, so a read on any post of a series finds the
+	 * RSVPs written under the post the occurrence actually lives on (PRD C-2).
 	 *
 	 * @since 0.36.0
 	 *
@@ -344,15 +358,17 @@ final class Storage {
 	 * @return array The args, scoped to one occurrence when the request is rendering one.
 	 */
 	private function scope_to_occurrence( array $args ): array {
-		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $this->post_id );
+		$occurrence = Rsvp_Occurrence::current_occurrence( $this->post_id );
 
-		if ( null === $recurrence_id ) {
+		if ( null === $occurrence ) {
 			return $args;
 		}
 
 		// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_tax_query
-		$args['tax_query']    = Rsvp_Occurrence::get_instance()->tax_query( $this->post_id, $recurrence_id );
-		$args['cache_domain'] = sprintf( 'gatherpress_occurrence_%s', $recurrence_id );
+		$args['tax_query'] = Rsvp_Occurrence::get_instance()->tax_query(
+			$occurrence['series_post_id'],
+			$occurrence['recurrence_id']
+		);
 
 		return $args;
 	}

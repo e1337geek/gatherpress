@@ -137,6 +137,16 @@ final class Cleanup {
 		);
 
 		// 3. Delete RSVP comment + associated meta.
+		//
+		// Term counting is deferred across the whole loop. Each hard delete now
+		// drops term relationships in up to three taxonomies via
+		// `delete_term_relationships()`, and every one of those recounts its
+		// terms immediately, so a sweep clearing n stale RSVPs paid 3n recount
+		// queries. Deferring collapses them into one recount per taxonomy at the
+		// end, which is exactly what this deferral exists for in core's own bulk
+		// paths.
+		wp_defer_term_counting( true );
+
 		foreach ( $rsvps as $rsvp ) {
 			$meta_keys = array_keys( get_comment_meta( $rsvp->comment_ID ) );
 
@@ -146,6 +156,8 @@ final class Cleanup {
 
 			wp_delete_comment( $rsvp->comment_ID, true );
 		}
+
+		wp_defer_term_counting( false );
 
 		// Schedule the next event.
 		wp_clear_scheduled_hook( 'gatherpress_rsvp_cleanup' );

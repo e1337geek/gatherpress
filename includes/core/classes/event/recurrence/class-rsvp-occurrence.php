@@ -51,8 +51,13 @@ final class Rsvp_Occurrence {
 	 * Nothing to hook: the `delete_comment` relationship cleanup this class
 	 * used to own cleans all three RSVP comment taxonomies, only one of which
 	 * is about recurrence, and now lives on `Rsvp\Cleanup` alongside the
-	 * hard-delete cron it belongs with. The constructor stays declared and
-	 * `protected` so `get_instance()` remains the only way to build one.
+	 * hard-delete cron it belongs with.
+	 *
+	 * The declaration is not decorative. `Traits\Singleton` declares no
+	 * constructor of its own, so dropping this one would hand the class PHP's
+	 * implicit **public** constructor and make `new Rsvp_Occurrence()` legal
+	 * from anywhere — two instances of a singleton, and the one thing
+	 * `get_instance()` exists to prevent.
 	 *
 	 * @since 0.36.0
 	 */
@@ -91,9 +96,69 @@ final class Rsvp_Occurrence {
 	/**
 	 * Resolve the occurrence the current request scopes this post's RSVPs to.
 	 *
+	 * Returns the **occurrence's own** `series_post_id` alongside the
+	 * identifier, and callers must key their term slug off that rather than off
+	 * the post they asked about. PRD C-2 is the reason: `Context` resolves an
+	 * incoming identifier through `Series::resolve_post_ids()`, so once REQ-18's
+	 * forward split moves an occurrence onto a sibling post of the same series,
+	 * the context legitimately holds a row whose `series_post_id` is not the
+	 * post the request named. Comparing the two for equality — which this method
+	 * used to do — rejected exactly the case `Context` had gone out of its way
+	 * to admit, and every scoping consumer then fell back to series-wide with no
+	 * error anywhere: the RSVP would be written with no occurrence term at all
+	 * while the visitor believed they had booked a specific date.
+	 *
 	 * REQ-16 lives on the first guard: a site with no recurring events never
 	 * reaches the occurrence context at all, so every RSVP read and write runs
-	 * exactly the SQL it ran before this class existed.
+	 * exactly the SQL it ran before this class existed. The identity comparison
+	 * is kept as the fast path ahead of the resolver, so a one-post series — the
+	 * whole of today's traffic — never reaches the filter either.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID whose RSVPs are being read or written.
+	 *
+	 * @return array{series_post_id: int, recurrence_id: string}|null The occurrence, or null when the
+	 *               request is not scoped to one of this post's series.
+	 */
+	public static function current_occurrence( int $post_id ): ?array {
+		if ( ! Query::site_has_recurring_events() ) {
+			return null;
+		}
+
+		$occurrence = Context::get_instance()->current();
+
+		if ( null === $occurrence ) {
+			return null;
+		}
+
+		$series_post_id = (int) $occurrence['series_post_id'];
+
+		if (
+			$series_post_id !== $post_id
+			&& ! in_array( $series_post_id, Series::get_instance()->resolve_post_ids( $post_id ), true )
+		) {
+			return null;
+		}
+
+		return array(
+			'series_post_id' => $series_post_id,
+			'recurrence_id'  => (string) $occurrence['recurrence_id'],
+		);
+	}
+
+	/**
+	 * Resolve just the identifier of the occurrence the request is scoped to.
+	 *
+	 * The thin accessor for the one consumer that needs the identifier without
+	 * the post it belongs to — `Rsvp\Cache`, whose occurrence-scoped transient
+	 * key is deliberately built from the post the caller named. Its sibling
+	 * call site, `Rsvp\Token`, has no request context at all and passes the
+	 * identifier explicitly, so keying the implicit path off the occurrence's
+	 * own post would make the two disagree about which transient to drop.
+	 *
+	 * Anything composing an occurrence **term slug** must use
+	 * `current_occurrence()` instead — see its docblock for why.
 	 *
 	 * @since 0.36.0
 	 *
@@ -102,17 +167,9 @@ final class Rsvp_Occurrence {
 	 * @return string|null The recurrence identifier, or null when the request is not scoped to one.
 	 */
 	public static function current_recurrence_id( int $post_id ): ?string {
-		if ( ! Query::site_has_recurring_events() ) {
-			return null;
-		}
+		$occurrence = self::current_occurrence( $post_id );
 
-		$occurrence = Context::get_instance()->current();
-
-		if ( null === $occurrence || (int) $occurrence['series_post_id'] !== $post_id ) {
-			return null;
-		}
-
-		return (string) $occurrence['recurrence_id'];
+		return null === $occurrence ? null : $occurrence['recurrence_id'];
 	}
 
 	/**

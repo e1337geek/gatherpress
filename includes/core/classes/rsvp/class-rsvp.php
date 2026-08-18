@@ -260,11 +260,16 @@ final class Rsvp {
 		$intent   = new Intent( $data, $provider );
 		$state    = $this->process( $intent );
 
+		// Invalidated before the null check, not after. `process()` returns null
+		// for the `no_status` path too — which trashes the stored comment — so
+		// returning early skipped the invalidation on the one save that removes
+		// an attendee, leaving them visible in warm counts for the length of
+		// `Cache::CACHE_EXPIRATION` under a persistent object cache.
+		Cache::delete( $this->event->ID );
+
 		if ( null === $state ) {
 			return self::DEFAULT_SAVE_RESPONSE;
 		}
-
-		Cache::delete( $this->event->ID );
 
 		return Serializer::to_array( $state );
 	}
