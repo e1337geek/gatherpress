@@ -67,7 +67,7 @@ final class Rewrite {
 	 *
 	 * @since 0.36.0
 	 */
-	public function __construct() {
+	protected function __construct() {
 		$this->setup_hooks();
 	}
 
@@ -272,6 +272,51 @@ final class Rewrite {
 	 * rows -- a non-recurring event, or a series that has run out -- is left
 	 * untouched so it renders exactly as it does today.
 	 *
+	 * ## Bare-URL contract: fragment semantics, not logical-series semantics
+	 *
+	 * This is the contract the rest of this PR is built on, stated here because
+	 * it is about to matter and because completing it is not this layer's to
+	 * make. **A bare URL resolves within the fragment it names, never across
+	 * the logical series.**
+	 *
+	 * Concretely: `next_upcoming_recurrence_id()` widens through
+	 * `Series::resolve_post_ids()` -- so the *query* already spans every post
+	 * of a multi-post series -- and then narrows the result back to rows whose
+	 * `series_post_id` is the requested post. Today those two steps cancel out,
+	 * because `resolve_post_ids()` returns `array( $post_id )` and one post is
+	 * the whole series. They stop cancelling the moment REQ-18's forward split
+	 * makes a series span several posts, and the narrowing is what decides the
+	 * behavior then:
+	 *
+	 * - **Fragment semantics (what this PR implements).** `/{slug-of-piece-A}/`
+	 *   resolves to A's own next upcoming occurrence. Once A's occurrences are
+	 *   all in the past, A's bare URL resolves to nothing and renders the post
+	 *   at its anchor, even though the logical series continues in piece B.
+	 * - **Logical-series semantics (not implemented here).** `/{slug-of-piece-A}/`
+	 *   would resolve to the next upcoming occurrence of the *series*, wherever
+	 *   it lives, and therefore emit a canonical URL under a different post's
+	 *   slug than the one requested.
+	 *
+	 * Fragment semantics is the correct choice for *this* PR and is not a
+	 * placeholder: nothing in this stack can produce a second fragment yet, so
+	 * the two are indistinguishable at runtime, and the narrower rule is the
+	 * one that cannot silently redirect a request to a post the visitor did not
+	 * ask for. Two invariants this PR does guarantee, which W7 must preserve:
+	 *
+	 * 1. A pre-split occurrence URL keeps resolving to the same occurrence
+	 *    after the split, whichever fragment ends up owning that row.
+	 * 2. A bare URL never resolves to an occurrence belonging to another post,
+	 *    so the canonical URL a bare request produces always sits under the
+	 *    requested post's slug.
+	 *
+	 * **W7 owns the completion** (it depends on W6's split orchestration). What
+	 * it has to decide and cover is: whether a lapsed fragment's bare URL
+	 * forwards to the live fragment or stays put; if it forwards, whether that
+	 * is a resolution or a `301` and what `rel="canonical"` then says; and
+	 * which post a logical series' "the series' URL" means for calendar
+	 * subscriptions and revisions once more than one post can answer to it. The
+	 * narrowing comparison below is the single line those decisions land on.
+	 *
 	 * REQ-16 is handled by `parse_request()` before this method is reached, so
 	 * the `get_page_by_path()` lookup below is never paid on a site with no
 	 * recurring events. The guard deliberately does not live here: this is the
@@ -336,6 +381,11 @@ final class Rewrite {
 	/**
 	 * Resolve a series' next upcoming scheduled occurrence identifier.
 	 *
+	 * Reads across every post of the series and then answers only with a row
+	 * belonging to the requested post. That narrowing is the bare-URL contract
+	 * documented on `maybe_resolve_bare_series()` -- fragment semantics -- and
+	 * it is the line W7 revisits once a series can span more than one post.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Series post ID.
@@ -351,6 +401,8 @@ final class Rewrite {
 		$now      = current_time( 'mysql', true );
 
 		foreach ( $rows as $row ) {
+			// The `series_post_id` comparison is the fragment-semantics
+			// narrowing; see this method's docblock and W7.
 			if ( (int) $row['series_post_id'] === $post_id && $row['datetime_start_gmt'] >= $now ) {
 				return (string) $row['recurrence_id'];
 			}
@@ -362,13 +414,31 @@ final class Rewrite {
 	/**
 	 * Build the permalink of one occurrence.
 	 *
-	 * The segment is the occurrence's canonical `recurrence_id` (built by
-	 * `Occurrences::recurrence_id()`, never re-derived here), passed through
-	 * the `gatherpress_recurrence_id_format` filter so an integration can
-	 * customize the URL representation. Resolution always matches against
-	 * the canonical `recurrence_id`, so a filter that changes the segment's
-	 * value rather than merely its formatting breaks round-tripping -- that
-	 * trade-off belongs to whatever filters it.
+	 * The segment is the occurrence's canonical `recurrence_id`, built by
+	 * `Occurrences::recurrence_id()` and never re-derived here.
+	 *
+	 * There is deliberately no filter over the segment. One shipped in an
+	 * earlier revision of this class -- `gatherpress_recurrence_id_format` --
+	 * and it was one-way: the emitted segment was filterable, but
+	 * `add_rewrite_rule_for_post_type()` registers a single fixed
+	 * `RECURRENCE_ID_REGEX` and `parse_request()` matches the raw segment
+	 * against the canonical `recurrence_id` column, so any value the filter
+	 * changed produced an advertised URL that 404s. A hook whose documented use
+	 * breaks the feature it customizes is worse than no hook.
+	 *
+	 * Making it bidirectional was considered and rejected for now. It is not
+	 * one filter but a coupled set -- a filtered regex consumed at rule
+	 * registration on `wp_loaded`, a filtered parser consumed in
+	 * `parse_request()`, and rewrite-option invalidation keyed off the filtered
+	 * regex so a changed pattern reaches the persisted `rewrite_rules` -- and
+	 * every one of them has to agree or the site 404s its own links. Against
+	 * that, the segment *is* the composite identity (PRD C-1): an invertible
+	 * transform is a re-encoding with no product behind it, and a
+	 * non-invertible one is the defect above. The filter is unreleased, has no
+	 * known consumer, and nothing outside this class ever composed the segment,
+	 * so removing it costs no compatibility. If a real requirement appears
+	 * (localized or slug-shaped segments), the contract to add is the paired
+	 * format/parse/regex set designed against that requirement.
 	 *
 	 * @since 0.36.0
 	 *
@@ -389,26 +459,6 @@ final class Rewrite {
 			return '';
 		}
 
-		/**
-		 * Filters the URL segment representing an occurrence's recurrence ID.
-		 *
-		 * @since 0.36.0
-		 *
-		 * @param string $segment       Segment appended to the permalink, default the
-		 *                              canonical recurrence ID as produced by
-		 *                              `Occurrences::recurrence_id()`.
-		 * @param int    $post_id       Series post ID.
-		 * @param string $recurrence_id Canonical occurrence identifier in `Ymd\THis` form.
-		 *
-		 * @return string The URL segment.
-		 */
-		$segment = (string) apply_filters(
-			'gatherpress_recurrence_id_format',
-			$recurrence_id,
-			$post_id,
-			$recurrence_id
-		);
-
-		return trailingslashit( $permalink ) . $segment . '/';
+		return trailingslashit( $permalink ) . $recurrence_id . '/';
 	}
 }

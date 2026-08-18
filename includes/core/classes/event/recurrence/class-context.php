@@ -92,12 +92,19 @@ final class Context {
 	/**
 	 * The `array( $object_id, $meta_key )` pair a meta write is about to compare.
 	 *
-	 * `update_metadata()` and `add_metadata()` discover the currently stored
-	 * value through `get_metadata_raw()`, which fires this class's filter. With
-	 * context set, that comparison would see the occurrence's value, so a write
-	 * setting the series' start to the occurrence's current start would look
-	 * like a no-op and be dropped. The pair is noted on the way in and consumed
-	 * once, by the read the write itself performs.
+	 * `update_metadata()` discovers the currently stored value through
+	 * `get_metadata_raw()`, which fires this class's filter. With context set,
+	 * that comparison would see the occurrence's value, so a write setting the
+	 * series' start to the occurrence's current start would look like a no-op
+	 * and be dropped. The pair is noted on the way in and consumed once, by the
+	 * read the write itself performs.
+	 *
+	 * The note is only ever taken when core is *certainly* about to make that
+	 * read, because a note nothing consumes is not inert -- it silently
+	 * disables occurrence substitution for the next read of the same key, which
+	 * is a wrong date with nothing anywhere to explain it. `note_meta_write()`
+	 * documents the three conditions; `add_metadata()` is deliberately not
+	 * hooked at all, because it never makes the read.
 	 *
 	 * @since 0.36.0
 	 * @var array|null
@@ -112,8 +119,8 @@ final class Context {
 	 * ID is noted for the duration of that call so the nested read returns the
 	 * bare series permalink instead of recursing. Holding the ID rather than a
 	 * bare flag keeps the suppression scoped to the one post being resolved,
-	 * so a filter on `gatherpress_recurrence_id_format` that happens to ask
-	 * for a *different* post's permalink still gets a correctly filtered one.
+	 * so a third-party `post_type_link` filter that happens to ask for a
+	 * *different* post's permalink still gets a correctly filtered one.
 	 *
 	 * @since 0.36.0
 	 * @var int|null
@@ -163,8 +170,11 @@ final class Context {
 	protected function setup_hooks(): void {
 		add_filter( 'get_post_metadata', array( $this, 'metadata' ), 10, 4 );
 		add_action( 'wp', array( $this, 'sync' ) );
-		add_filter( 'update_post_metadata', array( $this, 'note_meta_write' ), 10, 3 );
-		add_filter( 'add_post_metadata', array( $this, 'note_meta_write' ), 10, 3 );
+		// Last, so no later `update_post_metadata` filter can short-circuit the
+		// write *after* the note is taken and leave it for an unrelated read to
+		// consume. `add_post_metadata` is deliberately not hooked: see
+		// `note_meta_write()`.
+		add_filter( 'update_post_metadata', array( $this, 'note_meta_write' ), PHP_INT_MAX, 5 );
 		add_filter( 'the_content', array( $this, 'maybe_prepend_cancelled_notice' ) );
 		// Both permalink filters, because `get_permalink()` routes a custom
 		// post type through `post_type_link` and the built-in post type
@@ -376,8 +386,8 @@ final class Context {
 	 * up would get a doubled URL, whether or not this filter is what called it.
 	 *
 	 * The previous value is saved and restored rather than cleared, so a
-	 * nested build (a `gatherpress_recurrence_id_format` filter asking for
-	 * another post's occurrence URL) leaves the outer suppression intact.
+	 * nested build (a third-party permalink filter asking for another post's
+	 * occurrence URL) leaves the outer suppression intact.
 	 *
 	 * @since 0.36.0
 	 *
@@ -399,10 +409,26 @@ final class Context {
 	/**
 	 * Resolve which occurrence, if any, applies to one post right now.
 	 *
-	 * The request's own occurrence wins over the loop's, because a singular
-	 * occurrence permalink is what the visitor asked for; a loop rendered on
-	 * that same response can still only reach this arm for the requested post
-	 * itself, and for that post the two agree.
+	 * The row's own stamp wins over the request's occurrence, and the ordering
+	 * is the whole point of the method. The reverse order shipped once, on the
+	 * reasoning that "a loop rendered on that same response can still only
+	 * reach this arm for the requested post itself, and for that post the two
+	 * agree." Occurrences are exactly what breaks that assumption: a Query Loop
+	 * of the *same series* rendered inside an occurrence page reaches this arm
+	 * for the requested post on every row, and each of those rows is a
+	 * different occurrence of it. Preferring the request there stamped the
+	 * outer page's date, permalink and calendar payload onto every same-series
+	 * row.
+	 *
+	 * The request arm is still load-bearing and must not be dropped in the name
+	 * of "the stamp is authoritative": the singular occurrence page's own post
+	 * is not stamped. `Query::attach_occurrences()` stamps a null identity when
+	 * `expand_event_clauses()` made no occurrence join, which is every singular
+	 * request, so `loop_occurrence()` returns null there and the request is the
+	 * only source of identity the page has.
+	 *
+	 * Both arms are pinned by
+	 * `test_resolve_prefers_the_rows_own_stamp_over_the_requests_occurrence`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -411,11 +437,17 @@ final class Context {
 	 * @return array|null The occurrence row, or null when this post has no occurrence in play.
 	 */
 	protected function resolve( int $post_id ): ?array {
+		$stamped = $this->loop_occurrence( $post_id );
+
+		if ( null !== $stamped ) {
+			return $stamped;
+		}
+
 		if ( null !== $this->occurrence && (int) $this->occurrence['series_post_id'] === $post_id ) {
 			return $this->occurrence;
 		}
 
-		return $this->loop_occurrence( $post_id );
+		return null;
 	}
 
 	/**
@@ -516,20 +548,46 @@ final class Context {
 	/**
 	 * Note the post and key a meta write is about to compare against.
 	 *
-	 * Filters `update_post_metadata` and `add_post_metadata`, both of which fire
-	 * immediately before core reads the currently stored value. The value passes
-	 * through untouched — this is a notification, not a short-circuit.
+	 * Filters `update_post_metadata` at `PHP_INT_MAX`. The value passes through
+	 * untouched — this is a notification, not a short-circuit.
+	 *
+	 * The note is taken only when `update_metadata()` will certainly reach the
+	 * `get_metadata_raw()` call that consumes it, which is exactly the three
+	 * conditions below. Anything looser leaves a sentinel behind that the next
+	 * *ordinary* read of the same key consumes, returning the series' value on
+	 * an occurrence page:
+	 *
+	 * 1. `null === $check`. A non-null value means an earlier-priority filter
+	 *    has already short-circuited, and core returns before the read.
+	 * 2. `empty( $prev_value )`. Core only compares the stored value when the
+	 *    caller named no previous value; with one, the read never happens.
+	 * 3. This callback runs last (`PHP_INT_MAX`), so no filter after it can
+	 *    short-circuit the write once the note is taken.
+	 *
+	 * `add_post_metadata` is not hooked, and hooking it is the defect this
+	 * guard set replaced. `add_metadata()` does not call `get_metadata_raw()`
+	 * at all -- its `$unique` check is a direct `$wpdb->get_var()` -- so the
+	 * note it took was never consumed. `update_metadata()` falling through to
+	 * `add_metadata()` for an absent key therefore armed a sentinel that
+	 * corrupted the next occurrence-scoped read of that key. Adds make no
+	 * comparison, so they need no protection.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param mixed  $check     Short-circuit value, null when nothing has filtered yet.
-	 * @param int    $object_id Post ID being written to.
-	 * @param string $meta_key  Meta key being written.
+	 * @param mixed  $check      Short-circuit value, null when nothing has filtered yet.
+	 * @param int    $object_id  Post ID being written to.
+	 * @param string $meta_key   Meta key being written.
+	 * @param mixed  $meta_value Value being written. Unused; present to reach `$prev_value`.
+	 * @param mixed  $prev_value Previous value the caller named, or '' when it named none.
 	 *
 	 * @return mixed The short-circuit value, unchanged.
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 */
-	public function note_meta_write( $check, int $object_id, string $meta_key ) {
-		$this->writing = array( $object_id, $meta_key );
+	public function note_meta_write( $check, int $object_id, string $meta_key, $meta_value = '', $prev_value = '' ) {
+		$this->writing = ( null === $check && empty( $prev_value ) )
+			? array( $object_id, $meta_key )
+			: null;
 
 		return $check;
 	}
@@ -651,9 +709,8 @@ final class Context {
 	 * Build the permalink of one occurrence.
 	 *
 	 * Delegates to `Rewrite::get_occurrence_url()`, which owns the canonical
-	 * `/{event-slug}/{postname}/{Ymd\THis}/` form and the
-	 * `gatherpress_recurrence_id_format` filter. This method predates that one
-	 * and originally composed a `?gatherpress_occurrence=` query arg; keeping
+	 * `/{event-slug}/{postname}/{Ymd\THis}/` form. This method predates that
+	 * one and originally composed a `?gatherpress_occurrence=` query arg; keeping
 	 * both shapes would mean two URLs resolving to the same occurrence, only
 	 * one of which is canonical, and would let callers here emit links that
 	 * never exercise the rewrite rules.

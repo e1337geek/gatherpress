@@ -1750,11 +1750,25 @@ final class Occurrences {
 		if ( ! isset( $this->table_exists[ $table ] ) ) {
 			// A schema probe, not a read-path data query; there is no object
 			// cache entry that could answer it and no row for one to hold.
+			//
+			// `esc_like()` and the strict comparison are both load-bearing, and
+			// this table name is the worst case for leaving them out: every
+			// `_` in `{prefix}gatherpress_event_occurrences` is a
+			// single-character `LIKE` wildcard, so an unescaped pattern is
+			// satisfied by any lookalike table. The probe would memoize `true`,
+			// the occurrence join would run against a table that does not
+			// exist, and ordinary published events would disappear -- the exact
+			// degradation this method exists to prevent. Escaping alone is not
+			// enough on principle: `SHOW TABLES` returns the matched *name*, so
+			// the answer is only trustworthy once that name is compared with
+			// the one asked about.
 			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$this->table_exists[ $table ] = (bool) $wpdb->get_var(
-				$wpdb->prepare( 'SHOW TABLES LIKE %s', $table )
+			$found = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) )
 			);
 			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+			$this->table_exists[ $table ] = ( $table === $found );
 		}
 
 		return $this->table_exists[ $table ];
