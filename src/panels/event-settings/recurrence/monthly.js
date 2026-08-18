@@ -17,14 +17,23 @@ import {
  * receives all four `monthly_*` values through `onChange` partials so the
  * blob it builds carries sane defaults for the inactive mode's fields.
  *
+ * The day-of-month value is handed to `onChange` exactly as the control
+ * produced it, without a `Number()` cast: a native number input accepts typed
+ * and pasted values its `min`/`max` never constrain, and `Number( '31abc' )`
+ * is `NaN` while `Number( '' )` is `0` -- both of which would silently become
+ * a rule the server rejects. Normalization is the panel's job
+ * (`normalizeMonthlyDay()`), which is also where the reject-versus-clamp
+ * decision belongs.
+ *
  * @since 0.36.0
  *
- * @param {Object}   props                Component props.
- * @param {string}   props.monthlyMode    One of `day_of_month` or `nth_weekday`.
- * @param {number}   props.monthlyDay     Day of the month, 1 through 31.
- * @param {number}   props.monthlyOrdinal Ordinal, 1 through 4, or -1 for "last".
- * @param {number}   props.monthlyWeekday Weekday number, 0 through 6.
- * @param {Function} props.onChange       Called with a partial `monthly_*` field update.
+ * @param {Object}      props                Component props.
+ * @param {string}      props.monthlyMode    One of `day_of_month` or `nth_weekday`.
+ * @param {number|null} props.monthlyDay     Day of the month, 1 through 31, or null
+ *                                           when the field has been cleared.
+ * @param {number}      props.monthlyOrdinal Ordinal, 1 through 4, or -1 for "last".
+ * @param {number}      props.monthlyWeekday Weekday number, 0 through 6.
+ * @param {Function}    props.onChange       Called with a partial `monthly_*` field update.
  *
  * @return {JSX.Element} The monthly recurrence controls.
  */
@@ -76,11 +85,11 @@ const MonthlyControl = ( {
 			{ 'day_of_month' === monthlyMode ? (
 				<NumberControl
 					label={ __( 'Day of the month', 'gatherpress' ) }
-					value={ monthlyDay }
+					value={ null === monthlyDay ? '' : monthlyDay }
 					min={ 1 }
 					max={ 31 }
 					onChange={ ( value ) =>
-						onChange( { monthly_day: Number( value ) } )
+						onChange( { monthly_day: value } )
 					}
 				/>
 			) : (

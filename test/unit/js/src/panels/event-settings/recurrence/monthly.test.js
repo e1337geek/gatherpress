@@ -113,7 +113,43 @@ describe( 'MonthlyControl', () => {
 			target: { value: '15' },
 		} );
 
-		expect( onChange ).toHaveBeenCalledWith( { monthly_day: 15 } );
+		expect( onChange ).toHaveBeenCalledWith( { monthly_day: '15' } );
+	} );
+
+	test( 'hands the raw control value to onChange without coercing it', () => {
+		const onChange = jest.fn();
+
+		render(
+			<MonthlyControl
+				monthlyMode="day_of_month"
+				monthlyDay={ 1 }
+				monthlyOrdinal={ 1 }
+				monthlyWeekday={ 1 }
+				onChange={ onChange }
+			/>,
+		);
+
+		fireEvent.change( screen.getByLabelText( 'Day of the month' ), {
+			target: { value: '' },
+		} );
+
+		// `Number( '' )` is 0, which is a rule the server rejects. The raw
+		// value has to survive so the panel can tell "cleared" from "zero".
+		expect( onChange ).toHaveBeenCalledWith( { monthly_day: '' } );
+	} );
+
+	test( 'renders an empty day field when monthlyDay is null', () => {
+		render(
+			<MonthlyControl
+				monthlyMode="day_of_month"
+				monthlyDay={ null }
+				monthlyOrdinal={ 1 }
+				monthlyWeekday={ 1 }
+				onChange={ jest.fn() }
+			/>,
+		);
+
+		expect( screen.getByLabelText( 'Day of the month' ) ).toHaveValue( null );
 	} );
 
 	test( 'calls onChange with monthly_ordinal and monthly_weekday when nth-weekday selects change', () => {

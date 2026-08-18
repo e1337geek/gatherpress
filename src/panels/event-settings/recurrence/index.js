@@ -63,6 +63,39 @@ function clampInt( value, min, max ) {
 }
 
 /**
+ * Normalize a typed day-of-month entry to an in-range integer, or reject it.
+ *
+ * `Rule::is_valid_monthly_shape()` requires 1 through 31, and a blob that
+ * fails it is discarded server-side without surfacing anything in the editor:
+ * the ten mirrors and the projection are cleared while the panel still shows
+ * an enabled recurrence. A native number input accepts typed and pasted values
+ * its `min`/`max` never constrain, so `0`, `32`, `-1`, `1.9` and `31abc` all
+ * reach here.
+ *
+ * Numeric input is normalized (truncated toward zero, then clamped into
+ * range); input with no numeric value at all -- a blank field mid-edit, or
+ * pasted text -- is rejected as `null`, which `isPersistable()` treats as an
+ * incomplete rule so the last known-good blob stays on the post.
+ *
+ * @since 0.36.0
+ *
+ * @param {*} value Raw control value, of unknown shape.
+ *
+ * @return {number|null} A day of the month between 1 and 31, or null when the
+ *                       value carries no numeric day at all.
+ */
+function normalizeMonthlyDay( value ) {
+	const raw = String( value ).trim();
+	const parsed = Number( raw );
+
+	if ( '' === raw || ! Number.isFinite( parsed ) ) {
+		return null;
+	}
+
+	return clampInt( Math.trunc( parsed ), 1, 31 );
+}
+
+/**
  * Coerce a decoded `weekdays` value to an array of in-range weekday numbers.
  *
  * A REST write or import can carry a non-array (or an array with
@@ -119,6 +152,7 @@ function parseRecurrenceBlob( raw ) {
 
 		const rule = { ...DEFAULT_RULE, ...parsed };
 		rule.weekdays = sanitizeWeekdays( rule.weekdays );
+		rule.monthly_day = normalizeMonthlyDay( rule.monthly_day );
 
 		return { enabled: true, rule };
 	} catch {
@@ -130,9 +164,10 @@ function parseRecurrenceBlob( raw ) {
  * Report whether a candidate rule is complete enough to persist.
  *
  * Scoped to the fields this panel's controls can leave momentarily
- * incomplete mid-edit: a weekly rule with no weekday selected yet, or an end
- * condition whose companion field (`until`/`count`) has not been filled in
- * yet. `applyRuleChange()` withholds the write while this is `false` rather
+ * incomplete mid-edit: a weekly rule with no weekday selected yet, a monthly
+ * day-of-month rule whose day field has been cleared or filled with something
+ * that carries no day at all, or an end condition whose companion field
+ * (`until`/`count`) has not been filled in yet. `applyRuleChange()` withholds the write while this is `false` rather
  * than persisting a blob the server would reject and silently discard --
  * `Meta::write_recurrence()` clears all ten mirrors when `Rule::from_array()`
  * rejects the decoded blob, and that rejection surfaces nowhere in the
@@ -146,6 +181,14 @@ function parseRecurrenceBlob( raw ) {
  */
 function isPersistable( rule ) {
 	if ( 'weekly' === rule.frequency && 0 === rule.weekdays.length ) {
+		return false;
+	}
+
+	if (
+		'monthly' === rule.frequency &&
+		'day_of_month' === rule.monthly_mode &&
+		! Number.isInteger( rule.monthly_day )
+	) {
 		return false;
 	}
 
@@ -270,6 +313,10 @@ const RecurrencePanel = () => {
 			merged.count = clampInt( partial.count, 1, 730 );
 		}
 
+		if ( 'monthly_day' in partial ) {
+			merged.monthly_day = normalizeMonthlyDay( partial.monthly_day );
+		}
+
 		if ( 'end_type' in partial ) {
 			if ( 'until' === merged.end_type ) {
 				merged.count = 0;
@@ -357,13 +404,26 @@ const RecurrencePanel = () => {
 							</>
 						) }
 						{ 'monthly' === rule.frequency && (
-							<MonthlyControl
-								monthlyMode={ rule.monthly_mode }
-								monthlyDay={ rule.monthly_day }
-								monthlyOrdinal={ rule.monthly_ordinal }
-								monthlyWeekday={ rule.monthly_weekday }
-								onChange={ applyRuleChange }
-							/>
+							<>
+								<MonthlyControl
+									monthlyMode={ rule.monthly_mode }
+									monthlyDay={ rule.monthly_day }
+									monthlyOrdinal={ rule.monthly_ordinal }
+									monthlyWeekday={ rule.monthly_weekday }
+									onChange={ applyRuleChange }
+								/>
+								{ 'day_of_month' === rule.monthly_mode &&
+									! Number.isInteger(
+										rule.monthly_day,
+									) && (
+									<output>
+										{ __(
+											'Enter a day of the month between 1 and 31.',
+											'gatherpress',
+										) }
+									</output>
+								) }
+							</>
 						) }
 						<EndConditionControl
 							endType={ rule.end_type }

@@ -461,6 +461,151 @@ describe( 'RecurrencePanel', () => {
 		expect( lastPersistedBlob().interval ).toBe( 52 );
 	} );
 
+	test.each( [
+		[ '0', 1 ],
+		[ '32', 31 ],
+		[ '-1', 1 ],
+		[ '1.9', 1 ],
+		[ '31.9', 31 ],
+	] )(
+		'normalizes typed monthly day %s to %i rather than persisting it',
+		( typed, expected ) => {
+			render( <RecurrencePanel /> );
+
+			fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+			fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+				target: { value: 'monthly' },
+			} );
+			fireEvent.change( screen.getByLabelText( 'Day of the month' ), {
+				target: { value: typed },
+			} );
+
+			expect( lastPersistedBlob().monthly_day ).toBe( expected );
+		},
+	);
+
+	test.each( [ [ '' ], [ '31abc' ], [ 'not a day' ] ] )(
+		'withholds the write and warns when the monthly day reads %s',
+		( typed ) => {
+			render( <RecurrencePanel /> );
+
+			fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+			fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+				target: { value: 'monthly' },
+			} );
+
+			const writesBefore = editPost.mock.calls.length;
+
+			fireEvent.change( screen.getByLabelText( 'Day of the month' ), {
+				target: { value: typed },
+			} );
+
+			// No write at all, so the last known-good blob stays on the post.
+			expect( editPost.mock.calls ).toHaveLength( writesBefore );
+			expect( lastPersistedBlob().monthly_day ).toBe( 1 );
+			expect(
+				screen.getByText(
+					'Enter a day of the month between 1 and 31.',
+				),
+			).toBeInTheDocument();
+		},
+	);
+
+	test( 'recovers and persists once a valid monthly day is typed again', () => {
+		render( <RecurrencePanel /> );
+
+		fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+		fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+			target: { value: 'monthly' },
+		} );
+		fireEvent.change( screen.getByLabelText( 'Day of the month' ), {
+			target: { value: '' },
+		} );
+
+		expect( screen.getByLabelText( 'Day of the month' ) ).toHaveValue(
+			null,
+		);
+
+		fireEvent.change( screen.getByLabelText( 'Day of the month' ), {
+			target: { value: '15' },
+		} );
+
+		expect( lastPersistedBlob().monthly_day ).toBe( 15 );
+		expect(
+			screen.queryByText(
+				'Enter a day of the month between 1 and 31.',
+			),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'leaves an out-of-range monthly day alone while the mode is nth_weekday', () => {
+		render( <RecurrencePanel /> );
+
+		fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+		fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+			target: { value: 'monthly' },
+		} );
+		fireEvent.change( screen.getByLabelText( 'Repeat by' ), {
+			target: { value: 'nth_weekday' },
+		} );
+		fireEvent.change( screen.getByLabelText( 'Week' ), {
+			target: { value: '2' },
+		} );
+
+		// The day field is not rendered in this mode, so there is nothing to
+		// warn about and the write proceeds.
+		expect( lastPersistedBlob().monthly_ordinal ).toBe( 2 );
+		expect(
+			screen.queryByText(
+				'Enter a day of the month between 1 and 31.',
+			),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'normalizes an out-of-range monthly day from a stored blob', () => {
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( JSON.stringify( {
+				frequency: 'monthly',
+				interval: 1,
+				weekdays: [],
+				monthly_mode: 'day_of_month',
+				monthly_day: 99,
+				monthly_ordinal: 1,
+				monthly_weekday: 1,
+				end_type: 'never',
+				until: '',
+				count: 0,
+			} ) ) ),
+		);
+
+		render( <RecurrencePanel /> );
+
+		expect( screen.getByLabelText( 'Day of the month' ) ).toHaveValue( 31 );
+	} );
+
+	test( 'shows the day-of-month warning for a stored blob with no usable day', () => {
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( JSON.stringify( {
+				frequency: 'monthly',
+				interval: 1,
+				weekdays: [],
+				monthly_mode: 'day_of_month',
+				monthly_day: 'the fifteenth',
+				monthly_ordinal: 1,
+				monthly_weekday: 1,
+				end_type: 'never',
+				until: '',
+				count: 0,
+			} ) ) ),
+		);
+
+		render( <RecurrencePanel /> );
+
+		expect(
+			screen.getByText( 'Enter a day of the month between 1 and 31.' ),
+		).toBeInTheDocument();
+	} );
+
 	test( 'clamps count 731 to 730', () => {
 		render( <RecurrencePanel /> );
 
