@@ -240,12 +240,27 @@ final class Rewrite {
 	 * next upcoming occurrence.
 	 *
 	 * A well-formed occurrence segment that does not resolve to a real row
-	 * through `Occurrences::get()` 404s. A stale or hand-typed link must
-	 * not silently render the series at its anchor date. A canceled
-	 * occurrence resolves rather than 404s, so an attendee holding the link is
-	 * told it was canceled: `Occurrences::get()` does not filter by status, so
-	 * a canceled row is returned like any other and this method never inspects
-	 * `status` itself.
+	 * anywhere in the series 404s. A stale or hand-typed link must not
+	 * silently render the series at its anchor date. A canceled occurrence
+	 * resolves rather than 404s: `find_in_series()` does not filter
+	 * by status, so a canceled row is returned like any other and this
+	 * method never inspects `status` itself.
+	 *
+	 * The lookup goes through `Occurrences::find_in_series()` over
+	 * `Series::resolve_post_ids()` (PRD C-2) rather than the single-post
+	 * `Occurrences::get()`, and that is what makes REQ-13's promise true.
+	 * Recycling occurrence records across a forward split exists so that
+	 * anything keyed to an occurrence's identity survives, permalinks and RSVP
+	 * mappings among them. A single-post read misses every row the split
+	 * moved onto a sibling, so every link already sitting in an attendee's
+	 * inbox would 404 the moment the organizer split the series.
+	 *
+	 * A hit on a sibling post 301s to that post's occurrence URL rather than
+	 * rendering under the requested post's slug, so the occurrence has one
+	 * canonical address and link equity follows the row. This is not in
+	 * tension with the 404-rather-than-301 rule above: that rule is about an
+	 * identifier that exists nowhere, and this is about one that still
+	 * exists, on a post of the same series.
 	 *
 	 * The "a site with no recurring events pays nothing" guarantee is enforced
 	 * on the bare-series branch alone, because that branch is the one every
@@ -281,7 +296,10 @@ final class Rewrite {
 		}
 
 		$recurrence_id = (string) $wp->query_vars[ Context::QUERY_VAR ];
-		$row           = Occurrences::get_instance()->get( $post_id, $recurrence_id );
+		$row           = Occurrences::get_instance()->find_in_series(
+			Series::get_instance()->resolve_post_ids( $post_id ),
+			$recurrence_id
+		);
 
 		if ( null === $row ) {
 			$wp->query_vars['error'] = '404';
@@ -293,6 +311,13 @@ final class Rewrite {
 			// occurrence link into "renders the series at its anchor date",
 			// exactly what a miss must not do.
 			add_filter( 'redirect_canonical', '__return_false' );
+		} elseif ( (int) $row['series_post_id'] !== $post_id ) {
+			wp_safe_redirect( self::get_occurrence_url( (int) $row['series_post_id'], $recurrence_id ), 301 );
+			// The PMC test harness intercepts wp_safe_redirect before this line runs.
+			// phpcs:ignore Squiz.Commenting.InlineComment.InvalidEndChar -- PHPUnit annotation.
+			// @codeCoverageIgnoreStart
+			exit;
+			// @codeCoverageIgnoreEnd
 		}
 	}
 

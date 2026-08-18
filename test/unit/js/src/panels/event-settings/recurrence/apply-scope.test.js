@@ -478,4 +478,35 @@ describe( 'ApplyScope', () => {
 			screen.queryByText( 'Edit the new event' ),
 		).not.toBeInTheDocument();
 	} );
+	test( 'offers no forward link when the response carries no forward post id', async () => {
+		mockApiFetch.mockResolvedValueOnce( rows ).mockResolvedValueOnce( {
+			split: true,
+			reason: '',
+			moved: 4,
+			forward_recurring: true,
+		} );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'4 occurrences moved to a new event. Make your change there.',
+				),
+			).toBeInTheDocument(),
+		);
+		expect(
+			screen.queryByText( 'Edit the new event' ),
+		).not.toBeInTheDocument();
+	} );
 } );

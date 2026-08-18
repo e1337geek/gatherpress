@@ -491,6 +491,14 @@ final class Rsvp_Occurrence {
 	 * been trashed — an organizer told "4 RSVPs affected" when two of them are in
 	 * the trash has been told the wrong thing.
 	 *
+	 * `'status' => 'approve'` narrows it one step further, and does work the
+	 * trashed case does not: `WP_Comment_Query` reads an absent status as `all`,
+	 * which is `comment_approved IN ( '0', '1' )` — trash and spam are already
+	 * out, but a **pending** RSVP is in. Guest responses arrive pending by
+	 * design (`Rsvp\Form::prepare_comment_data()` inserts them with
+	 * `comment_approved => 0`), so without this the count would include
+	 * responses the organizer has not accepted.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int      $post_id        Series post ID the terms name.

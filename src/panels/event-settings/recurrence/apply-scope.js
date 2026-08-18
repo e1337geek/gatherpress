@@ -4,8 +4,10 @@
 import { __, _n, sprintf } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
 import { Button, RadioControl, SelectControl } from '@wordpress/components';
+import { useSelect } from '@wordpress/data';
 import { dateI18n, getSettings } from '@wordpress/date';
 import { useEffect, useState } from '@wordpress/element';
+import { addQueryArgs } from '@wordpress/url';
 
 /**
  * Internal dependencies
@@ -25,6 +27,16 @@ import { EVENT_REST_API } from '../../../helpers/namespace';
  * — so this component only ever calls the server for the forward choice, and a
  * panel left on its default performs no request.
  *
+ * **The split is refused while the editor holds unsaved changes**, and that is
+ * not a nicety. A split moves the forward occurrences onto a *second* post; an
+ * edit still sitting in the editor belongs to the origin, so pressing Update
+ * after the split writes it to the occurrences that stayed behind — the past.
+ * That is the exact inverse of REQ-13's story, "moving the venue in October
+ * does not rewrite where we met in March". Carrying an in-flight edit through a
+ * split would need the pre-edit state captured before the split runs, which is
+ * fragile; refusing to split until the editor is clean costs the organizer one
+ * save and cannot strand a change on the wrong side.
+ *
  * @since 0.36.0
  *
  * @param {Object} props        Component props.
@@ -38,6 +50,12 @@ const ApplyScope = ( { postId } ) => {
 	const [ splitFrom, setSplitFrom ] = useState( '' );
 	const [ isSplitting, setIsSplitting ] = useState( false );
 	const [ notice, setNotice ] = useState( '' );
+	const [ forwardPostId, setForwardPostId ] = useState( 0 );
+
+	const isDirty = useSelect(
+		( select ) => select( 'core/editor' ).isEditedPostDirty(),
+		[]
+	);
 
 	useEffect( () => {
 		if ( 'forward' !== scope || ! postId ) {
@@ -49,7 +67,16 @@ const ApplyScope = ( { postId } ) => {
 		} )
 			.then( ( rows ) => {
 				setOccurrences( rows ?? [] );
-				setSplitFrom( rows?.[ 0 ]?.recurrence_id ?? '' );
+				// The route lists upcoming occurrences only, so the first row is
+				// the series' own first date whenever the series has not started
+				// — and splitting there degrades to "Nothing was split". It is
+				// the one selection that can be a guaranteed no-op, so the
+				// default steps past it whenever there is somewhere to step to.
+				setSplitFrom(
+					rows?.[ 1 ]?.recurrence_id ??
+						rows?.[ 0 ]?.recurrence_id ??
+						''
+				);
 			} )
 			.catch( () => setOccurrences( [] ) );
 	}, [ scope, postId ] );
@@ -100,13 +127,17 @@ const ApplyScope = ( { postId } ) => {
 	const handleSplit = () => {
 		setIsSplitting( true );
 		setNotice( '' );
+		setForwardPostId( 0 );
 
 		apiFetch( {
 			path: `${ EVENT_REST_API }/split-series`,
 			method: 'POST',
 			data: { post_id: postId, recurrence_id: splitFrom },
 		} )
-			.then( ( result ) => setNotice( describe( result ) ) )
+			.then( ( result ) => {
+				setNotice( describe( result ) );
+				setForwardPostId( result.forward_post_id ?? 0 );
+			} )
 			.catch( () =>
 				setNotice(
 					__( 'Could not split this series.', 'gatherpress' )
@@ -146,10 +177,26 @@ const ApplyScope = ( { postId } ) => {
 						} ) ) }
 						onChange={ setSplitFrom }
 					/>
+					{ splitFrom === occurrences[ 0 ]?.recurrence_id && (
+						<p>
+							{ __(
+								'If this is the series’ first date, splitting here applies the change to the whole series.',
+								'gatherpress'
+							) }
+						</p>
+					) }
+					{ isDirty && (
+						<p>
+							{ __(
+								'Save or discard your current changes before splitting.',
+								'gatherpress'
+							) }
+						</p>
+					) }
 					<Button
 						variant="secondary"
 						isBusy={ isSplitting }
-						disabled={ isSplitting || ! splitFrom }
+						disabled={ isSplitting || ! splitFrom || isDirty }
 						onClick={ handleSplit }
 					>
 						{ __( 'Split series', 'gatherpress' ) }
@@ -157,6 +204,16 @@ const ApplyScope = ( { postId } ) => {
 				</>
 			) }
 			{ '' !== notice && <output>{ notice }</output> }
+			{ 0 < forwardPostId && (
+				<a
+					href={ addQueryArgs( 'post.php', {
+						post: forwardPostId,
+						action: 'edit',
+					} ) }
+				>
+					{ __( 'Edit the new event', 'gatherpress' ) }
+				</a>
+			) }
 		</div>
 	);
 };

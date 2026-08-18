@@ -329,6 +329,26 @@ class Test_Series extends Base {
 
 		$unguarded = $this->capture_archive_sql();
 
+		// The difference is emitted by `update_object_term_cache()`, which runs
+		// only once the loop has loaded an event. Asserting the loop ran is what
+		// stops a request that never reached an event listing -- a page lookup,
+		// an empty archive -- from satisfying the comparison below with two
+		// identical captures of nothing.
+		$this->assertGreaterThan(
+			0,
+			$guarded['events'],
+			'Failed to assert the guarded capture actually looped an event.'
+		);
+		$this->assertSame(
+			$guarded['events'],
+			$unguarded['events'],
+			'Failed to assert both captures looped the same events -- otherwise the difference below'
+				. ' could come from a different result set rather than from the taxonomy registration.'
+		);
+
+		$guarded   = $guarded['queries'];
+		$unguarded = $unguarded['queries'];
+
 		$this->assertNotEmpty( $guarded, 'Failed to assert the capture observed the archive request at all.' );
 		$this->assertNotSame(
 			$unguarded,
@@ -518,16 +538,34 @@ class Test_Series extends Base {
 	}
 
 	/**
-	 * Capture the SQL an event archive request runs.
+	 * Capture the SQL an event archive request runs, and how many events it looped.
+	 *
+	 * The archive is addressed as `?post_type=gatherpress_event` rather than
+	 * through `get_post_type_archive_link()`. The pretty `/event/` form that
+	 * helper returns depends on the permalink structure and on the rewrite rules
+	 * another test class in the same process may have flushed: run in isolation
+	 * it resolves as a **page** lookup, the query captured is
+	 * `post_type IN ( 'page', 'attachment' )`, the loop runs zero times, and the
+	 * two captures come back byte-identical because no event was ever loaded.
+	 * The falsifiability control then has nothing to compare and the whole test
+	 * passes on suite ordering. The query-string form resolves to the post type
+	 * archive with no rewrite involved.
+	 *
+	 * The loop count is returned rather than asserted here so the caller can
+	 * state the requirement in its own terms: the difference this test measures
+	 * is emitted by `update_object_term_cache()`, which only runs when the loop
+	 * actually loads an event.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @return string[] The captured statements.
+	 * @return array{queries: string[], events: int} The captured statements and the number of posts looped.
 	 */
 	protected function capture_archive_sql(): array {
 		global $wpdb;
 
-		$this->go_to( (string) get_post_type_archive_link( Event::POST_TYPE ) );
+		$url = add_query_arg( 'post_type', Event::POST_TYPE, home_url( '/' ) );
+
+		$this->go_to( $url );
 
 		while ( have_posts() ) {
 			the_post();
@@ -545,11 +583,14 @@ class Test_Series extends Base {
 		$previous_save      = $wpdb->save_queries;
 		$wpdb->queries      = array();
 		$wpdb->save_queries = true;
+		$events             = 0;
 
-		$this->go_to( (string) get_post_type_archive_link( Event::POST_TYPE ) );
+		$this->go_to( $url );
 
 		while ( have_posts() ) {
 			the_post();
+
+			++$events;
 		}
 
 		wp_reset_postdata();
@@ -568,7 +609,10 @@ class Test_Series extends Base {
 		$wpdb->queries      = $previous_queries;
 		$wpdb->save_queries = $previous_save;
 
-		return $captured;
+		return array(
+			'queries' => $captured,
+			'events'  => $events,
+		);
 	}
 
 	/**
