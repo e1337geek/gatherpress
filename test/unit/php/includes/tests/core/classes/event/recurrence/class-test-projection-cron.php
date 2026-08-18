@@ -16,9 +16,7 @@ use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Projection_Cron;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Setup as Event_Setup;
-use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
-use PMC\Unit_Test\Utility;
 
 /**
  * Class Test_Projection_Cron.
@@ -30,15 +28,15 @@ class Test_Projection_Cron extends Base {
 	use Occurrence_Fixtures;
 
 	/**
-	 * Ensure the occurrence table exists, and start every test with the
-	 * sweep unscheduled, independent of execution order.
+	 * Start every test from an empty occurrence table and with the sweep
+	 * unscheduled, independent of execution order.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		wp_clear_scheduled_hook( Projection_Cron::SWEEP_ACTION );
 	}

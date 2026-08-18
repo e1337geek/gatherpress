@@ -862,6 +862,45 @@ class Test_Setup extends Base {
 	}
 
 	/**
+	 * Coverage for install_tables method.
+	 *
+	 * Invoked directly rather than through `create_tables()`: xdebug does not
+	 * reliably trace a same-class helper reached by a short delegation, and the
+	 * PHPUnit bootstrap calls this method on its own to create the tables once
+	 * before any test transaction opens.
+	 *
+	 * @covers ::install_tables
+	 *
+	 * @return void
+	 */
+	public function test_install_tables(): void {
+		global $wpdb;
+
+		$instance = Setup::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- Required for testing table creation.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		Utility::invoke_hidden_method( $instance, 'install_tables' );
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- Required for testing table structure.
+		$columns      = $wpdb->get_results( "DESCRIBE {$table}" );
+		$column_names = array_column( $columns, 'Field' );
+
+		$this->assertContains(
+			'series_post_id',
+			$column_names,
+			'Failed to assert the occurrence table has a series_post_id column.'
+		);
+		$this->assertContains(
+			'recurrence_id',
+			$column_names,
+			'Failed to assert the occurrence table has a recurrence_id column.'
+		);
+	}
+
+	/**
 	 * Coverage for check_gatherpress_alpha when user lacks install_plugins capability.
 	 *
 	 * @covers ::check_gatherpress_alpha

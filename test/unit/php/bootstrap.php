@@ -51,3 +51,50 @@ tests_add_filter(
 );
 
 $gatherpress_bootstrap_instance->start();
+
+// Create the plugin's custom tables once, here, before the first test opens a
+// transaction. `install_tables()` rather than `create_tables()` so the DDL runs
+// without the online-event term insert, which would commit permanently, and
+// without the taxonomy re-registration that carries.
+PMC\Unit_Test\Utility::invoke_hidden_method( GatherPress\Core\Setup::get_instance(), 'install_tables' );
+
+// Clear anything a previous run leaked past its rollback, so a dirty database
+// starts the suite from the state a fresh one does.
+gatherpress_reset_custom_tables();
+
+/**
+ * Empty GatherPress's custom tables without issuing DDL.
+ *
+ * `WP_UnitTestCase` wraps every test in a transaction and rolls it back.
+ * DDL implicitly commits in MySQL and MariaDB, so a `CREATE TABLE` (or a
+ * `TRUNCATE`) issued from a test's `setUp()` ends that transaction and every
+ * row the test writes afterwards survives the rollback and leaks into the rest
+ * of the run. `DELETE FROM` is DML and rolls back cleanly, so it is what test
+ * classes use to start from an empty occurrence table. The tables themselves
+ * are created once in the bootstrap, before the first test transaction opens.
+ *
+ * Only the rows are cleared. `create_tables()`'s other side effects -- adding
+ * the online-event term and scheduling a rewrite flush -- are deliberately not
+ * reproduced: re-registering the venue taxonomy outside a test's own lifecycle
+ * clobbers the object-type list the calendar suite reads, and the term insert
+ * would commit permanently from the bootstrap.
+ *
+ * @since 0.36.0
+ *
+ * @global wpdb $wpdb WordPress database abstraction object.
+ *
+ * @return void
+ */
+function gatherpress_reset_custom_tables(): void {
+	global $wpdb;
+
+	$tables = array(
+		sprintf( GatherPress\Core\Event::TABLE_FORMAT, $wpdb->prefix ),
+		sprintf( GatherPress\Core\Event\Recurrence\Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+	);
+
+	foreach ( $tables as $gatherpress_table ) {
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- test harness reset of a plugin-owned table.
+		$wpdb->query( "DELETE FROM `{$gatherpress_table}`" );
+	}
+}

@@ -460,18 +460,36 @@ final class Setup {
 	/**
 	 * Creates necessary database tables for the GatherPress plugin.
 	 *
-	 * This method creates the required database tables for storing event and RSVP data.
-	 * It constructs SQL queries for creating the tables with appropriate charset and collation,
-	 * and then executes these queries using the `dbDelta` function to ensure the tables are created
-	 * or updated as necessary. Additionally, it calls methods to add the online event term
-	 * and to set a flag for flushing rewrite rules.
+	 * Installs the required database tables via `install_tables()`, then adds
+	 * the online event term and sets the flag that flushes rewrite rules. The
+	 * two side effects are why activation and the version self-heal call this
+	 * rather than `install_tables()` directly.
 	 *
 	 * @since 0.27.0
+	 *
+	 * @return void
+	 */
+	protected function create_tables(): void {
+		$this->install_tables();
+
+		$this->add_online_event_term();
+		$this->schedule_rewrite_flush();
+	}
+
+	/**
+	 * Creates or updates the plugin's custom database tables.
+	 *
+	 * The DDL half of `create_tables()`, split out so a caller that only needs
+	 * the tables -- the PHPUnit bootstrap, which has to issue the DDL once
+	 * before any test transaction opens -- can get them without also re-adding
+	 * the online-event term or scheduling a rewrite flush.
+	 *
+	 * @since 0.36.0
 	 *
 	 * @global wpdb $wpdb WordPress database abstraction object.
 	 * @return void
 	 */
-	protected function create_tables(): void {
+	protected function install_tables(): void {
 		global $wpdb;
 
 		$sql             = array();
@@ -510,9 +528,6 @@ final class Setup {
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php'; // NOSONAR.
 
 		dbDelta( $sql );
-
-		$this->add_online_event_term();
-		$this->schedule_rewrite_flush();
 	}
 
 	/**
