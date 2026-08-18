@@ -103,14 +103,21 @@ class Test_Rsvp_Rest extends Base {
 	protected array $series_filters = array();
 
 	/**
-	 * Ensure the occurrence table and the RSVP routes exist, and no context leaks in.
+	 * Start from an empty occurrence table with the RSVP routes registered, and no context leaked in.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
+		// Start every test from an empty occurrence table. Rows that outlive
+		// the test that projected them are what make this class's "an
+		// occurrence of another series is refused" assertions dishonest: a
+		// later test's brand-new, never-recurring post can inherit an earlier
+		// series' ID and, because the relative fixtures reuse the same
+		// `Ymd\THis`, resolve an occurrence it never had.
 		gatherpress_reset_custom_tables();
+
 		Rsvp_Setup::get_instance()->register_taxonomy();
 		Rest_Api::get_instance()->register_endpoints();
 		Settings::get_instance()->set( 'enable_open_rsvp', true );
