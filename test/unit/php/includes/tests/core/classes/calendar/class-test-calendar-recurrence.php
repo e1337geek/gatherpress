@@ -17,6 +17,7 @@ namespace GatherPress\Tests\Core\Calendar;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use GatherPress\Core\Calendar\Cache as Calendar_Cache;
 use GatherPress\Core\Calendar\Calendar;
 use GatherPress\Core\Calendar\Setup as Calendar_Setup;
 use GatherPress\Core\Event\Event;
@@ -24,6 +25,7 @@ use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Recurrence\Timezone_Guard;
 use GatherPress\Core\Setup;
 use GatherPress\Core\Topic;
 use GatherPress\Core\Venue\Venue;
@@ -62,12 +64,13 @@ class Test_Calendar_Recurrence extends Base {
 	/**
 	 * How far the fixture anchor sits from now.
 	 *
-	 * Behind now by default -- see `anchor()`. The aggregate-feed test moves it
-	 * ahead, because `Event\Query::get_events_list()` selects its `upcoming`
-	 * bucket from the series *anchor* rather than from its occurrences, so a
-	 * series whose anchor has passed is not in any aggregate feed to carry a
-	 * rule. That is a query-layer limitation outside REQ-14's serializer, and
-	 * this property is where it is visible rather than hidden.
+	 * Behind now for every test in this file -- see `anchor()`. That is the
+	 * steady state of a live series: every recurring series is in it from the
+	 * moment its second date arrives, and it is the shape the aggregate feeds
+	 * have to work in. `Recurrence\Query::expand_event_clauses()` is what makes
+	 * the `upcoming` bucket select on the series' next scheduled *occurrence*
+	 * rather than on its anchor, so a series whose anchor has passed is still
+	 * in every aggregate feed.
 	 *
 	 * @since 0.36.0
 	 * @var string
@@ -570,9 +573,16 @@ class Test_Calendar_Recurrence extends Base {
 	 * A non-recurring event's component is unchanged from today's, apart from
 	 * the timezone-qualified start.
 	 *
-	 * Asserts the whole property list and its order, then the two datetime
-	 * lines, then the properties whose values are stable, so a silently added
-	 * or reordered property fails here.
+	 * Asserts the component's whole property list and its order, then the two
+	 * datetime lines, then the properties whose values are stable, so a silently
+	 * added or reordered property fails here.
+	 *
+	 * Scoped to the `VEVENT` deliberately. The component is what REQ-14 says is
+	 * unchanged modulo the start; the enclosing `VCALENDAR` gains the
+	 * `VTIMEZONE` that start's `TZID` now refers to, which is asserted
+	 * separately -- and the shape of that definition is a property of the
+	 * tz database rather than of this plugin, so pinning it here would make an
+	 * unrelated tzdata update fail a test about a plain event.
 	 *
 	 * @covers ::get_ical_event_string
 	 * @covers ::datetime_lines
@@ -585,13 +595,22 @@ class Test_Calendar_Recurrence extends Base {
 		$this->enable_pretty_permalinks();
 
 		$body  = $this->body_for( $this->series_ical_url( $post_id ) );
-		$lines = explode( "\r\n", $body );
+		$lines = explode(
+			"\r\n",
+			substr(
+				$body,
+				(int) strpos( $body, 'BEGIN:VEVENT' ),
+				(int) strpos( $body, 'END:VEVENT' ) + strlen( 'END:VEVENT' ) - (int) strpos( $body, 'BEGIN:VEVENT' )
+			)
+		);
 
 		$this->assertSame(
+			array( 'America/New_York' ),
+			$this->declared_timezone_ids( $body ),
+			'The named timezone the start references is defined in the same VCALENDAR (RFC 5545 section 3.2.19).'
+		);
+		$this->assertSame(
 			array(
-				'BEGIN',
-				'VERSION',
-				'PRODID',
 				'BEGIN',
 				'URL',
 				'DTSTART',
@@ -603,7 +622,6 @@ class Test_Calendar_Recurrence extends Base {
 				'DESCRIPTION',
 				'LOCATION',
 				'UID',
-				'END',
 				'END',
 			),
 			array_map(
@@ -680,14 +698,21 @@ class Test_Calendar_Recurrence extends Base {
 	 * WordCamp.org implementation, whose aggregate feeds omit recurring series
 	 * entirely.
 	 *
+	 * Runs on the file's default anchor, which sits **behind** now. That is not
+	 * an incidental fixture choice: a series whose anchor has passed is every
+	 * recurring series from its second date onward, so it is the steady state,
+	 * and selecting the `upcoming` bucket from the anchor rather than from the
+	 * next scheduled occurrence drops the whole series out of every aggregate
+	 * feed. Moving the anchor ahead of now would make this test pass against
+	 * that defect.
+	 *
 	 * @covers ::get_ical_event_string
 	 * @covers \GatherPress\Core\Calendar\Setup::get_ical_list
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
 	 *
 	 * @return void
 	 */
 	public function test_aggregate_feeds_carry_the_recurrence_rule(): void {
-		$this->anchor_offset = '+10 days';
-
 		$post_id  = $this->create_weekly_series();
 		$venue_id = $this->factory->post->create(
 			array(
@@ -724,6 +749,7 @@ class Test_Calendar_Recurrence extends Base {
 
 		foreach ( $feeds as $name => $url ) {
 			$body = $this->body_for( $url );
+			$uids = $this->lines_for( $body, 'UID' );
 
 			$this->assertSame(
 				array( $expected ),
@@ -735,7 +761,587 @@ class Test_Calendar_Recurrence extends Base {
 				substr_count( $body, 'BEGIN:VEVENT' ),
 				sprintf( 'The %s feed must describe the series with one component, not enumerate it.', $name )
 			);
+			$this->assertSame(
+				array( sprintf( 'UID:gatherpress_%d', $post_id ) ),
+				$uids,
+				sprintf( 'The %s feed must carry the series UID exactly once.', $name )
+			);
+			$this->assertSame(
+				$uids,
+				array_values( array_unique( $uids ) ),
+				sprintf( 'No two components in the %s feed may share a UID (RFC 5545 section 3.8.4.7).', $name )
+			);
 		}
+	}
+
+	/**
+	 * An aggregate feed holding several series de-duplicates to one component
+	 * per series, each with its own unique identifier.
+	 *
+	 * The companion to the test above, and the one that would catch the
+	 * opposite defect: making the `upcoming` bucket occurrence-aware by
+	 * *expanding* the query rather than folding it emits one VEVENT per
+	 * occurrence, all of them sharing the series UID. Two series and a plain
+	 * event together, so a per-occurrence expansion produces a component count
+	 * no per-series total can coincide with.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Setup::get_ical_list
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_an_aggregate_feed_emits_one_component_per_series_not_one_per_occurrence(): void {
+		$first  = $this->create_weekly_series();
+		$second = $this->create_weekly_series();
+		$plain  = $this->create_upcoming_event( self::TIMEZONE );
+
+		$this->enable_pretty_permalinks();
+
+		$body = $this->body_for( home_url( '/feed/' . Calendar_Setup::ICAL_SLUG . '/' ) );
+		$uids = $this->lines_for( $body, 'UID' );
+
+		sort( $uids );
+
+		$expected = array(
+			sprintf( 'UID:gatherpress_%d', $first ),
+			sprintf( 'UID:gatherpress_%d', $plain ),
+			sprintf( 'UID:gatherpress_%d', $second ),
+		);
+
+		sort( $expected );
+
+		$this->assertSame(
+			3,
+			substr_count( $body, 'BEGIN:VEVENT' ),
+			'Two series and one plain event are three components: one per series, not one per occurrence.'
+		);
+		$this->assertSame(
+			$expected,
+			$uids,
+			'Each series contributes exactly one component, carrying its own series UID.'
+		);
+		$this->assertSame(
+			2,
+			count( $this->lines_for( $body, 'RRULE' ) ),
+			'Each of the two series carries its own rule; the plain event carries none.'
+		);
+	}
+
+	/**
+	 * Cancelling an occurrence reaches a subscribed client rather than being
+	 * held behind the response cache and a stale `Last-Modified`.
+	 *
+	 * The transient is the lesser half. `Last-Modified` is served from the
+	 * calendar stamp, and `is_not_modified()` answers true whenever the client's
+	 * timestamp is at or past it -- so a client revalidating with
+	 * `If-Modified-Since` and no stored entity tag gets a 304 for as long as the
+	 * stamp stays put. `Occurrences::set_status()` is a bare `UPDATE`; unless it
+	 * stamps the calendar, the cancelled date may never reach the subscriber.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::set_status
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
+	 * @covers \GatherPress\Core\Calendar\Setup::is_not_modified
+	 *
+	 * @return void
+	 */
+	public function test_cancelling_an_occurrence_invalidates_the_calendar_cache(): void {
+		$post_id = $this->create_weekly_series();
+
+		$this->enable_pretty_permalinks();
+
+		$url    = $this->series_ical_url( $post_id );
+		$before = $this->body_for( $url );
+		$stamp  = Calendar_Cache::get_instance()->get_last_modified();
+
+		$this->assertSame(
+			array(),
+			$this->lines_for( $before, 'EXDATE' ),
+			'Nothing is cancelled yet, so the first response must carry no exclusions.'
+		);
+
+		// The stamp has one-second resolution, and the whole point of the
+		// assertion below is that the value moves. Backdating the stored stamp
+		// is how the write is measured without a wall-clock sleep -- the
+		// production write is `current_time( 'mysql', true )` either way.
+		update_option(
+			Calendar_Cache::LAST_MODIFIED_OPTION,
+			gmdate( 'Y-m-d H:i:s', strtotime( $stamp . ' GMT' ) - MINUTE_IN_SECONDS ),
+			false
+		);
+
+		$stale = Calendar_Cache::get_instance()->get_last_modified();
+
+		Occurrences::get_instance()->set_status(
+			$post_id,
+			$this->occurrence_id( 1 ),
+			Occurrences::STATUS_CANCELLED
+		);
+
+		$moved = Calendar_Cache::get_instance()->get_last_modified();
+
+		$this->assertNotSame(
+			$stale,
+			$moved,
+			'Cancelling an occurrence must stamp the calendar, or every cached body stays reachable.'
+		);
+		$this->assertSame(
+			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 1 ) ) ),
+			$this->lines_for( $this->body_for( $url ), 'EXDATE' ),
+			'The next request must render the exclusion rather than replay the cached body.'
+		);
+
+		// A subscriber holding the pre-cancellation response revalidates with
+		// `If-Modified-Since` and no entity tag. Before the stamp moved this
+		// returned 304 indefinitely.
+		$_SERVER['HTTP_IF_MODIFIED_SINCE'] = gmdate( 'D, d M Y H:i:s', strtotime( $stale . ' GMT' ) ) . ' GMT';
+
+		$not_modified = Calendar_Setup::get_instance()->is_not_modified( '"whatever"', $moved );
+
+		unset( $_SERVER['HTTP_IF_MODIFIED_SINCE'] );
+
+		$this->assertFalse(
+			$not_modified,
+			'A client holding the pre-cancellation response must be told the calendar changed, not sent a 304.'
+		);
+	}
+
+	/**
+	 * Projecting a series' occurrence rows stamps the calendar too.
+	 *
+	 * `save_post` covers the editor path, but the top-up cron writes occurrence
+	 * rows with no post save anywhere near it -- new dates appear in the
+	 * aggregate feeds with nothing to invalidate the bodies that omit them.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::upsert_occurrences
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_projecting_occurrence_rows_stamps_the_calendar(): void {
+		$post_id = $this->create_weekly_series();
+
+		update_option(
+			Calendar_Cache::LAST_MODIFIED_OPTION,
+			gmdate( 'Y-m-d H:i:s', strtotime( Calendar_Cache::get_instance()->get_last_modified() . ' GMT' ) - HOUR_IN_SECONDS ),
+			false
+		);
+
+		$stale = Calendar_Cache::get_instance()->get_last_modified();
+
+		Occurrences::get_instance()->project( $post_id );
+
+		$this->assertNotSame(
+			$stale,
+			Calendar_Cache::get_instance()->get_last_modified(),
+			'An occurrence write outside a post save must still stamp the calendar.'
+		);
+	}
+
+	/**
+	 * Deleting a series' occurrence rows stamps the calendar too.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::delete_for_post
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_deleting_occurrence_rows_stamps_the_calendar(): void {
+		$post_id = $this->create_weekly_series();
+
+		update_option(
+			Calendar_Cache::LAST_MODIFIED_OPTION,
+			gmdate( 'Y-m-d H:i:s', strtotime( Calendar_Cache::get_instance()->get_last_modified() . ' GMT' ) - HOUR_IN_SECONDS ),
+			false
+		);
+
+		$stale = Calendar_Cache::get_instance()->get_last_modified();
+
+		$this->assertGreaterThan(
+			0,
+			Occurrences::get_instance()->delete_for_post( $post_id ),
+			'The fixture must actually delete rows, or the assertion below proves nothing.'
+		);
+		$this->assertNotSame(
+			$stale,
+			Calendar_Cache::get_instance()->get_last_modified(),
+			'Removing every occurrence of a series changes what the feeds emit and must stamp the calendar.'
+		);
+	}
+
+	/**
+	 * The exclusion list is read across every post the series spans.
+	 *
+	 * PRD C-2: a series is never assumed to be one post. Under REQ-18's forward
+	 * split a cancelled date living on a sibling post would otherwise drop
+	 * silently out of the feed. Proved the way the five other C-2 call sites in
+	 * this suite are proved -- by installing the `gatherpress_series_post_ids`
+	 * filter and cancelling the date on the post the filter adds.
+	 *
+	 * @covers ::exdate_line
+	 *
+	 * @return void
+	 */
+	public function test_exdate_covers_every_post_the_series_spans(): void {
+		$post_id = $this->create_weekly_series();
+		$sibling = $this->create_weekly_series();
+
+		// The cancellation lives only on the sibling. Reading the series as one
+		// post finds nothing to exclude.
+		Occurrences::get_instance()->set_status(
+			$sibling,
+			$this->occurrence_id( 2 ),
+			Occurrences::STATUS_CANCELLED
+		);
+
+		add_filter(
+			'gatherpress_series_post_ids',
+			static function ( array $post_ids, int $resolved ) use ( $post_id, $sibling ): array {
+				return ( $resolved === $post_id ) ? array( $post_id, $sibling ) : $post_ids;
+			},
+			10,
+			2
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$this->assertSame(
+			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),
+			$this->lines_for( $this->body_for( $this->series_ical_url( $post_id ) ), 'EXDATE' ),
+			'A date cancelled on a sibling post of the same series must still be excluded from the feed.'
+		);
+	}
+
+	/**
+	 * Every named timezone a feed references is defined inside the same
+	 * `VCALENDAR`, and nothing else is.
+	 *
+	 * RFC 5545 section 3.2.19: a `TZID` parameter refers to a `VTIMEZONE` in the
+	 * same calendar object. Emitting `DTSTART;TZID=` with no such component is
+	 * what makes the output invalid, so the definition travels with it. One per
+	 * *distinct* identifier -- two events in one zone share a definition.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 * @covers \GatherPress\Core\Calendar\Setup::get_ical_wrap
+	 *
+	 * @return void
+	 */
+	public function test_every_named_timezone_a_feed_references_is_defined_in_it(): void {
+		$this->create_upcoming_event( self::TIMEZONE );
+		$this->create_upcoming_event( self::TIMEZONE );
+		$this->create_upcoming_event( 'Europe/Berlin' );
+		$this->create_upcoming_event( 'UTC+5' );
+
+		$this->enable_pretty_permalinks();
+
+		$body = $this->body_for( home_url( '/feed/' . Calendar_Setup::ICAL_SLUG . '/' ) );
+
+		$this->assertSame(
+			4,
+			substr_count( $body, 'BEGIN:VEVENT' ),
+			'All four fixtures must be in the feed, or the timezone assertions below are vacuous.'
+		);
+		$this->assertSame(
+			array( self::TIMEZONE, 'Europe/Berlin' ),
+			$this->declared_timezone_ids( $body ),
+			'One VTIMEZONE per distinct named identifier the components reference, and no others.'
+		);
+		$this->assertSame(
+			array( self::TIMEZONE, 'Europe/Berlin' ),
+			$this->referenced_timezone_ids( $body ),
+			'The fixed-offset event contributes no TZID, so it must contribute no VTIMEZONE either.'
+		);
+		$this->assertLessThan(
+			strpos( $body, 'BEGIN:VEVENT' ),
+			strpos( $body, 'BEGIN:VTIMEZONE' ),
+			'The definitions precede the components that reference them.'
+		);
+	}
+
+	/**
+	 * A zone that observes daylight saving emits both sub-components, each with
+	 * the offsets it moves between and a rule describing when it moves.
+	 *
+	 * The offsets are cross-checked against the tz database directly rather than
+	 * against a pasted expectation, so the assertion states the requirement --
+	 * "the emitted offsets are this zone's real offsets" -- instead of encoding
+	 * whatever the generator produced.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
+	 *
+	 * @return void
+	 */
+	public function test_a_daylight_saving_zone_emits_standard_and_daylight_with_a_rule(): void {
+		$this->create_upcoming_event( self::TIMEZONE );
+
+		$this->enable_pretty_permalinks();
+
+		$block = $this->timezone_block(
+			$this->body_for( home_url( '/feed/' . Calendar_Setup::ICAL_SLUG . '/' ) ),
+			self::TIMEZONE
+		);
+		$zone  = new DateTimeZone( self::TIMEZONE );
+		$year  = ( new DateTimeImmutable( 'now', $zone ) )->format( 'Y' );
+
+		$this->assertSame(
+			1,
+			substr_count( $block, 'BEGIN:STANDARD' ),
+			'A zone with regular transitions describes its standard time once, with a rule.'
+		);
+		$this->assertSame(
+			1,
+			substr_count( $block, 'BEGIN:DAYLIGHT' ),
+			'And its daylight time once.'
+		);
+		$this->assertSame(
+			2,
+			substr_count( $block, "\r\nRRULE:FREQ=YEARLY;" ),
+			'Both transitions recur yearly, so both carry a rule rather than being enumerated.'
+		);
+		$this->assertSame(
+			array(
+				$this->utc_offset( $zone, $year . '-01-15 12:00:00' ),
+				$this->utc_offset( $zone, $year . '-07-01 12:00:00' ),
+			),
+			$this->properties_in( $block, 'TZOFFSETTO' ),
+			'The offsets moved to are the zone\'s real standard and daylight offsets, in that order.'
+		);
+		$this->assertSame(
+			array(
+				$this->utc_offset( $zone, $year . '-07-01 12:00:00' ),
+				$this->utc_offset( $zone, $year . '-01-15 12:00:00' ),
+			),
+			$this->properties_in( $block, 'TZOFFSETFROM' ),
+			'And each transition moves away from the other one\'s offset.'
+		);
+		$this->assertCount(
+			2,
+			$this->properties_in( $block, 'TZNAME' ),
+			'Each sub-component names the abbreviation it applies.'
+		);
+	}
+
+	/**
+	 * A named zone that never changes offset emits one standard sub-component
+	 * and no rule.
+	 *
+	 * It still needs the definition: the identifier is named in a `TZID`
+	 * parameter, and a `TZID` that resolves to nothing is the violation this
+	 * whole component exists to close. A zone with no transitions in range is
+	 * also the branch that would silently emit an empty `VTIMEZONE`.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
+	 *
+	 * @return void
+	 */
+	public function test_a_named_zone_without_daylight_saving_emits_one_standard_and_no_rule(): void {
+		$this->create_upcoming_event( 'Asia/Kolkata' );
+
+		$this->enable_pretty_permalinks();
+
+		$block = $this->timezone_block(
+			$this->body_for( home_url( '/feed/' . Calendar_Setup::ICAL_SLUG . '/' ) ),
+			'Asia/Kolkata'
+		);
+
+		$this->assertSame(
+			1,
+			substr_count( $block, 'BEGIN:STANDARD' ),
+			'A zone that never changes offset is one standard sub-component.'
+		);
+		$this->assertSame(
+			0,
+			substr_count( $block, 'BEGIN:DAYLIGHT' ),
+			'And no daylight one.'
+		);
+		$this->assertStringNotContainsString(
+			"\r\nRRULE:",
+			$block,
+			'Nothing recurs, so nothing carries a rule.'
+		);
+		$this->assertSame(
+			array( '+0530' ),
+			$this->properties_in( $block, 'TZOFFSETTO' ),
+			'The single offset is the zone\'s only offset.'
+		);
+		$this->assertSame(
+			array( '+0530' ),
+			$this->properties_in( $block, 'TZOFFSETFROM' ),
+			'A zone with no transition moves from its own offset to itself.'
+		);
+	}
+
+	/**
+	 * A fixed-offset event emits no `TZID` and therefore no `VTIMEZONE`.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 *
+	 * @return void
+	 */
+	public function test_a_fixed_offset_event_emits_no_timezone_component(): void {
+		$post_id = $this->create_plain_event( 'UTC+5' );
+
+		$this->enable_pretty_permalinks();
+
+		$body = $this->body_for( $this->series_ical_url( $post_id ) );
+
+		$this->assertStringNotContainsString(
+			'BEGIN:VTIMEZONE',
+			$body,
+			'A start with no timezone reference needs nothing to resolve, so none is emitted.'
+		);
+		$this->assertSame(
+			array( 'DTSTART:20300615T093000Z' ),
+			$this->lines_for( $body, 'DTSTART' ),
+			'And the start keeps the bare UTC form it has always had.'
+		);
+	}
+
+	/**
+	 * Create a published, non-recurring event starting a month from now.
+	 *
+	 * Relative rather than pinned: every caller puts it in an aggregate feed,
+	 * whose `upcoming` bucket compares it against the clock (rule 3a #7).
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $timezone Named identifier or fixed offset for the event.
+	 *
+	 * @return int The event post ID.
+	 */
+	protected function create_upcoming_event( string $timezone ): int {
+		$zone  = Timezone_Guard::is_named( $timezone ) ? new DateTimeZone( $timezone ) : new DateTimeZone( 'UTC' );
+		$start = ( new DateTimeImmutable( 'now', $zone ) )->modify( '+30 days' );
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		( new Event( $post_id ) )->save_datetimes(
+			array(
+				'datetime_start' => $start->format( 'Y-m-d H:i:s' ),
+				'datetime_end'   => $start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+				'timezone'       => $timezone,
+			)
+		);
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * The tz-database identifiers a body's `VTIMEZONE` components define.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body The iCal payload.
+	 *
+	 * @return string[] The identifiers, sorted.
+	 */
+	protected function declared_timezone_ids( string $body ): array {
+		$ids = array_map(
+			static function ( string $line ): string {
+				return substr( $line, strlen( 'TZID:' ) );
+			},
+			array_values(
+				array_filter(
+					explode( "\r\n", $body ),
+					static function ( string $line ): bool {
+						return str_starts_with( $line, 'TZID:' );
+					}
+				)
+			)
+		);
+
+		sort( $ids );
+
+		return $ids;
+	}
+
+	/**
+	 * The tz-database identifiers a body's components reference in a parameter.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body The iCal payload.
+	 *
+	 * @return string[] The identifiers, unique and sorted.
+	 */
+	protected function referenced_timezone_ids( string $body ): array {
+		preg_match_all( '/;TZID=([^:;\r\n]+)/', $body, $matches );
+
+		$ids = array_values( array_unique( $matches[1] ) );
+
+		sort( $ids );
+
+		return $ids;
+	}
+
+	/**
+	 * The `VTIMEZONE` component defining one identifier, whole.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body The iCal payload.
+	 * @param string $tzid The identifier whose definition to return.
+	 *
+	 * @return string The component text, or '' when the body defines no such zone.
+	 */
+	protected function timezone_block( string $body, string $tzid ): string {
+		preg_match_all( '/BEGIN:VTIMEZONE\r\n.*?END:VTIMEZONE/s', $body, $matches );
+
+		foreach ( $matches[0] as $block ) {
+			if ( str_contains( $block, "\r\nTZID:" . $tzid . "\r\n" ) ) {
+				return $block;
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Every value a component carries for one property, in order.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $block    Component text.
+	 * @param string $property Property name.
+	 *
+	 * @return string[] The values, in the order they appear.
+	 */
+	protected function properties_in( string $block, string $property ): array {
+		return array_map(
+			static function ( string $line ) use ( $property ): string {
+				return substr( $line, strlen( $property ) + 1 );
+			},
+			$this->lines_for( $block, $property )
+		);
+	}
+
+	/**
+	 * One zone's UTC offset at one moment, in the RFC 5545 `+HHMM` form.
+	 *
+	 * Read from the tz database rather than from the code under test, so the
+	 * expectations above cannot be satisfied by the generator agreeing with
+	 * itself.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeZone $zone   The zone to measure.
+	 * @param string       $moment Local `Y-m-d H:i:s` moment to measure at.
+	 *
+	 * @return string The offset, e.g. `-0400`.
+	 */
+	protected function utc_offset( DateTimeZone $zone, string $moment ): string {
+		$seconds = $zone->getOffset( new DateTimeImmutable( $moment, $zone ) );
+
+		return sprintf(
+			'%s%02d%02d',
+			( $seconds < 0 ) ? '-' : '+',
+			intdiv( abs( $seconds ), HOUR_IN_SECONDS ),
+			intdiv( abs( $seconds ) % HOUR_IN_SECONDS, MINUTE_IN_SECONDS )
+		);
 	}
 
 	/**

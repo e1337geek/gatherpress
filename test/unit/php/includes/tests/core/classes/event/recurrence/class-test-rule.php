@@ -1416,4 +1416,69 @@ class Test_Rule extends Base {
 			'A winter end date takes the standard offset, so the same 19:00 local is midnight UTC the next day.'
 		);
 	}
+
+	/**
+	 * `until_as_utc_datetime()` normalizes an anchor that arrives in some other
+	 * timezone before reading its wall clock.
+	 *
+	 * Every call site inside the plugin hands in an anchor already constructed
+	 * in the series timezone, so the `setTimezone()` call is invisible to them:
+	 * dropping it leaves the whole suite green. `to_rrule_string()` is public
+	 * and takes an arbitrary `DateTimeImmutable`, though, and an anchor typed in
+	 * UTC carries a different wall clock for the same instant -- which is the
+	 * value `UNTIL` is built from. A UTC-typed anchor is therefore the fixture
+	 * where "normalized" and "not normalized" give different answers (rule 3a
+	 * #8).
+	 *
+	 * @covers ::until_as_utc_datetime
+	 * @covers ::to_rrule_string
+	 *
+	 * @return void
+	 */
+	public function test_until_as_utc_datetime_normalizes_an_anchor_typed_in_another_zone(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$rule     = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'until',
+				'until'     => '2026-11-04',
+			)
+		);
+
+		$this->assertInstanceOf( Rule::class, $rule );
+
+		// One instant, typed two ways. 08:30 in New York on 2026-07-04 is 12:30
+		// UTC, daylight saving being in force; the end date sits after the
+		// autumn transition, so its offset is an hour further out. Both halves
+		// matter: an end date on the anchor's own date would make the two
+		// readings agree whatever the code did, and an end date in the same
+		// offset would too.
+		$in_zone = new DateTimeImmutable( '2026-07-04 08:30:00', $timezone );
+		$in_utc  = $in_zone->setTimezone( new DateTimeZone( 'UTC' ) );
+
+		$this->assertSame(
+			'12:30',
+			$in_utc->format( 'H:i' ),
+			'The fixture only discriminates while the two typings disagree about the wall clock.'
+		);
+		$this->assertSame(
+			'20261104T133000Z',
+			Utility::invoke_hidden_method(
+				$rule,
+				'until_as_utc_datetime',
+				array( new DateTimeImmutable( '2026-11-04' ), $in_zone, $timezone )
+			),
+			'An anchor already in the series timezone keeps its 08:30 wall clock into the end date.'
+		);
+		$this->assertSame(
+			'20261104T133000Z',
+			Utility::invoke_hidden_method(
+				$rule,
+				'until_as_utc_datetime',
+				array( new DateTimeImmutable( '2026-11-04' ), $in_utc, $timezone )
+			),
+			'The same instant typed in UTC must resolve to the same UNTIL, not to its 12:30 UTC wall clock.'
+		);
+	}
 }
