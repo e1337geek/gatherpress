@@ -55,7 +55,7 @@ class Test_Archive extends Base {
 	protected string $permalink_structure = '';
 
 	/**
-	 * Ensure the occurrence table exists before every test.
+	 * Start from an empty occurrence table before every test.
 	 *
 	 * The archive requests below travel the plain-permalink form of the post
 	 * type archive URL — `?post_type=gatherpress_event&paged=2` — because the
@@ -79,7 +79,7 @@ class Test_Archive extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		global $wp_rewrite;
 

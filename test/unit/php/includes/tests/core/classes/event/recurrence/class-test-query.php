@@ -45,7 +45,7 @@ class Test_Query extends Base {
 	);
 
 	/**
-	 * Ensure the occurrence table exists before every test, independent of
+	 * Start every test from an empty occurrence table, independent of
 	 * execution order relative to Test_Schema.
 	 *
 	 * @return void
@@ -53,7 +53,7 @@ class Test_Query extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		update_option( Query::HAS_RECURRING_OPTION, '0', true );
 	}

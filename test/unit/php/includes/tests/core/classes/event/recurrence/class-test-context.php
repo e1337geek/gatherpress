@@ -24,7 +24,6 @@ use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
 use GatherPress\Core\Event\Setup as Event_Setup;
-use GatherPress\Core\Setup;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
@@ -107,14 +106,15 @@ class Test_Context extends Base {
 	const SIBLING_START_GMT = '2030-01-01 13:00:00';
 
 	/**
-	 * Ensure the occurrence table exists and no context leaks in from another test.
+	 * Start every test from an empty occurrence table, with no context left
+	 * over from another test.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Context::get_instance()->clear();
 
 		// Pretty permalinks and the occurrence rewrite rule, so every `go_to()`

@@ -45,7 +45,7 @@ class Test_Rewrite extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '/%postname%/' );

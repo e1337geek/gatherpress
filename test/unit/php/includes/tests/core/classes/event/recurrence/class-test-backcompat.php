@@ -52,15 +52,15 @@ class Test_Backcompat extends Base {
 	);
 
 	/**
-	 * Ensure the occurrence table exists and the flag starts at '0' for every
-	 * test in this file, independent of execution order.
+	 * Start every test in this file from an empty occurrence table with the
+	 * flag at '0', independent of execution order.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		update_option( Query::HAS_RECURRING_OPTION, '0', true );
 	}

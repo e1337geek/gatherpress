@@ -31,7 +31,6 @@ use GatherPress\Core\Setup;
 use GatherPress\Core\Venue\Setup as Venue_Setup;
 use GatherPress\Core\Venue\Venue;
 use GatherPress\Tests\Base;
-use PMC\Unit_Test\Utility;
 use WP_Query;
 
 /**
@@ -55,7 +54,7 @@ class Test_Venue_Inheritance extends Base {
 	);
 
 	/**
-	 * Ensure the occurrence table exists for every test in this file,
+	 * Start from an empty occurrence table for every test in this file,
 	 * independent of execution order.
 	 *
 	 * @return void
@@ -63,7 +62,7 @@ class Test_Venue_Inheritance extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		update_option( Query::HAS_RECURRING_OPTION, '0', true );
 	}

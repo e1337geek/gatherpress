@@ -44,10 +44,8 @@ use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
 use GatherPress\Core\Rsvp\Token;
 use GatherPress\Core\Settings;
-use GatherPress\Core\Setup;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
-use PMC\Unit_Test\Utility;
 use WP_REST_Request;
 
 /**
@@ -90,7 +88,7 @@ class Test_Permalink extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Rsvp_Setup::get_instance()->register_taxonomy();
 		Rest_Api::get_instance()->register_endpoints();
 		Calendar_Setup::get_instance()->register_endpoints();
