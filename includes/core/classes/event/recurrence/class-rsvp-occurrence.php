@@ -126,19 +126,33 @@ final class Rsvp_Occurrence {
 			return null;
 		}
 
-		$occurrence = Context::get_instance()->current();
+		$occurrence     = Context::get_instance()->current();
+		$series_post_id = ( null === $occurrence ) ? 0 : (int) $occurrence['series_post_id'];
 
-		if ( null === $occurrence ) {
-			return null;
-		}
-
-		$series_post_id = (int) $occurrence['series_post_id'];
-
+		// The request's occurrence only applies when it belongs to this post or
+		// to a sibling post of its series. When it does not -- and on an archive
+		// or Query Loop, where there is no request occurrence at all -- fall
+		// back to the occurrence the current loop iteration was stamped with.
+		//
+		// Without that fallback every row of a loop reads the same series-wide
+		// RSVP state, because `current()` answers null for all of them: an
+		// attendee on the 18th appears to be attending every date in the series.
+		// `loop_occurrence()` is already scoped to the post it was stamped onto,
+		// so it needs no membership check of its own.
 		if (
-			$series_post_id !== $post_id
-			&& ! in_array( $series_post_id, Series::get_instance()->resolve_post_ids( $post_id ), true )
+			null === $occurrence
+			|| (
+				$series_post_id !== $post_id
+				&& ! in_array( $series_post_id, Series::get_instance()->resolve_post_ids( $post_id ), true )
+			)
 		) {
-			return null;
+			$occurrence = Context::get_instance()->loop_occurrence( $post_id );
+
+			if ( null === $occurrence ) {
+				return null;
+			}
+
+			$series_post_id = (int) $occurrence['series_post_id'];
 		}
 
 		return array(

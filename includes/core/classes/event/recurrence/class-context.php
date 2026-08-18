@@ -595,13 +595,21 @@ final class Context {
 	 * `Query::expand_event_clauses()` filters on `status`, so the row this
 	 * rebuilds says so.
 	 *
+	 * Public because the RSVP layer needs it as a fallback: an archive or Query
+	 * Loop has no *request* occurrence, so `current()` answers null for every
+	 * row and the RSVP block would read series-wide state on all of them. The
+	 * loop's stamped occurrence is the only thing that distinguishes one row
+	 * from the next, and `Rsvp_Occurrence::current_occurrence()` cannot reach it
+	 * through `resolve()` without also inheriting that method's exact-post-match
+	 * arm, which would undo the widened-series admission it deliberately makes.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID being read.
 	 *
 	 * @return array|null An occurrence row, or null when the current post is not a stamped occurrence of it.
 	 */
-	protected function loop_occurrence( int $post_id ): ?array {
+	public function loop_occurrence( int $post_id ): ?array {
 		$post = get_post();
 
 		if ( ! $post instanceof WP_Post || (int) $post->ID !== $post_id ) {

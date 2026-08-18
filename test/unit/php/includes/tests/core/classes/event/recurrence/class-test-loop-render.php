@@ -28,6 +28,8 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
+use GatherPress\Core\Rsvp;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
@@ -1345,6 +1347,83 @@ class Test_Loop_Render extends Base {
 		$this->assertTrue(
 			$occurrences->table_exists(),
 			'Failed to assert the real table still answers true once the prefix is restored.'
+		);
+	}
+
+	/**
+	 * Coverage for per-occurrence RSVP state inside a loop.
+	 *
+	 * The archive and Query Loop are the surfaces where this broke in the
+	 * hand-test that found it: `Rsvp_Occurrence::current_occurrence()` read
+	 * only `Context::current()`, which is the *request's* occurrence. A loop
+	 * has no request occurrence, so it answered null on every row and every
+	 * row read the same series-wide RSVP state -- an attendee on the first
+	 * date appeared to be attending all fourteen.
+	 *
+	 * The fixture makes the right answer and the wrong answer differ (rule 3a
+	 * anti-pattern #8): exactly one occurrence carries an RSVP, so a
+	 * series-wide read shows attending on every row while a correctly scoped
+	 * read shows it on one. Asserting the whole per-row vector rather than a
+	 * single row is what makes that distinction visible.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::current_occurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Context::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_state_in_a_loop_is_scoped_to_each_row_occurrence(): void {
+		$anchor  = $this->now()->modify( '+2 days' );
+		$post_id = $this->create_series_at( $anchor, $anchor->modify( '+2 hours' ) );
+		$user_id = $this->factory->user->create();
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$this->assertGreaterThan( 2, count( $rows ), 'Failed to assert the fixture projected several occurrences.' );
+
+		$target = (string) $rows[0]['recurrence_id'];
+
+		// Write the RSVP through the same context the request path establishes,
+		// so the stored comment carries exactly one occurrence term.
+		Context::get_instance()->set( $post_id, $target );
+		$rsvp = new Rsvp( $post_id );
+		$rsvp->save( $user_id, 'attending' );
+		Context::get_instance()->clear();
+
+		$query     = $this->run_upcoming_query();
+		$attending = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$occurrence = Rsvp_Occurrence::current_occurrence( $post_id );
+			$responses  = ( new Rsvp( $post_id ) )->responses();
+
+			$attending[ (string) ( $occurrence['recurrence_id'] ?? 'none' ) ] =
+				(int) ( $responses['attending']['count'] ?? -1 );
+		}
+
+		wp_reset_postdata();
+
+		$this->assertArrayHasKey(
+			$target,
+			$attending,
+			'Failed to assert each loop row resolved its own occurrence identifier.'
+		);
+		$this->assertSame(
+			1,
+			$attending[ $target ],
+			'Failed to assert the occurrence holding the RSVP reports one attendee.'
+		);
+
+		unset( $attending[ $target ] );
+
+		$this->assertNotEmpty(
+			$attending,
+			'Failed to assert the loop produced sibling occurrences to compare against.'
+		);
+		$this->assertSame(
+			array( 0 ),
+			array_values( array_unique( $attending ) ),
+			'Failed to assert every other occurrence reports zero attendees rather than inheriting the series count.'
 		);
 	}
 	/**
