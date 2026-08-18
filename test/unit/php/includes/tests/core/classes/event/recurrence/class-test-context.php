@@ -1361,6 +1361,13 @@ class Test_Context extends Base {
 	public function test_no_stale_occurrence_value_leaks_after_teardown(): void {
 		list( $post_id, $past_id, $next_id ) = $this->create_series_straddling_now();
 
+		// Read outside occurrence context, before the first leg. `get_permalink()`
+		// answers with the *current* occurrence's URL once one is in play, so
+		// reading it between the two legs would send the second request back to
+		// the first occurrence and the "bare series request" leg would silently
+		// stop being one.
+		$series_url = (string) get_permalink( $post_id );
+
 		$this->go_to( Context::occurrence_url( $post_id, $past_id ) );
 
 		$this->assertSame(
@@ -1371,7 +1378,7 @@ class Test_Context extends Base {
 
 		$past_start = (string) get_post_meta( $post_id, 'gatherpress_datetime_start', true );
 
-		$this->go_to( (string) get_permalink( $post_id ) );
+		$this->go_to( $series_url );
 
 		$this->assertSame(
 			$next_id,
