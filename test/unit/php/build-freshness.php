@@ -60,6 +60,49 @@ function gatherpress_newest_mtime( string $directory, string $skip = '' ): int {
 }
 
 /**
+ * Find the least recently modified *file* under a directory.
+ *
+ * The mirror of `gatherpress_newest_mtime()`, and the half that makes the
+ * guard a per-artifact statement rather than a per-tree one: comparing the two
+ * trees' newest entries only proves that *something* in `build/` was written
+ * after the last source edit. One freshly emitted artifact is enough to
+ * satisfy that while every other artifact stays stale, which is exactly what a
+ * partial or interrupted build leaves behind.
+ *
+ * Directories are excluded here even though `gatherpress_newest_mtime()`
+ * includes them. A directory's mtime only moves when an entry is added or
+ * removed, so a rebuild that rewrites file contents without changing the file
+ * list would leave old directory timestamps behind and fail the guard for no
+ * reason. On the source side the same property is the point -- it is how a
+ * deletion registers -- which is why only this side drops them.
+ *
+ * @since 0.36.0
+ *
+ * @param string $directory Absolute directory to walk.
+ * @param string $skip      Path fragment to exclude, or '' to exclude nothing.
+ *
+ * @return int The oldest file modification time found, or 0 when the directory holds no files.
+ */
+function gatherpress_oldest_file_mtime( string $directory, string $skip = '' ): int {
+	$oldest   = 0;
+	$iterator = new RecursiveIteratorIterator(
+		new RecursiveDirectoryIterator( $directory, FilesystemIterator::SKIP_DOTS ),
+		RecursiveIteratorIterator::SELF_FIRST
+	);
+
+	foreach ( $iterator as $path => $info ) {
+		if ( ! $info->isFile() || ( '' !== $skip && str_contains( (string) $path, $skip ) ) ) {
+			continue;
+		}
+
+		$mtime  = (int) $info->getMTime();
+		$oldest = ( 0 === $oldest ) ? $mtime : min( $oldest, $mtime );
+	}
+
+	return $oldest;
+}
+
+/**
  * Abort the run with an explanation of what to do about it.
  *
  * @since 0.36.0
@@ -86,13 +129,30 @@ function gatherpress_fail_stale_build( string $reason ): void {
 }
 
 /**
- * Refuse to run when `build/` is missing or older than `src/`.
+ * Refuse to run when `build/` is missing, empty, or partially older than `src/`.
+ *
+ * The comparison is `newest source` against the **oldest emitted artifact**,
+ * not against the newest one. Comparing the two trees' newest entries relates
+ * no input to its own output: source A can be edited at t=20, its stale
+ * artifact can still read t=15, and one unrelated artifact written at t=30
+ * satisfies `max(build) > max(src)` while PHPUnit goes on loading A's previous
+ * output. Requiring every artifact to be newer than every source is the
+ * per-pair statement expressed without having to model which source emits
+ * which artifact -- a mapping that webpack owns, that changes with the entry
+ * configuration, and that this file has no honest way to reproduce.
+ *
+ * `npm run build` rewrites the whole tree on every invocation, so the
+ * conservative direction costs nothing on a complete build and fails exactly
+ * the partial/interrupted one. An empty `build/` reads as oldest = 0 and fails
+ * the same way a missing one does.
  *
  * `build/coverage-report` is excluded from the build side of the comparison
  * because `npm run test:unit:php` writes its HTML coverage report there. Left
- * in, every run would leave `build/` looking newer than anything, and the guard
- * would pass forever after the first run -- silently, which is the failure mode
- * it exists to prevent.
+ * in, it would make `build/` look newer than anything under the old
+ * newest-versus-newest rule, and under this one it would instead be the only
+ * genuinely fresh tree while the artifacts stayed stale -- wrong in both
+ * directions, and silently so, which is the failure mode this guard exists to
+ * prevent.
  *
  * @since 0.36.0
  *
@@ -108,17 +168,21 @@ function gatherpress_assert_build_is_fresh(): void {
 	}
 
 	$newest_src   = gatherpress_newest_mtime( $src );
-	$newest_build = gatherpress_newest_mtime( $build, '/coverage-report' );
+	$oldest_build = gatherpress_oldest_file_mtime( $build, '/coverage-report' );
 
-	if ( $newest_src <= $newest_build ) {
+	if ( 0 === $oldest_build ) {
+		gatherpress_fail_stale_build( sprintf( 'The build directory at %s holds no build output.', $build ) );
+	}
+
+	if ( $newest_src <= $oldest_build ) {
 		return;
 	}
 
 	gatherpress_fail_stale_build(
 		sprintf(
-			'src/ was modified at %s, after build/ was last written at %s.',
+			'src/ was modified at %s, after the oldest build/ artifact was written at %s.',
 			gmdate( 'Y-m-d H:i:s', $newest_src ),
-			gmdate( 'Y-m-d H:i:s', $newest_build )
+			gmdate( 'Y-m-d H:i:s', $oldest_build )
 		)
 	);
 }
