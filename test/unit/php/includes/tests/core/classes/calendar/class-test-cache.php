@@ -92,6 +92,12 @@ class Test_Cache extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'mark_changed_for_terms' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'gatherpress_occurrences_changed',
+				'priority' => 10,
+				'callback' => array( $instance, 'mark_changed_for_occurrences' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );

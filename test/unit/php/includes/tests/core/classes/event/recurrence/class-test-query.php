@@ -660,23 +660,34 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for the requirement that `'fields' => 'ids'` is never expanded.
+	 * Coverage for the requirement that `'fields' => 'ids'` is folded, not expanded.
 	 *
-	 * `WP_Query` returns before `the_posts` for an ids result set, so occurrence
-	 * identity cannot travel with the rows. Expanding it would hand every
-	 * caller of `Event\Query::get_events_list()` a repeated bare post ID it has
-	 * no way to disambiguate, which is what produced duplicate iCal VEVENTs.
-	 * The requirement is therefore one entry per event post, unexpanded, with
-	 * no occurrence join in the SQL at all.
+	 * Two requirements at once, and the fixture separates them. The scenario's
+	 * series is anchored an hour behind now with its remaining occurrences ahead
+	 * of it -- the steady state of any live series -- so selecting the bucket
+	 * from the anchor drops it out of the list entirely, which is what kept
+	 * recurring series out of every aggregate iCal feed. And `WP_Query` returns
+	 * before `the_posts` for an ids result set, so occurrence identity cannot
+	 * travel with the rows: expanding would hand the caller a repeated bare post
+	 * ID it has no way to disambiguate, which is what produced duplicate iCal
+	 * VEVENTs sharing a UID.
+	 *
+	 * The ordering assertion is what tells the two apart. The series' next
+	 * scheduled occurrence falls between the two plain upcoming events, so its
+	 * position in the list is a value neither of the two failure modes can
+	 * produce: selecting on the anchor would sort it first, and omitting it
+	 * would leave it out.
 	 *
 	 * `get_events_list()` also sets `no_found_rows`, so this pins the
 	 * no-pagination path: `found_posts` stays zero.
 	 *
 	 * @covers ::expand_event_clauses
+	 * @covers ::fold_event_clauses
+	 * @covers ::aggregate_orderby
 	 *
 	 * @return void
 	 */
-	public function test_get_events_list_is_never_expanded_over_occurrences(): void {
+	public function test_get_events_list_is_folded_to_one_entry_per_series(): void {
 		$scenario = $this->build_scenario();
 
 		$request = '';
@@ -690,10 +701,10 @@ class Test_Query extends Base {
 		$query = Event_Query::get_instance()->get_events_list( 'upcoming', 20 );
 		remove_filter( 'posts_request', $capture );
 
-		$this->assertStringNotContainsString(
+		$this->assertStringContainsString(
 			Query::OCCURRENCE_ALIAS,
 			$request,
-			'Failed to assert an ids query joins no occurrence table.'
+			'Failed to assert an ids query consults the occurrence table for its bucket.'
 		);
 		$this->assertSame(
 			array_fill( 0, count( $query->posts ), 'integer' ),
@@ -701,9 +712,9 @@ class Test_Query extends Base {
 			'Failed to assert the ids result set is still a list of integers.'
 		);
 		$this->assertSame(
-			array( (int) $scenario['early'], (int) $scenario['mid'] ),
-			array_values( array_unique( $query->posts ) ),
-			'Failed to assert the ids result set holds the upcoming event posts.'
+			array( (int) $scenario['early'], (int) $scenario['series'], (int) $scenario['mid'] ),
+			$query->posts,
+			'Failed to assert the series appears once, ordered by its next occurrence rather than its anchor.'
 		);
 		$this->assertSame(
 			$query->posts,
@@ -724,8 +735,10 @@ class Test_Query extends Base {
 	 * occurrence identity cannot travel with either. An expanded id=>parent
 	 * result set is therefore a repeated, identity-less series ID that burns
 	 * `posts_per_page`, and it diverges from what the same query returns as
-	 * ids. The requirement is that both compact shapes return the same
-	 * unexpanded post list, with no occurrence join in the SQL.
+	 * ids. Both compact shapes are folded instead: the occurrence join decides
+	 * bucket membership, the grouping keeps one row per post, and no
+	 * per-occurrence identity column is selected. The requirement is that both
+	 * compact shapes return the same one-row-per-post list.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -755,19 +768,97 @@ class Test_Query extends Base {
 		);
 
 		$this->assertStringNotContainsString(
-			Query::OCCURRENCE_ALIAS,
+			Query::SELECT_ALIAS,
 			$request,
-			'Failed to assert an id=>parent query joins no occurrence table.'
+			'Failed to assert an id=>parent query selects no per-occurrence identity column.'
 		);
 		$this->assertSame(
 			$ids,
 			$pairs,
-			'Failed to assert both compact field shapes return the same unexpanded post list.'
+			'Failed to assert both compact field shapes return the same one-row-per-post list.'
 		);
 		$this->assertSame(
 			$pairs,
 			array_values( array_unique( $pairs ) ),
 			'Failed to assert no post ID repeats in an id=>parent result set.'
+		);
+	}
+
+	/**
+	 * A fully cancelled series stays out of a folded ids list too.
+	 *
+	 * The `NOT EXISTS` guard is what stops a series with rows but no *scheduled*
+	 * rows falling through the join's `NULL` branch and reappearing at its
+	 * anchor date. It is asserted for the expanded shape elsewhere; the folded
+	 * shape carries it for the same reason and needs its own case, because
+	 * dropping it there fails nothing else.
+	 *
+	 * @covers ::fold_event_clauses
+	 * @covers ::occurrence_scope_predicate
+	 *
+	 * @return void
+	 */
+	public function test_a_fully_cancelled_series_is_absent_from_a_folded_ids_list(): void {
+		$scenario = $this->build_scenario();
+
+		for ( $index = 0; $index < 5; $index++ ) {
+			Occurrences::get_instance()->set_status(
+				$scenario['series'],
+				$this->occurrence_id( $scenario['anchor'], $index ),
+				Occurrences::STATUS_CANCELLED
+			);
+		}
+
+		$this->assertSame(
+			array( (int) $scenario['early'], (int) $scenario['mid'] ),
+			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
+			'Failed to assert a fully cancelled series does not reappear at its anchor date in an ids list.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `aggregate_orderby()`'s two paths.
+	 *
+	 * Xdebug does not trace a private helper reached through a same-class
+	 * delegation, and the untouched path has no production caller today: every
+	 * ordering `Event\Query` produces for a bucketed query references the
+	 * datetime column. It is still the arm that keeps `RAND()` random and an
+	 * `orderby` of `none` unordered, so it gets a case of its own.
+	 *
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_aggregate_orderby_direct_invoke_covers_both_paths(): void {
+		$instance = Query::get_instance();
+
+		$this->assertSame(
+			'MIN( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) ASC',
+			Utility::invoke_hidden_method(
+				$instance,
+				'aggregate_orderby',
+				array( 'COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ASC' )
+			),
+			'An ascending sort takes the earliest occurrence in the group.'
+		);
+		$this->assertSame(
+			'MAX( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) DESC',
+			Utility::invoke_hidden_method(
+				$instance,
+				'aggregate_orderby',
+				array( 'COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) DESC' )
+			),
+			'A descending sort takes the latest, which is what the past bucket means.'
+		);
+		$this->assertSame(
+			'RAND()',
+			Utility::invoke_hidden_method( $instance, 'aggregate_orderby', array( 'RAND()' ) ),
+			'An ordering that does not reference the occurrence table is left alone.'
+		);
+		$this->assertSame(
+			'',
+			Utility::invoke_hidden_method( $instance, 'aggregate_orderby', array( '' ) ),
+			'An unordered query must not acquire an ORDER BY it never had.'
 		);
 	}
 

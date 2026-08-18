@@ -661,17 +661,30 @@ final class Setup {
 	 * Wrap iCal `BEGIN:VEVENT` blocks in a `BEGIN:VCALENDAR` envelope.
 	 *
 	 * Generates the `BEGIN:VCALENDAR` / `END:VCALENDAR` lines, the `VERSION`
-	 * header, and the `PRODID` header (which includes the blog title and the
-	 * current locale for proper calendar identification).
+	 * header, the `PRODID` header (which includes the blog title and the
+	 * current locale for proper calendar identification), and a `VTIMEZONE`
+	 * for every named timezone the components reference.
+	 *
+	 * The timezone definitions are not decoration. GatherPress emits
+	 * `DTSTART;TZID=...` wherever an event carries a named timezone, and
+	 * RFC 5545 section 3.2.19 requires that such a parameter refer to a
+	 * `VTIMEZONE` in the same `VCALENDAR` -- so the definitions are what keep
+	 * the timezone-qualified start valid. They are derived from the assembled
+	 * component text rather than from the events, so a `TZID` cannot be emitted
+	 * without its definition following it. A fixed-offset event contributes no
+	 * `TZID` and therefore no definition.
 	 *
 	 * @since 0.34.0
+	 *
+	 * @since 0.36.0 Emits a `VTIMEZONE` per distinct referenced timezone.
 	 *
 	 * @param string $calendar_data The events to be included in the iCal file.
 	 *
 	 * @return string               The complete iCal data wrapped in the VCALENDAR format.
 	 */
 	public function get_ical_wrap( string $calendar_data ): string {
-		$args = array(
+		$timezones = Timezone_Component::get_instance()->render_for_body( $calendar_data );
+		$args      = array(
 			'BEGIN:VCALENDAR',
 			'VERSION:2.0',
 			sprintf(
@@ -680,9 +693,14 @@ final class Setup {
 				// Prepare 2-digit lang code.
 				strtoupper( substr( get_locale(), 0, 2 ) )
 			),
-			$calendar_data,
-			'END:VCALENDAR',
 		);
+
+		if ( '' !== $timezones ) {
+			$args[] = $timezones;
+		}
+
+		$args[] = $calendar_data;
+		$args[] = 'END:VCALENDAR';
 
 		return implode( "\r\n", $args );
 	}

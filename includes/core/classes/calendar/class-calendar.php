@@ -416,21 +416,19 @@ final class Calendar {
 			);
 		}
 
-		// REQ-16: a site with no recurring events reads neither the rule
-		// mirrors nor the occurrence table on any calendar request.
-		if ( ! Recurrence_Query::site_has_recurring_events() ) {
-			return array();
-		}
+		// REQ-16 first: a site with no recurring events reads neither the rule
+		// mirrors nor the occurrence table on any calendar request, so the flag
+		// short-circuits the lookup rather than filtering its result. An event
+		// with no rule of its own then contributes nothing either, however many
+		// other events on the site do.
+		$rule  = Recurrence_Query::site_has_recurring_events()
+			? Rule::from_post( $this->event->event->ID )
+			: null;
+		$lines = array();
 
-		$rule = Rule::from_post( $this->event->event->ID );
-
-		if ( null === $rule ) {
-			return array();
-		}
-
-		$zone   = new DateTimeZone( $timezone );
-		$lines  = array(
-			sprintf(
+		if ( null !== $rule ) {
+			$zone    = new DateTimeZone( $timezone );
+			$lines[] = sprintf(
 				'RRULE:%s',
 				$rule->to_rrule_string(
 					new DateTimeImmutable(
@@ -439,12 +437,12 @@ final class Calendar {
 					),
 					$zone
 				)
-			),
-		);
-		$exdate = $this->exdate_line( $timezone );
+			);
+			$exdate  = $this->exdate_line( $timezone );
 
-		if ( '' !== $exdate ) {
-			$lines[] = $exdate;
+			if ( '' !== $exdate ) {
+				$lines[] = $exdate;
+			}
 		}
 
 		return $lines;

@@ -31,6 +31,7 @@ use GatherPress\Core\Topic;
 use GatherPress\Core\Venue\Venue;
 use GatherPress\Tests\Base;
 use GatherPress\Tests\Core\Event\Recurrence\Occurrence_Fixtures;
+use GatherPress\Tests\Core\Event\Recurrence\Rewrite_State;
 use PMC\Unit_Test\Utility;
 
 /**
@@ -44,6 +45,7 @@ use PMC\Unit_Test\Utility;
 class Test_Calendar_Recurrence extends Base {
 
 	use Occurrence_Fixtures;
+	use Rewrite_State;
 
 	/**
 	 * Named timezone every fixture in this file is authored in.
@@ -78,56 +80,27 @@ class Test_Calendar_Recurrence extends Base {
 	protected string $anchor_offset = '-10 days';
 
 	/**
-	 * The rewrite state this file found, restored in `tearDown()`.
-	 *
-	 * @since 0.36.0
-	 * @var array<string, mixed>
-	 */
-	protected array $rewrite_state = array();
-
-	/**
 	 * Ensure the occurrence table exists, and snapshot the rewrite state.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
-		global $wp_rewrite;
-
 		parent::setUp();
 
 		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
 		Context::flush_resolved();
 		Context::get_instance()->clear();
 
-		$this->rewrite_state = array(
-			'structure'    => $wp_rewrite->permalink_structure,
-			'permastructs' => $wp_rewrite->extra_permastructs,
-		);
+		$this->snapshot_rewrite_state();
 	}
 
 	/**
 	 * Put the rewrite state back the way this file found it.
 	 *
-	 * `$wp_rewrite` is a global object, not an option, so nothing it holds is
-	 * undone by the per-test transaction rollback. Two things leak, and only
-	 * the second is obvious. `permalink_structure` is the obvious one.
-	 * `extra_permastructs` is not: `enable_pretty_permalinks()` re-runs `init`,
-	 * which re-registers every post type *while* a pretty structure is in
-	 * place, and `WP_Rewrite::init()` does not clear that array -- so
-	 * `get_extra_permastruct( 'gatherpress_event' )` keeps answering for the
-	 * rest of the process and every later test's event permalinks silently
-	 * become pretty ones.
-	 *
 	 * @return void
 	 */
 	public function tearDown(): void {
-		global $wp_rewrite;
-
-		$wp_rewrite->extra_permastructs = $this->rewrite_state['permastructs'];
-
-		update_option( 'permalink_structure', $this->rewrite_state['structure'] );
-		$wp_rewrite->init();
-		$wp_rewrite->flush_rules();
+		$this->restore_rewrite_state();
 
 		parent::tearDown();
 	}
@@ -324,7 +297,14 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
-	 * Extract the value of one property from a VEVENT body.
+	 * Extract the value of one property from a payload's components.
+	 *
+	 * The `VTIMEZONE` definitions are stripped first. They are part of the same
+	 * `VCALENDAR` and carry `DTSTART` and `RRULE` properties of their own, which
+	 * describe when a *timezone* changes offset and have nothing to do with when
+	 * an event happens -- letting them through would answer every question in
+	 * this file with two unrelated kinds of line mixed together. Use
+	 * `properties_in()` to read inside a definition.
 	 *
 	 * @since 0.36.0
 	 *
@@ -334,9 +314,26 @@ class Test_Calendar_Recurrence extends Base {
 	 * @return string[] Every line for that property, whole.
 	 */
 	protected function lines_for( string $body, string $property ): array {
+		return $this->matching_lines(
+			(string) preg_replace( '/BEGIN:VTIMEZONE\r\n.*?END:VTIMEZONE\r\n/s', '', $body ),
+			$property
+		);
+	}
+
+	/**
+	 * Every line for one property in a block of iCal text, verbatim.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $text     Any iCal text.
+	 * @param string $property Property name, without parameters.
+	 *
+	 * @return string[] Every line for that property, whole.
+	 */
+	protected function matching_lines( string $text, string $property ): array {
 		return array_values(
 			array_filter(
-				explode( "\r\n", $body ),
+				explode( "\r\n", $text ),
 				static function ( string $line ) use ( $property ): bool {
 					return str_starts_with( $line, $property . ':' )
 						|| str_starts_with( $line, $property . ';' );
@@ -849,27 +846,23 @@ class Test_Calendar_Recurrence extends Base {
 
 		$this->enable_pretty_permalinks();
 
+		// The stamp has one-second resolution and the production write is
+		// `current_time( 'mysql', true )`, so a stamp written twice inside one
+		// test run is the same string. Backdating the stored value before the
+		// first request is how the move is measured without a wall-clock sleep;
+		// it stands in for the ordinary case of a subscriber holding a response
+		// rendered at some earlier moment.
+		$this->backdate_calendar_stamp( MINUTE_IN_SECONDS );
+
+		$stale  = Calendar_Cache::get_instance()->get_last_modified();
 		$url    = $this->series_ical_url( $post_id );
 		$before = $this->body_for( $url );
-		$stamp  = Calendar_Cache::get_instance()->get_last_modified();
 
 		$this->assertSame(
 			array(),
 			$this->lines_for( $before, 'EXDATE' ),
 			'Nothing is cancelled yet, so the first response must carry no exclusions.'
 		);
-
-		// The stamp has one-second resolution, and the whole point of the
-		// assertion below is that the value moves. Backdating the stored stamp
-		// is how the write is measured without a wall-clock sleep -- the
-		// production write is `current_time( 'mysql', true )` either way.
-		update_option(
-			Calendar_Cache::LAST_MODIFIED_OPTION,
-			gmdate( 'Y-m-d H:i:s', strtotime( $stamp . ' GMT' ) - MINUTE_IN_SECONDS ),
-			false
-		);
-
-		$stale = Calendar_Cache::get_instance()->get_last_modified();
 
 		Occurrences::get_instance()->set_status(
 			$post_id,
@@ -920,11 +913,7 @@ class Test_Calendar_Recurrence extends Base {
 	public function test_projecting_occurrence_rows_stamps_the_calendar(): void {
 		$post_id = $this->create_weekly_series();
 
-		update_option(
-			Calendar_Cache::LAST_MODIFIED_OPTION,
-			gmdate( 'Y-m-d H:i:s', strtotime( Calendar_Cache::get_instance()->get_last_modified() . ' GMT' ) - HOUR_IN_SECONDS ),
-			false
-		);
+		$this->backdate_calendar_stamp( HOUR_IN_SECONDS );
 
 		$stale = Calendar_Cache::get_instance()->get_last_modified();
 
@@ -948,11 +937,7 @@ class Test_Calendar_Recurrence extends Base {
 	public function test_deleting_occurrence_rows_stamps_the_calendar(): void {
 		$post_id = $this->create_weekly_series();
 
-		update_option(
-			Calendar_Cache::LAST_MODIFIED_OPTION,
-			gmdate( 'Y-m-d H:i:s', strtotime( Calendar_Cache::get_instance()->get_last_modified() . ' GMT' ) - HOUR_IN_SECONDS ),
-			false
-		);
+		$this->backdate_calendar_stamp( HOUR_IN_SECONDS );
 
 		$stale = Calendar_Cache::get_instance()->get_last_modified();
 
@@ -1197,6 +1182,31 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
+	 * Move the stored calendar stamp back, standing in for the passage of time.
+	 *
+	 * The stamp has one-second resolution, so two writes inside one test run
+	 * produce the same string and a "did it move" assertion cannot fail. Rather
+	 * than sleep, the stored value is aged before the write under test, which is
+	 * the same situation from the production write's point of view.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $seconds How far back to move it.
+	 *
+	 * @return void
+	 */
+	protected function backdate_calendar_stamp( int $seconds ): void {
+		update_option(
+			Calendar_Cache::LAST_MODIFIED_OPTION,
+			gmdate(
+				'Y-m-d H:i:s',
+				strtotime( Calendar_Cache::get_instance()->get_last_modified() . ' GMT' ) - $seconds
+			),
+			false
+		);
+	}
+
+	/**
 	 * Create a published, non-recurring event starting a month from now.
 	 *
 	 * Relative rather than pinned: every caller puts it in an aggregate feed,
@@ -1315,7 +1325,7 @@ class Test_Calendar_Recurrence extends Base {
 			static function ( string $line ) use ( $property ): string {
 				return substr( $line, strlen( $property ) + 1 );
 			},
-			$this->lines_for( $block, $property )
+			$this->matching_lines( $block, $property )
 		);
 	}
 

@@ -35,6 +35,7 @@ if ( ! defined( 'WP_CLI' ) ) {
 // Shared test fixtures. The autoloader maps `class-*.php` only, and PHPUnit
 // collects `class-test-*.php` only, so trait files are required by hand.
 require_once __DIR__ . '/includes/tests/core/classes/event/recurrence/trait-occurrence-fixtures.php';
+require_once __DIR__ . '/includes/tests/core/classes/event/recurrence/trait-rewrite-state.php';
 
 $gatherpress_bootstrap_instance = PMC\Unit_Test\Bootstrap::get_instance();
 

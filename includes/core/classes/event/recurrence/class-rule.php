@@ -711,12 +711,20 @@ final class Rule {
 	/**
 	 * Render the end date as the RFC 5545 UTC date-time form of `UNTIL`.
 	 *
-	 * `setDate()` on the timezone-converted anchor is what resolves the offset
-	 * on the *end* date: it keeps the anchor's wall clock and re-derives the
-	 * offset for the resulting local datetime, which is the whole point.
-	 * Building a `DateTimeImmutable` from a formatted string would work too,
-	 * but only by way of a parse that can fail, and there is nothing sensible
-	 * to do on that branch.
+	 * `setDate()` is what resolves the offset on the *end* date: it keeps the
+	 * anchor's wall clock and re-derives the offset for the resulting local
+	 * datetime, which is the whole point. Building a `DateTimeImmutable` from a
+	 * formatted string would work too, but only by way of a parse that can
+	 * fail, and there is nothing sensible to do on that branch.
+	 *
+	 * The `setTimezone()` ahead of it does something narrower, and is easy to
+	 * mistake for the line above: it normalizes the anchor into the series
+	 * timezone before its wall clock is read. Every call site inside the plugin
+	 * hands in an anchor already constructed there, so it is a no-op for all of
+	 * them -- but `to_rrule_string()` is public and takes an arbitrary
+	 * `DateTimeImmutable`, and the same instant typed in another zone carries a
+	 * different wall clock. Dropping the call would silently emit that other
+	 * zone's clock as `UNTIL`.
 	 *
 	 * @since 0.36.0
 	 *

@@ -110,6 +110,11 @@ final class Cache {
 		add_action( 'added_post_meta', array( $this, 'mark_changed_for_meta' ), 10, 3 );
 		add_action( 'deleted_post_meta', array( $this, 'mark_changed_for_meta' ), 10, 3 );
 		add_action( 'set_object_terms', array( $this, 'mark_changed_for_terms' ), 10, 4 );
+		// Occurrence rows are written by bare SQL that touches none of the
+		// above, yet an `.ics` body is built from them: the aggregate feeds
+		// select their bucket from the rows, and a cancelled row becomes an
+		// `EXDATE`.
+		add_action( 'gatherpress_occurrences_changed', array( $this, 'mark_changed_for_occurrences' ) );
 	}
 
 	/**
@@ -234,6 +239,25 @@ final class Cache {
 		if ( $this->is_calendar_post_type( (string) get_post_type( (int) $post_id ) ) ) {
 			$this->mark_changed();
 		}
+	}
+
+	/**
+	 * Stamp the calendar when a series' occurrence rows change.
+	 *
+	 * The stamp is what moves both halves of the response cache at once: the
+	 * stored bodies are namespaced by it, and it is what `Last-Modified` reports
+	 * to a revalidating subscriber. Without it a cancelled date is held behind a
+	 * `304` until some unrelated write on the site happens to stamp the
+	 * calendar, which may be never.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int|string $post_id The series post whose occurrence rows changed.
+	 *
+	 * @return void
+	 */
+	public function mark_changed_for_occurrences( $post_id ): void {
+		$this->mark_changed_for_post( $post_id );
 	}
 
 	/**
