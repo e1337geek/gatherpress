@@ -17,6 +17,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use GatherPress\Core\Calendar\Calendar;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Query as Event_Query;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
@@ -256,13 +257,7 @@ class Test_Context extends Base {
 			array(
 				'type'     => 'filter',
 				'name'     => 'update_post_metadata',
-				'priority' => 10,
-				'callback' => array( $instance, 'note_meta_write' ),
-			),
-			array(
-				'type'     => 'filter',
-				'name'     => 'add_post_metadata',
-				'priority' => 10,
+				'priority' => PHP_INT_MAX,
 				'callback' => array( $instance, 'note_meta_write' ),
 			),
 			array(
@@ -286,6 +281,16 @@ class Test_Context extends Base {
 		);
 
 		$this->assert_hooks( $hooks, $instance );
+
+		// `add_metadata()` never calls `get_metadata_raw()`, so a note taken
+		// there is never consumed by the write that took it -- it is consumed
+		// by the next ordinary read instead, which then returns the series'
+		// value on an occurrence page.
+		$this->assertFalse(
+			has_filter( 'add_post_metadata', array( $instance, 'note_meta_write' ) ),
+			'Failed to assert add_post_metadata is not hooked: add_metadata() makes no comparison read,'
+				. ' so a note taken there can only ever be consumed by the wrong reader.'
+		);
 	}
 
 	/**
@@ -1250,6 +1255,326 @@ class Test_Context extends Base {
 			self::SECOND_START,
 			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
 			'Failed to assert that a write matching the occurrence value still reached the series meta.'
+		);
+	}
+
+	/**
+	 * Coverage for a meta write that falls through to `add_metadata()`.
+	 *
+	 * `update_metadata()` reaches `add_metadata()` whenever the key has no row
+	 * yet, and `add_metadata()` never calls `get_metadata_raw()` -- its
+	 * `$unique` check is a direct `$wpdb->get_var()`. Hooking
+	 * `add_post_metadata` therefore armed a note nothing consumed, and the next
+	 * occurrence-scoped read of that key consumed it instead and returned the
+	 * series' newly written value.
+	 *
+	 * The write itself is asserted too, because the cure must not be "stop
+	 * writing".
+	 *
+	 * @covers ::metadata
+	 * @covers ::note_meta_write
+	 *
+	 * @return void
+	 */
+	public function test_updating_an_absent_series_key_leaves_the_next_occurrence_read_intact(): void {
+		$post_id = $this->create_and_project();
+
+		delete_post_meta( $post_id, 'gatherpress_datetime_start' );
+
+		// Asserted before context is entered, because in context this very read
+		// is the one the filter answers from the occurrence record.
+		$this->assertSame(
+			'',
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Fixture is inert: the series key must be absent, or the update never falls through to'
+				. ' add_metadata() at all.'
+		);
+
+		Context::get_instance()->set( $post_id, self::SECOND_ID );
+
+		update_post_meta( $post_id, 'gatherpress_datetime_start', '2040-01-01 00:00:00' );
+
+		$in_context = get_post_meta( $post_id, 'gatherpress_datetime_start', true );
+
+		Context::get_instance()->clear();
+
+		$stored = get_post_meta( $post_id, 'gatherpress_datetime_start', true );
+
+		$this->assertSame(
+			'2040-01-01 00:00:00',
+			$stored,
+			'Failed to assert the write to the absent series key landed.'
+		);
+		$this->assertSame(
+			self::SECOND_START,
+			$in_context,
+			'Failed to assert the occurrence read after an add-fallthrough write still serves the'
+				. ' occurrence rather than the series value just written.'
+		);
+	}
+
+	/**
+	 * Coverage for the two ways a meta write skips the comparison read.
+	 *
+	 * A note taken for a read that never happens is not inert: the next
+	 * ordinary read of the same key consumes it and gets the series' value on
+	 * an occurrence page. Core skips the read when the caller named a previous
+	 * value, and again when an earlier-priority filter short-circuits the
+	 * write, so `note_meta_write()` takes no note in either case.
+	 *
+	 * @covers ::metadata
+	 * @covers ::note_meta_write
+	 *
+	 * @return void
+	 */
+	public function test_a_meta_write_that_makes_no_comparison_read_leaves_no_note(): void {
+		$post_id = $this->create_and_project();
+		$anchor  = $this->reference_anchor_start;
+
+		Context::get_instance()->set( $post_id, self::SECOND_ID );
+
+		// Naming a previous value sends core down the `$prev_value` branch,
+		// which never reads the stored value.
+		update_post_meta( $post_id, 'gatherpress_datetime_start', '2041-01-01 00:00:00', $anchor );
+
+		$after_prev_value = get_post_meta( $post_id, 'gatherpress_datetime_start', true );
+
+		$short_circuit = static function () {
+			return true;
+		};
+
+		add_filter( 'update_post_metadata', $short_circuit, 10, 5 );
+
+		update_post_meta( $post_id, 'gatherpress_datetime_start', '2042-01-01 00:00:00' );
+
+		remove_filter( 'update_post_metadata', $short_circuit, 10 );
+
+		$after_short_circuit = get_post_meta( $post_id, 'gatherpress_datetime_start', true );
+
+		Context::get_instance()->clear();
+
+		$this->assertSame(
+			'2041-01-01 00:00:00',
+			get_post_meta( $post_id, 'gatherpress_datetime_start', true ),
+			'Fixture is inert: the write naming a previous value did not land, so nothing was skipped.'
+		);
+		$this->assertSame(
+			self::SECOND_START,
+			$after_prev_value,
+			'Failed to assert a write naming a previous value leaves no note for the next read.'
+		);
+		$this->assertSame(
+			self::SECOND_START,
+			$after_short_circuit,
+			'Failed to assert a short-circuited write leaves no note for the next read.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-12's visitor-facing half, on all four arms.
+	 *
+	 * `Rewrite::parse_request()` lets a cancelled occurrence's URL resolve
+	 * instead of 404ing; this is what tells the visitor once it does. The
+	 * notice must appear on the cancelled occurrence's own content and on
+	 * nothing else -- not outside occurrence context, not for a scheduled
+	 * occurrence, and not for another post rendering full content on the same
+	 * response.
+	 *
+	 * @covers ::maybe_prepend_cancelled_notice
+	 *
+	 * @return void
+	 */
+	public function test_cancelled_occurrence_content_carries_a_notice_and_nothing_else_does(): void {
+		$notice  = 'gatherpress-occurrence-cancelled-notice';
+		$post_id = $this->create_and_project();
+		$other   = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$outside = Context::get_instance()->maybe_prepend_cancelled_notice( 'Body.' );
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$scheduled = apply_filters( 'the_content', 'Body.' );
+
+		$this->assertTrue(
+			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
+			'Fixture is inert: the occurrence row was not cancelled.'
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$cancelled = apply_filters( 'the_content', 'Body.' );
+
+		$loop = new WP_Query(
+			array(
+				'p'         => $other,
+				'post_type' => Event::POST_TYPE,
+			)
+		);
+
+		$loop->the_post();
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$elsewhere = apply_filters( 'the_content', 'Body.' );
+
+		wp_reset_postdata();
+
+		$this->assertStringNotContainsString(
+			$notice,
+			$outside,
+			'Failed to assert no notice is added outside occurrence context.'
+		);
+		$this->assertStringNotContainsString(
+			$notice,
+			$scheduled,
+			'Failed to assert no notice is added for a scheduled occurrence.'
+		);
+		$this->assertStringContainsString(
+			$notice,
+			$cancelled,
+			'Failed to assert a cancelled occurrence\'s own content carries the notice.'
+		);
+		$this->assertStringContainsString(
+			'Body.',
+			$cancelled,
+			'Failed to assert the notice is prepended rather than replacing the content.'
+		);
+		$this->assertLessThan(
+			strpos( $cancelled, 'Body.' ),
+			strpos( $cancelled, $notice ),
+			'Failed to assert the notice precedes the content it was prepended to.'
+		);
+		$this->assertStringNotContainsString(
+			$notice,
+			$elsewhere,
+			'Failed to assert another post rendering content on the same response gets no notice.'
+		);
+	}
+
+	/**
+	 * Coverage for a same-series Query Loop rendered on a real occurrence page.
+	 *
+	 * The end-to-end shape of `resolve()`'s precedence: a real request to one
+	 * occurrence's URL, and a secondary loop over the *same post* rendered
+	 * inside that response. Each row is a different occurrence of the requested
+	 * series, and each must render its own date and its own link -- not the
+	 * outer request's.
+	 *
+	 * The requested occurrence is the series' past one, which the upcoming loop
+	 * cannot contain, so no row can pass by coinciding with the request. The
+	 * whole per-row vector is asserted rather than a single row.
+	 *
+	 * Expected values are read back out of the occurrence table rather than
+	 * recomputed here, so the assertion compares the render against the record
+	 * that is the source of truth.
+	 *
+	 * @covers ::resolve
+	 * @covers ::metadata
+	 * @covers ::permalink
+	 * @covers ::sync
+	 *
+	 * @return void
+	 */
+	public function test_same_series_query_loop_on_an_occurrence_page_renders_each_rows_own_date_and_url(): void {
+		list( $post_id, $past_id ) = $this->create_series_straddling_now();
+
+		$rows     = Occurrences::get_instance()->select_for_series(
+			array( $post_id ),
+			array( 'status' => Occurrences::STATUS_SCHEDULED )
+		);
+		$now      = current_time( 'mysql', true );
+		$upcoming = array_values(
+			array_filter(
+				$rows,
+				static function ( array $row ) use ( $now ): bool {
+					return $row['datetime_start_gmt'] >= $now;
+				}
+			)
+		);
+
+		$this->assertCount(
+			2,
+			$upcoming,
+			'Fixture is inert: the straddling series must leave two upcoming occurrences to loop over.'
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, $past_id ) );
+
+		$this->assertSame(
+			$past_id,
+			Context::get_instance()->current()['recurrence_id'],
+			'Fixture is inert: the request did not establish the past occurrence as the page context.'
+		);
+
+		foreach ( $upcoming as $row ) {
+			$this->assertNotSame(
+				$past_id,
+				$row['recurrence_id'],
+				'Fixture is inert: no loop row may coincide with the requested occurrence.'
+			);
+		}
+
+		$loop = new WP_Query(
+			array(
+				'post_type'                    => Event::POST_TYPE,
+				'post__in'                     => array( $post_id ),
+				Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+				'posts_per_page'               => 20,
+				'orderby'                      => 'datetime',
+				'order'                        => 'ASC',
+			)
+		);
+
+		$rendered = array();
+
+		while ( $loop->have_posts() ) {
+			$loop->the_post();
+
+			$block = '<!-- wp:gatherpress/event-date {"displayType":"start",'
+				. '"startDateFormat":"Y-m-d H:i","isLink":true} /-->';
+
+			$rendered[] = do_blocks( $block );
+		}
+
+		wp_reset_postdata();
+
+		$this->assertCount(
+			2,
+			$rendered,
+			'Failed to assert the same-series loop rendered one row per upcoming occurrence.'
+		);
+
+		foreach ( $upcoming as $offset => $row ) {
+			$this->assertStringContainsString(
+				substr( (string) $row['datetime_start'], 0, 16 ),
+				$rendered[ $offset ],
+				'Failed to assert same-series row ' . $offset . ' rendered its own stamped date.'
+			);
+			$this->assertStringContainsString(
+				sprintf(
+					'href="%s"',
+					esc_url( Rewrite::get_occurrence_url( $post_id, (string) $row['recurrence_id'] ) )
+				),
+				$rendered[ $offset ],
+				'Failed to assert same-series row ' . $offset . ' linked to its own occurrence URL.'
+			);
+		}
+
+		$outer = sprintf(
+			'href="%s"',
+			esc_url( Rewrite::get_occurrence_url( $post_id, $past_id ) )
+		);
+
+		$this->assertStringNotContainsString(
+			$outer,
+			implode( '', $rendered ),
+			'Failed to assert no same-series row was overwritten with the outer request\'s occurrence URL.'
 		);
 	}
 

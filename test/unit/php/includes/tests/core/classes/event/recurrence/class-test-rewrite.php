@@ -23,6 +23,7 @@ use GatherPress\Core\Settings;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
+use ReflectionClass;
 use WP;
 
 /**
@@ -167,6 +168,16 @@ class Test_Rewrite extends Base {
 		);
 
 		$this->assert_hooks( $hooks, $instance );
+
+		// A public constructor on a singleton is not a style point: every
+		// `new Rewrite()` adds another `wp_loaded`, `query_vars` and
+		// `parse_request` callback, so the rewrite rules are re-registered and
+		// the occurrence table re-probed once per instance, on every request.
+		$this->assertTrue(
+			( new ReflectionClass( Rewrite::class ) )->getConstructor()->isProtected(),
+			'Failed to assert the singleton constructor is protected, leaving get_instance() the only'
+				. ' construction path.'
+		);
 	}
 
 	/**
@@ -355,20 +366,27 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for `get_occurrence_url`'s `gatherpress_recurrence_id_format` filter.
+	 * Coverage for the occurrence segment being unfilterable, and for the URL
+	 * it emits round-tripping through a real request.
+	 *
+	 * `gatherpress_recurrence_id_format` used to let an integration replace the
+	 * segment. It was one-way: `add_rewrite_rule_for_post_type()` registers a
+	 * single fixed `RECURRENCE_ID_REGEX` and `parse_request()` matches the raw
+	 * segment against the canonical `recurrence_id` column, so every URL the
+	 * filter customized 404'd at the address it advertised. The filter is gone;
+	 * this pins that it stays gone, and that the URL actually generated routes.
+	 *
+	 * The round-trip is a real `go_to()` rather than a string comparison,
+	 * because a string comparison is exactly what let the broken filter ship.
 	 *
 	 * @covers ::get_occurrence_url
+	 * @covers ::parse_request
 	 *
 	 * @return void
 	 */
-	public function test_occurrence_url_applies_recurrence_id_format_filter(): void {
-		$post_id = $this->factory->post->create(
-			array(
-				'post_type'   => Event::POST_TYPE,
-				'post_name'   => 'filtered-meetup',
-				'post_status' => 'publish',
-			)
-		);
+	public function test_occurrence_url_ignores_a_segment_filter_and_round_trips(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+		$recurrence_id                  = Occurrences::recurrence_id( $anchor_start );
 
 		add_filter(
 			'gatherpress_recurrence_id_format',
@@ -377,13 +395,34 @@ class Test_Rewrite extends Base {
 			}
 		);
 
-		$this->assertSame(
-			home_url( '/event/filtered-meetup/custom-segment/' ),
-			Rewrite::get_occurrence_url( $post_id, '20260901T180000' ),
-			'gatherpress_recurrence_id_format should be able to override the URL segment.'
-		);
+		$url = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
 
 		remove_all_filters( 'gatherpress_recurrence_id_format' );
+
+		$this->assertStringEndsWith(
+			'/' . $recurrence_id . '/',
+			$url,
+			'Failed to assert the occurrence URL still ends in the canonical recurrence ID.'
+		);
+		$this->assertStringNotContainsString(
+			'custom-segment',
+			$url,
+			'Failed to assert no filter can rewrite the occurrence segment into something unroutable.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'Failed to assert the generated occurrence URL routes.' );
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'Failed to assert the generated occurrence URL round-trips to its own recurrence ID.'
+		);
+		$this->assertSame(
+			$post_id,
+			get_queried_object_id(),
+			'Failed to assert the generated occurrence URL round-trips to its own series post.'
+		);
 	}
 
 	/**

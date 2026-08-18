@@ -692,33 +692,147 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for `resolve()` preferring the request's own occurrence.
+	 * Coverage for `resolve()`'s precedence, both arms.
+	 *
+	 * The row's own stamp wins while a loop iteration is set up, and the
+	 * request's occurrence applies where there is no stamp. Both are asserted
+	 * here on purpose. The precedence shipped the other way round first, which
+	 * gave every same-series Query Loop row the outer page's occurrence; the
+	 * obvious correction -- "the stamp is authoritative, drop the request arm"
+	 * -- breaks every singular occurrence page instead, because a singular
+	 * request's own post carries a null stamp. Only a test that pins both
+	 * directions rejects both defects.
+	 *
+	 * The fixture makes the two answers differ: the request names occurrence 3
+	 * while the loop's first row is occurrence 1.
 	 *
 	 * @covers ::resolve
+	 * @covers ::loop_occurrence
 	 *
 	 * @return void
 	 */
-	public function test_resolve_prefers_the_requests_own_occurrence(): void {
+	public function test_resolve_prefers_the_rows_own_stamp_over_the_requests_occurrence(): void {
 		$now    = $this->now();
 		$anchor = $now->modify( '-1 hour' );
 
 		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
 		$requested = $this->occurrence_id( $anchor, 3 );
+		$first_row = $this->occurrence_id( $anchor, 1 );
 
 		Context::get_instance()->set( $series_id, $requested );
+
+		$this->assertNotSame(
+			$requested,
+			$first_row,
+			'Fixture is inert: the request and the loop\'s first row must name different occurrences.'
+		);
+
+		// Read before any `the_post()`, which is the singular occurrence page's
+		// own shape: nothing is stamped, so the request is the only identity
+		// there is. Reading after the loop instead would prove nothing --
+		// `wp_reset_postdata()` restores from the *main* query, which this test
+		// has no post in, so the last stamped row would still be current.
+		$unstamped = Utility::invoke_hidden_method( Context::get_instance(), 'resolve', array( $series_id ) );
 
 		$query = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
 
 		$query->the_post();
 
-		$resolved = Utility::invoke_hidden_method( Context::get_instance(), 'resolve', array( $series_id ) );
+		$in_loop = Utility::invoke_hidden_method( Context::get_instance(), 'resolve', array( $series_id ) );
 
 		wp_reset_postdata();
 
 		$this->assertSame(
+			$first_row,
+			$in_loop['recurrence_id'],
+			'Failed to assert a stamped loop row resolves to its own occurrence rather than the request\'s.'
+		);
+		$this->assertSame(
 			$requested,
-			$resolved['recurrence_id'],
-			'Failed to assert the request\'s own occurrence wins over the loop\'s for the requested post.'
+			$unstamped['recurrence_id'],
+			'Failed to assert an unstamped read still resolves to the request\'s occurrence -- this is what'
+				. ' every singular occurrence page depends on.'
+		);
+	}
+
+	/**
+	 * Coverage for a same-series Query Loop rendered inside an occurrence page.
+	 *
+	 * The acceptance shape for the precedence above, asserted through rendered
+	 * output rather than through `resolve()`. Occurrence context is the one the
+	 * outer page named; every row of the loop belongs to that same post and
+	 * must still render its own date and its own link.
+	 *
+	 * The requested occurrence is deliberately one the loop does not contain,
+	 * so no row can pass by coinciding with it, and the whole per-row vector is
+	 * asserted rather than a single row.
+	 *
+	 * @covers ::resolve
+	 * @covers ::metadata
+	 * @covers ::permalink
+	 *
+	 * @return void
+	 */
+	public function test_same_series_loop_rows_keep_their_own_date_and_link_inside_an_occurrence(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$requested = $this->occurrence_id( $anchor, 0 );
+
+		Context::get_instance()->set( $series_id, $requested );
+
+		$this->assertSame(
+			$requested,
+			Context::get_instance()->current()['recurrence_id'],
+			'Fixture is inert: the outer occurrence context was not established.'
+		);
+
+		$rendered = $this->render_loop(
+			$this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) ),
+			array( 'isLink' => true )
+		);
+
+		$hrefs    = array();
+		$expected = array();
+		$dates    = array();
+
+		foreach ( $rendered as $row ) {
+			preg_match( '/href="([^"]+)"/', $row['html'], $matches );
+
+			$hrefs[] = $matches[1] ?? '';
+		}
+
+		foreach ( array( 1, 2, 3, 4 ) as $index ) {
+			$expected[] = Rewrite::get_occurrence_url( $series_id, $this->occurrence_id( $anchor, $index ) );
+			$dates[]    = $anchor->modify( sprintf( '+%d days', $index ) )->format( 'F j, Y' );
+		}
+
+		$this->assertCount( 4, $rendered, 'Failed to assert the loop expanded to the four upcoming rows.' );
+		$this->assertSame(
+			$expected,
+			$hrefs,
+			'Failed to assert every same-series row linked to its own occurrence URL rather than to the'
+				. ' outer request\'s.'
+		);
+
+		foreach ( $dates as $offset => $date ) {
+			$this->assertStringContainsString(
+				$date,
+				$rendered[ $offset ]['html'],
+				'Failed to assert same-series row ' . $offset . ' rendered its own occurrence date.'
+			);
+		}
+
+		$this->assertStringNotContainsString(
+			$anchor->format( 'F j, Y' ),
+			implode( '', wp_list_pluck( $rendered, 'html' ) ),
+			'Failed to assert no same-series row rendered the outer request\'s occurrence date.'
+		);
+		$this->assertSame(
+			$requested,
+			Context::get_instance()->current()['recurrence_id'],
+			'Failed to assert the outer request\'s occurrence context survived the loop.'
 		);
 	}
 
@@ -803,5 +917,84 @@ class Test_Loop_Render extends Base {
 		$this->assertTrue( $second, 'Failed to assert the memoized answer matches.' );
 		$this->assertSame( 1, $probes, 'Failed to assert the first call probes the schema exactly once.' );
 		$this->assertSame( $probes, $after, 'Failed to assert the second call answers from the memo.' );
+	}
+
+	/**
+	 * Coverage for `Occurrences::table_exists()` refusing a lookalike table.
+	 *
+	 * Every `_` in `{prefix}gatherpress_event_occurrences` is a
+	 * single-character `LIKE` wildcard, so an unescaped probe is satisfied by
+	 * any table whose name differs only at those positions. The consequence is
+	 * not cosmetic: the probe memoizes `true`, the occurrence join runs against
+	 * a table that does not exist, and every published event disappears from
+	 * the very lists this guard was added to keep working.
+	 *
+	 * The blog prefix is moved to one whose real occurrence table is absent,
+	 * because that is the only state in which the question can be asked -- on
+	 * the fixture site the real table exists and would answer `true` honestly.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::table_exists
+	 *
+	 * @return void
+	 */
+	public function test_table_exists_refuses_a_lookalike_table(): void {
+		global $wpdb;
+
+		$occurrences = Occurrences::get_instance();
+		$prefix      = $wpdb->prefix;
+		$absent      = 'gplk_';
+		$real        = sprintf( Occurrences::TABLE_FORMAT, $absent );
+		// Same length, same characters everywhere except the underscores, which
+		// `LIKE` treats as single-character wildcards unless escaped.
+		$lookalike = str_replace( '_', 'x', $real );
+
+		$this->assertNotSame( $real, $lookalike, 'Fixture is inert: the lookalike name must differ.' );
+
+		// The suite rewrites every `CREATE TABLE` into `CREATE TEMPORARY TABLE`,
+		// and a temporary table is invisible to `SHOW TABLES` -- which would
+		// make this fixture inert, passing against the unescaped probe it
+		// exists to reject. The two rewriting filters are stood down for the
+		// duration so the lookalike is a real table, and restored in `finally`
+		// along with the prefix, the memo, and the table itself.
+		remove_filter( 'query', array( $this, '_create_temporary_tables' ) );
+		remove_filter( 'query', array( $this, '_drop_temporary_tables' ) );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.SchemaChange
+		try {
+			$wpdb->query( "CREATE TABLE IF NOT EXISTS `{$lookalike}` ( id BIGINT UNSIGNED NOT NULL )" );
+
+			$created = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $lookalike ) ) );
+
+			$wpdb->prefix = $absent;
+
+			$occurrences->forget_table_exists();
+
+			$answer = $occurrences->table_exists();
+		} finally {
+			$wpdb->prefix = $prefix;
+
+			$occurrences->forget_table_exists();
+
+			$wpdb->query( "DROP TABLE IF EXISTS `{$lookalike}`" );
+
+			add_filter( 'query', array( $this, '_create_temporary_tables' ) );
+			add_filter( 'query', array( $this, '_drop_temporary_tables' ) );
+		}
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.SchemaChange
+
+		$this->assertSame(
+			$lookalike,
+			$created,
+			'Fixture is inert: the lookalike table was not created as a real, listable table.'
+		);
+
+		$this->assertFalse(
+			$answer,
+			'Failed to assert a lookalike table cannot satisfy the occurrence-table existence probe.'
+		);
+		$this->assertTrue(
+			$occurrences->table_exists(),
+			'Failed to assert the real table still answers true once the prefix is restored.'
+		);
 	}
 }
