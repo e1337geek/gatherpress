@@ -43,14 +43,21 @@ class Test_Schema extends Base {
 	const RULE_META_KEY = 'gatherpress_recurrence';
 
 	/**
-	 * Drop and recreate the occurrence table before each test, so schema tests
-	 * do not depend on execution order.
+	 * Drop the occurrence table so a test can prove the create path from a
+	 * table-less site.
+	 *
+	 * Deliberately not called from `setUp()`. DDL implicitly commits in MySQL
+	 * and MariaDB, which ends the transaction `WP_UnitTestCase` opened for the
+	 * test and leaks everything written before it into the rest of the run.
+	 * Called as the first statement of a test, there is nothing to leak.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @global wpdb $wpdb WordPress database abstraction object.
 	 *
 	 * @return void
 	 */
-	public function setUp(): void {
-		parent::setUp();
-
+	protected function drop_occurrence_table(): void {
 		global $wpdb;
 
 		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
@@ -67,6 +74,8 @@ class Test_Schema extends Base {
 	 */
 	public function test_create_tables_creates_occurrence_table(): void {
 		global $wpdb;
+
+		$this->drop_occurrence_table();
 
 		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
 
@@ -128,6 +137,8 @@ class Test_Schema extends Base {
 	 */
 	public function test_dbdelta_rerun_is_a_no_op(): void {
 		global $wpdb;
+
+		$this->drop_occurrence_table();
 
 		$instance = Setup::get_instance();
 		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
