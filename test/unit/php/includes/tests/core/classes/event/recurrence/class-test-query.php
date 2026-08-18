@@ -793,24 +793,51 @@ class Test_Query extends Base {
 	 * shape carries it for the same reason and needs its own case, because
 	 * dropping it there fails nothing else.
 	 *
+	 * The cancelled series is anchored **ahead** of now, unlike the shared
+	 * scenario's. That is the whole test: a series anchored behind now is kept
+	 * out of the upcoming bucket by the range predicate whether or not the
+	 * guard exists, so the two answers coincide and the guard could be deleted
+	 * with the assertion still green (rule 3a #8). Only a fully cancelled series
+	 * whose anchor would otherwise qualify can tell them apart.
+	 *
 	 * @covers ::fold_event_clauses
 	 * @covers ::occurrence_scope_predicate
 	 *
 	 * @return void
 	 */
 	public function test_a_fully_cancelled_series_is_absent_from_a_folded_ids_list(): void {
-		$scenario = $this->build_scenario();
+		$now      = $this->now();
+		$anchor   = $now->modify( '+6 hours' );
+		$series   = $this->create_series_at( $anchor, $now->modify( '+7 hours' ) );
+		$upcoming = $this->create_event_at( $now->modify( '+12 hours' ), $now->modify( '+13 hours' ) );
+
+		$this->assertContains(
+			(int) $series,
+			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
+			'Failed to assert the fixture series is in the bucket before anything is cancelled.'
+		);
 
 		for ( $index = 0; $index < 5; $index++ ) {
-			Occurrences::get_instance()->set_status(
-				$scenario['series'],
-				$this->occurrence_id( $scenario['anchor'], $index ),
-				Occurrences::STATUS_CANCELLED
+			$this->assertTrue(
+				Occurrences::get_instance()->set_status(
+					$series,
+					$this->occurrence_id( $anchor, $index ),
+					Occurrences::STATUS_CANCELLED
+				),
+				'Failed to cancel every occurrence; the assertion below would pass for the wrong reason.'
 			);
 		}
 
 		$this->assertSame(
-			array( (int) $scenario['early'], (int) $scenario['mid'] ),
+			array(),
+			Occurrences::get_instance()->select_for_series(
+				array( $series ),
+				array( 'status' => Occurrences::STATUS_SCHEDULED )
+			),
+			'Failed to assert the series has no scheduled occurrence rows left.'
+		);
+		$this->assertSame(
+			array( (int) $upcoming ),
 			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
 			'Failed to assert a fully cancelled series does not reappear at its anchor date in an ids list.'
 		);

@@ -1083,6 +1083,11 @@ class Test_Calendar_Recurrence extends Base {
 			'Both transitions recur yearly, so both carry a rule rather than being enumerated.'
 		);
 		$this->assertSame(
+			array( 'FREQ=YEARLY;BYMONTH=11;BYDAY=1SU', 'FREQ=YEARLY;BYMONTH=3;BYDAY=2SU' ),
+			$this->properties_in( $block, 'RRULE' ),
+			'The US rule moves the clocks on the first Sunday of November and the second Sunday of March.'
+		);
+		$this->assertSame(
 			array(
 				$this->utc_offset( $zone, $year . '-01-15 12:00:00' ),
 				$this->utc_offset( $zone, $year . '-07-01 12:00:00' ),
@@ -1102,6 +1107,58 @@ class Test_Calendar_Recurrence extends Base {
 			2,
 			$this->properties_in( $block, 'TZNAME' ),
 			'Each sub-component names the abbreviation it applies.'
+		);
+	}
+
+	/**
+	 * A zone whose transitions are legislated in UTC and on the *last* weekday
+	 * of the month is described that way.
+	 *
+	 * Two things this file's `America/New_York` case cannot reach, both stated
+	 * facts about the European Union rule (Directive 2000/84/EC) rather than
+	 * values read back out of the generator:
+	 *
+	 * 1. Both transitions fall on the **last** Sunday of their month, so the
+	 *    rule's `BYDAY` is `-1SU`. Counting forward from the first Sunday
+	 *    instead gives `4SU` or `5SU` depending on the year -- a rule that is
+	 *    wrong outright in some years and right by accident in others. The US
+	 *    rule is "second Sunday" and "first Sunday", so it never exercises this.
+	 * 2. Both transitions happen at 01:00 UTC, and RFC 5545 section 3.6.5 writes
+	 *    a sub-component's `DTSTART` in the offset the zone is *leaving*. Spring
+	 *    forward leaves CET, so 01:00 UTC is 02:00 there; autumn back leaves
+	 *    CEST, so the same 01:00 UTC is 03:00. Reading the offset from the wrong
+	 *    side of the change swaps those two, which is invisible in any zone
+	 *    whose transitions are pinned to local time -- as the US ones are, at
+	 *    02:00 local both ways.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
+	 *
+	 * @return void
+	 */
+	public function test_a_zone_transitioning_on_the_last_sunday_is_described_as_such(): void {
+		$this->create_upcoming_event( 'Europe/Berlin' );
+
+		$this->enable_pretty_permalinks();
+
+		$block = $this->timezone_block(
+			$this->body_for( home_url( '/feed/' . Calendar_Setup::ICAL_SLUG . '/' ) ),
+			'Europe/Berlin'
+		);
+
+		$this->assertSame(
+			array( 'FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU', 'FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU' ),
+			$this->properties_in( $block, 'RRULE' ),
+			'The EU rule moves the clocks on the last Sunday of October and of March.'
+		);
+		$this->assertSame(
+			array( '030000', '020000' ),
+			array_map(
+				static function ( string $value ): string {
+					return substr( $value, -6 );
+				},
+				$this->properties_in( $block, 'DTSTART' )
+			),
+			'Each transition is timed in the offset it leaves: 01:00 UTC is 03:00 CEST going back, 02:00 CET forward.'
 		);
 	}
 

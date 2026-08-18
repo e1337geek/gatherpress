@@ -240,6 +240,7 @@ final class Query {
 		add_action( 'updated_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
 		add_action( 'deleted_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
 		add_action( 'import_end', array( $this, 'refresh_has_recurring_events' ) );
+		add_action( 'gatherpress_occurrences_changed', array( $this, 'invalidate_post_query_cache' ) );
 		// Priority 11, strictly after Event\Query's own priority-10 clause
 		// filters, so the events table is already joined and its ordering and
 		// range predicates are there to be rewritten.
@@ -333,6 +334,32 @@ final class Query {
 		if ( in_array( $meta_key, array( Meta::META_KEY, self::FREQUENCY_META_KEY ), true ) ) {
 			self::refresh_has_recurring_events();
 		}
+	}
+
+	/**
+	 * Invalidate cached `WP_Query` result sets after an occurrence write.
+	 *
+	 * Once the clauses below consult the occurrence table, an event query's
+	 * result set depends on rows `WP_Query`'s own cache knows nothing about.
+	 * That cache is keyed on the `posts` group's `last_changed` value, which
+	 * core bumps from `clean_post_cache()` -- a post write. An occurrence write
+	 * touches no post, so nothing bumps it, and a site with a persistent object
+	 * cache keeps serving the pre-cancellation post list until some unrelated
+	 * edit happens to move it. Bumping the value strands every cached result set
+	 * at once, which is the same shape of invalidation `Calendar\Cache` performs
+	 * for the rendered bodies and cheaper than reasoning about which queries an
+	 * occurrence appeared in.
+	 *
+	 * Measured, not assumed: without this, cancelling every occurrence of a
+	 * series and re-running the identical query returns the series from cache
+	 * while the same SQL run directly does not.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function invalidate_post_query_cache(): void {
+		wp_cache_set_last_changed( 'posts' );
 	}
 
 	/**

@@ -125,20 +125,6 @@ final class Timezone_Component {
 	}
 
 	/**
-	 * Discard the memoized definitions.
-	 *
-	 * The transition list a definition is built from is fixed for the life of a
-	 * request; this exists so a test can prove the memo is a memo.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @return void
-	 */
-	public function flush(): void {
-		$this->rendered = array();
-	}
-
-	/**
 	 * Build one identifier's definition from the tz database.
 	 *
 	 * @since 0.36.0
@@ -289,16 +275,17 @@ final class Timezone_Component {
 			return array();
 		}
 
-		$lines = array();
+		$regular = $this->is_regular( $transitions );
+		$lines   = array();
 
-		foreach ( $this->is_regular( $transitions ) ? array( $transitions[0] ) : $transitions as $transition ) {
+		foreach ( $regular ? array( $transitions[0] ) : $transitions as $transition ) {
 			$lines[] = sprintf( 'BEGIN:%s', $type );
 			$lines[] = sprintf( 'TZOFFSETFROM:%s', $this->as_utc_offset( $transition['from'] ) );
 			$lines[] = sprintf( 'TZOFFSETTO:%s', $this->as_utc_offset( $transition['to'] ) );
 			$lines[] = sprintf( 'TZNAME:%s', $transition['abbr'] );
 			$lines[] = sprintf( 'DTSTART:%s', $transition['local'] );
 
-			if ( $this->is_regular( $transitions ) ) {
+			if ( $regular ) {
 				$lines[] = sprintf(
 					'RRULE:FREQ=YEARLY;BYMONTH=%d;BYDAY=%s',
 					$transition['month'],
