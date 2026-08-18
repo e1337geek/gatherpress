@@ -257,6 +257,39 @@ final class Rsvp_Occurrence {
 	 * @return string|null The occurrence identifier, or null when the RSVP is not scoped to one.
 	 */
 	public static function recurrence_id_for_comment( int $comment_id ): ?string {
+		$occurrence = self::occurrence_for_comment( $comment_id );
+
+		return null === $occurrence ? null : $occurrence['recurrence_id'];
+	}
+
+	/**
+	 * Resolve the whole composite key an already-stored RSVP belongs to.
+	 *
+	 * The counterpart to `current_occurrence()` for callbacks that have no
+	 * request to read — the RSVP confirmation email being the one that matters,
+	 * since it is composed while a comment is inserted (`Rsvp\Form`, reached
+	 * from the REST route and from `comment_post`) and is then *sent*, so a
+	 * link to the wrong date cannot be corrected afterwards.
+	 *
+	 * Both halves of PRD C-1's composite come off the term slug rather than
+	 * from the comment's `comment_post_ID`: `assign()` keys the slug on the
+	 * **occurrence's own** `series_post_id`, which REQ-18's forward split makes
+	 * legitimately different from the post the responder RSVPd on. Composing a
+	 * URL from `comment_post_ID` would name a post the occurrence no longer
+	 * lives on, and `Rewrite::parse_request()` matches on the exact pair.
+	 *
+	 * REQ-16 is the first guard: on a site with no recurring events this
+	 * returns without reading a term relationship at all, so the email path
+	 * runs byte-identical SQL there.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $comment_id RSVP comment ID.
+	 *
+	 * @return array{series_post_id: int, recurrence_id: string}|null The occurrence's composite key,
+	 *               or null when the RSVP is not scoped to one.
+	 */
+	public static function occurrence_for_comment( int $comment_id ): ?array {
 		if ( ! Query::site_has_recurring_events() || 1 > $comment_id ) {
 			return null;
 		}
@@ -267,7 +300,45 @@ final class Rsvp_Occurrence {
 			return null;
 		}
 
-		return self::recurrence_id_from_slug( (string) $slugs[0] );
+		$slug          = (string) $slugs[0];
+		$recurrence_id = self::recurrence_id_from_slug( $slug );
+		$post_id       = self::series_post_id_from_slug( $slug );
+
+		if ( null === $recurrence_id || null === $post_id ) {
+			return null;
+		}
+
+		return array(
+			'series_post_id' => $post_id,
+			'recurrence_id'  => $recurrence_id,
+		);
+	}
+
+	/**
+	 * Recover the series post ID from a term slug.
+	 *
+	 * The other half of `recurrence_id_from_slug()`'s inverse. The identifier
+	 * is `Ymd\THis` and carries no `-`, and a post ID is decimal digits, so the
+	 * final `-` is the only separator and the prefix is the post ID whole. A
+	 * prefix that is not a positive integer means the slug was not produced by
+	 * `term_slug()` at all, and is refused rather than cast to zero.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $slug Term slug, in the form `term_slug()` produces.
+	 *
+	 * @return int|null The series post ID, or null when the slug carries none.
+	 */
+	public static function series_post_id_from_slug( string $slug ): ?int {
+		$separator = strrpos( $slug, '-' );
+
+		if ( false === $separator ) {
+			return null;
+		}
+
+		$prefix = substr( $slug, 0, $separator );
+
+		return ctype_digit( $prefix ) && 0 < (int) $prefix ? (int) $prefix : null;
 	}
 
 	/**

@@ -78,6 +78,14 @@ class Test_Permalink extends Base {
 	protected array $sent_mail = array();
 
 	/**
+	 * Series-widening filters installed by `widen_series()`, for teardown.
+	 *
+	 * @since 0.36.0
+	 * @var callable[]
+	 */
+	protected array $series_filters = array();
+
+	/**
 	 * Create the occurrence table, register the RSVP routes, and put the event
 	 * post type behind pretty permalinks with the occurrence rewrite rule
 	 * flushed, so `get_permalink()` and `$this->go_to()` both exercise the real
@@ -123,6 +131,12 @@ class Test_Permalink extends Base {
 	 */
 	public function tearDown(): void {
 		remove_filter( 'pre_wp_mail', array( $this, 'capture_mail' ), 10 );
+
+		foreach ( $this->series_filters as $filter ) {
+			remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+		}
+
+		$this->series_filters = array();
 
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '' );
@@ -382,6 +396,13 @@ class Test_Permalink extends Base {
 	 * and the correct answer differ. This is the outbound half of the defect:
 	 * once sent, a link to the wrong date cannot be corrected.
 	 *
+	 * **This test is satisfied by either fix, and that is deliberate** — it
+	 * pins the user-visible outcome on the ordinary path. The REST route enters
+	 * occurrence context before dispatch, so `Context::permalink()` alone gets
+	 * the URL right here even with `Token::get_event_url()` reverted; measured,
+	 * that mutation survives this test. `test_..._on_a_widened_series` below is
+	 * the one that isolates the email's own mechanism.
+	 *
 	 * @covers \GatherPress\Core\Rsvp\Token::generate_url
 	 * @covers \GatherPress\Core\Rsvp\Token::get_event_url
 	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
@@ -493,6 +514,116 @@ class Test_Permalink extends Base {
 			is_404(),
 			'Failed to assert the iCal endpoint URL emitted from an occurrence page actually resolves.'
 		);
+	}
+
+	/**
+	 * The confirmation email reads the comment's term, not the request.
+	 *
+	 * PRD C-2's case, and the only fixture where the two mechanisms disagree.
+	 * The request names a sibling post carrying no occurrence rows of its own,
+	 * and `Series::resolve_post_ids()` reaches the occurrence on the owner post.
+	 * `Context::resolve()` matches an occurrence to a post by exact
+	 * `series_post_id`, so on the *sibling* it correctly declines and
+	 * `get_permalink()` answers with the sibling's bare URL — leaving the
+	 * comment's own `_gatherpress_occurrence` term, which `assign_occurrence()`
+	 * keyed on the **owner**, as the only thing that knows where the occurrence
+	 * lives.
+	 *
+	 * Three URLs are therefore distinct here, and the assertions name all
+	 * three: the owner's occurrence URL (correct), the sibling's bare URL (what
+	 * `get_permalink()` alone yields) and the owner's bare URL (what a fix
+	 * reading only the recurrence identifier and reusing `comment_post_ID`
+	 * would yield).
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Token::get_event_url
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::series_post_id_from_slug
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_confirmation_email_names_the_occurrences_own_post_on_a_widened_series(): void {
+		list( $owner_id, , $second ) = $this->create_series();
+
+		$sibling_id = $this->create_plain_event();
+
+		Recurrence_Query::refresh_has_recurring_events();
+		Context::flush_resolved();
+		$this->widen_series( $sibling_id, $owner_id );
+
+		$owner_url   = (string) get_permalink( $owner_id );
+		$sibling_url = (string) get_permalink( $sibling_id );
+		$response    = $this->submit_rsvp(
+			array(
+				'comment_post_ID' => $sibling_id,
+				'author'          => 'Margaret Hamilton',
+				'email'           => 'margaret@example.test',
+				'recurrence_id'   => $second,
+			)
+		);
+
+		$this->assertSame(
+			200,
+			$response->get_status(),
+			'Failed to assert the RSVP on the widened series was accepted.'
+		);
+
+		$comment_id = (int) $response->get_data()['comment_id'];
+
+		$this->assertSame(
+			array( Rsvp_Occurrence::term_slug( $owner_id, $second ) ),
+			wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) ),
+			'Failed to assert the RSVP was stamped with the occurrence\'s own post, not the post the request'
+				. ' named — without that the email has nothing to distinguish the two.'
+		);
+
+		$token       = ( new Token( $comment_id ) )->get_token();
+		$token_value = sprintf( '%d_%s', $comment_id, $token );
+
+		$this->assertCount( 1, $this->sent_mail, 'Failed to assert one confirmation email was sent.' );
+		$this->assertNotSame(
+			$owner_url,
+			$sibling_url,
+			'Failed to assert the two posts have distinct permalinks; the fixture proves nothing otherwise.'
+		);
+		$this->assertStringContainsString(
+			esc_url( add_query_arg( Token::NAME, $token_value, $owner_url . $second . '/' ) ),
+			$this->sent_mail[0],
+			'Failed to assert the confirmation email links to the occurrence on the post it actually lives on.'
+		);
+		$this->assertStringNotContainsString(
+			esc_url( add_query_arg( Token::NAME, $token_value, $sibling_url ) ),
+			$this->sent_mail[0],
+			'Failed to assert the email is not the bare permalink of the post the request named.'
+		);
+		$this->assertStringNotContainsString(
+			esc_url( add_query_arg( Token::NAME, $token_value, $owner_url ) ),
+			$this->sent_mail[0],
+			'Failed to assert the email is not the owner post\'s bare series URL either.'
+		);
+	}
+
+	/**
+	 * Treat two posts as one notional series for the duration of a test.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $member Post ID with no occurrence rows of its own.
+	 * @param int $owner  Post ID that owns the occurrence rows.
+	 *
+	 * @return void
+	 */
+	protected function widen_series( int $member, int $owner ): void {
+		$filter = static function ( array $post_ids, int $post_id ) use ( $member, $owner ): array {
+			return ( $member === $post_id || $owner === $post_id )
+				? array( $member, $owner )
+				: $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		Context::flush_resolved();
+
+		$this->series_filters[] = $filter;
 	}
 
 	/**
@@ -694,6 +825,12 @@ class Test_Permalink extends Base {
 		$this->assertNull(
 			Rsvp_Occurrence::series_post_id_from_slug( '0-20260903t180000' ),
 			'Failed to assert a zero prefix carries no series post ID.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::series_post_id_from_slug( '12-extra-20260903t180000' ),
+			'Failed to assert the split is on the LAST separator, the same one `recurrence_id_from_slug()`'
+				. ' splits on. Splitting on the first would answer 12 here while its sibling answered with the'
+				. ' identifier, and the pair would no longer be one inverse of `term_slug()`.'
 		);
 	}
 }
