@@ -62,8 +62,3 @@ test-report.xml
 
 *.zip
 coverage-multisite.xml
-
-# Untracked local scratch space for agent work (plans, benchmarks, notes).
-# Kept out of the shared phpcs ruleset: this is a local-only directory, so
-# excluding it there would put a private path into config every contributor reads.
-.local-docs/
