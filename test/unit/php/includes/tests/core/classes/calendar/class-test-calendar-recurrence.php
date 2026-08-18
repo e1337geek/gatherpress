@@ -19,7 +19,9 @@ use DateTimeImmutable;
 use DateTimeZone;
 use GatherPress\Core\Calendar\Cache as Calendar_Cache;
 use GatherPress\Core\Calendar\Calendar;
+use GatherPress\Core\Calendar\Revision;
 use GatherPress\Core\Calendar\Setup as Calendar_Setup;
+use GatherPress\Core\Calendar\Timezone_Component;
 use GatherPress\Core\Event\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Occurrences;
@@ -489,8 +491,20 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
-	 * Two occurrences downloaded individually carry different unique
-	 * identifiers, their own starts, and a recurrence reference.
+	 * Two occurrences downloaded individually share the series' identifier and
+	 * are told apart by `RECURRENCE-ID`.
+	 *
+	 * RFC 5545 section 3.8.4.7: the `UID` references the *entire* recurrence
+	 * set, and `RECURRENCE-ID` identifies one instance within it. A download of
+	 * one date is therefore an override of that instance, and its identity is
+	 * the `(UID, RECURRENCE-ID)` tuple -- which is what REQ-14 means when it
+	 * requires two individually downloaded occurrences to be distinguishable.
+	 *
+	 * Minting a per-occurrence `UID` instead satisfies the letter of "their
+	 * identifiers differ" and breaks the requirement it was written for: a
+	 * component carrying an identifier the series does not use is not an
+	 * override of anything, and a client shows it as a second event sitting on
+	 * top of the date the rule already produced.
 	 *
 	 * @covers ::get_ical_event_string
 	 * @covers ::recurrence_lines
@@ -498,28 +512,44 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_two_occurrences_downloaded_individually_have_different_uids(): void {
+	public function test_two_occurrences_downloaded_individually_share_the_series_uid(): void {
 		$post_id = $this->create_weekly_series();
 
 		$this->enable_pretty_permalinks();
 
+		$series = $this->body_for( $this->series_ical_url( $post_id ) );
 		$first  = $this->body_for( $this->occurrence_ical_url( $post_id, $this->occurrence_id( 1 ) ) );
 		$second = $this->body_for( $this->occurrence_ical_url( $post_id, $this->occurrence_id( 2 ) ) );
 
 		$this->assertSame(
-			array( sprintf( 'UID:gatherpress_%d_%s', $post_id, $this->occurrence_id( 1 ) ) ),
-			$this->lines_for( $first, 'UID' ),
-			'A single-occurrence download must carry a distinguishing UID.'
+			array( sprintf( 'UID:gatherpress_%d', $post_id ) ),
+			$this->lines_for( $series, 'UID' ),
+			'Failed to read the series identifier the occurrence downloads have to match.'
 		);
 		$this->assertSame(
-			array( sprintf( 'UID:gatherpress_%d_%s', $post_id, $this->occurrence_id( 2 ) ) ),
+			$this->lines_for( $series, 'UID' ),
+			$this->lines_for( $first, 'UID' ),
+			'An occurrence download identifies the recurrence set it belongs to, so it carries the series UID.'
+		);
+		$this->assertSame(
+			$this->lines_for( $series, 'UID' ),
 			$this->lines_for( $second, 'UID' ),
-			'The second occurrence must carry its own UID.'
+			'The second occurrence carries the same identifier, for the same reason.'
 		);
 		$this->assertSame(
 			array( sprintf( 'RECURRENCE-ID;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 1 ) ) ),
 			$this->lines_for( $first, 'RECURRENCE-ID' ),
-			'A single-occurrence download must carry a recurrence reference.'
+			'RECURRENCE-ID is what selects the instance inside the set the UID names.'
+		);
+		$this->assertSame(
+			array( sprintf( 'RECURRENCE-ID;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),
+			$this->lines_for( $second, 'RECURRENCE-ID' ),
+			'The two downloads are distinguishable, and this is the property that distinguishes them.'
+		);
+		$this->assertSame(
+			array(),
+			$this->lines_for( $series, 'RECURRENCE-ID' ),
+			'The series component describes the whole set, so it names no instance.'
 		);
 		$this->assertSame(
 			array( sprintf( 'DTSTART;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),
@@ -529,7 +559,543 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertSame(
 			array(),
 			$this->lines_for( $second, 'RRULE' ),
-			'A single-occurrence component describes one date and carries no rule.'
+			'An override describes one date and carries no rule of its own.'
+		);
+	}
+
+	/**
+	 * A long `EXDATE` line is folded, and unfolds back to the exact bytes.
+	 *
+	 * RFC 5545 section 3.1 puts a 75-octet ceiling on a content line and defines
+	 * folding as the way past it: CRLF followed by one space, which a parser
+	 * removes again. `EXDATE;TZID=America/New_York:` spends 29 of those octets
+	 * before the first identifier and each identifier costs 16 more, so three
+	 * cancellations already exceed the limit and a series accumulates them
+	 * without bound. A strict parser is entitled to reject or truncate an
+	 * over-length line, which puts the cancelled dates back on the calendar.
+	 *
+	 * Three cancellations is the smallest number that crosses the ceiling, so it
+	 * is what the fixture uses: two would leave the assertion passing against an
+	 * unfolded line.
+	 *
+	 * @covers ::get_ical_event_string
+	 * @covers ::exdate_line
+	 * @covers ::fold_content_line
+	 *
+	 * @return void
+	 */
+	public function test_a_long_exdate_line_is_folded_and_unfolds_byte_for_byte(): void {
+		$post_id = $this->create_weekly_series();
+
+		foreach ( array( 1, 2, 3 ) as $index ) {
+			Occurrences::get_instance()->set_status(
+				$post_id,
+				$this->occurrence_id( $index ),
+				Occurrences::STATUS_CANCELLED
+			);
+		}
+
+		$this->enable_pretty_permalinks();
+
+		$body     = $this->body_for( $this->series_ical_url( $post_id ) );
+		$expected = sprintf(
+			'EXDATE;TZID=%s:%s,%s,%s',
+			self::TIMEZONE,
+			$this->occurrence_id( 1 ),
+			$this->occurrence_id( 2 ),
+			$this->occurrence_id( 3 )
+		);
+
+		$this->assertGreaterThan(
+			75,
+			strlen( $expected ),
+			'The fixture must produce a line that actually exceeds the RFC ceiling, or folding is untested.'
+		);
+		$this->assertSame(
+			array( $expected ),
+			$this->lines_for( $this->unfold( $body ), 'EXDATE' ),
+			'Unfolding the payload must return the exact original bytes of the exclusion line.'
+		);
+		$this->assertSame(
+			array(),
+			$this->over_length_lines( $body ),
+			'No content line in the payload may exceed 75 octets, excluding its line break.'
+		);
+	}
+
+	/**
+	 * A `VTIMEZONE` covers the dates the components carry, not the date the
+	 * request was made on.
+	 *
+	 * RFC 5545 section 3.6.5 resolves an instant against the observance with the
+	 * last onset *before* it, and an `RRULE` generates nothing before its own
+	 * `DTSTART`. A definition built from a window around `now` therefore does
+	 * not define the offset of a 2020 event at all: every onset it carries
+	 * postdates the event.
+	 *
+	 * The fixture is deliberately in the opposite daylight-saving regime from
+	 * the one the suite runs in -- a January date in New York is standard time,
+	 * and the request cannot be -- so a definition that happens to describe today
+	 * cannot be mistaken for one that describes the event.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::build
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::range_of
+	 *
+	 * @return void
+	 */
+	public function test_a_past_events_timezone_is_defined_for_the_date_it_happened(): void {
+		$post_id = $this->create_plain_event();
+
+		( new Event( $post_id ) )->save_datetimes(
+			array(
+				'datetime_start' => '2020-01-15 14:30:00',
+				'datetime_end'   => '2020-01-15 16:30:00',
+				'timezone'       => self::TIMEZONE,
+			)
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$body  = $this->body_for( $this->series_ical_url( $post_id ) );
+		$block = $this->timezone_block( $body, self::TIMEZONE );
+
+		$this->assertSame(
+			array( 'DTSTART;TZID=' . self::TIMEZONE . ':20200115T143000' ),
+			$this->lines_for( $body, 'DTSTART' ),
+			'Failed to build a past-dated fixture; the assertions below would measure a future event.'
+		);
+		$this->assertNotSame( '', $block, 'The referenced zone must be defined in the same VCALENDAR.' );
+
+		$onsets = $this->properties_in( $block, 'DTSTART' );
+
+		$this->assertNotEmpty( $onsets, 'A definition with no onset defines nothing.' );
+		$this->assertLessThanOrEqual(
+			'20200115T143000',
+			min( $onsets ),
+			'Every instant a body carries needs an observance that begins before it, or its offset is undefined.'
+		);
+		$this->assertContains(
+			$this->utc_offset( new DateTimeZone( self::TIMEZONE ), '2020-01-15 14:30:00' ),
+			$this->properties_in( $block, 'TZOFFSETTO' ),
+			'The offset the zone was actually in on the event date must be one the definition can produce.'
+		);
+	}
+
+	/**
+	 * One definition spans a body that reaches decades in both directions.
+	 *
+	 * Driven through `render_for_body()` with a synthetic body rather than
+	 * through two fixtures, because no aggregate bucket holds a 2020 event and a
+	 * 2035 event at the same time: `upcoming` excludes the first and `past`
+	 * excludes the second. The seam under test is the one that reads the range
+	 * off the assembled text, so the assembled text is what it is given.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::range_of
+	 *
+	 * @return void
+	 */
+	public function test_a_definition_spans_every_date_the_body_refers_to(): void {
+		$body = implode(
+			"\r\n",
+			array(
+				'BEGIN:VEVENT',
+				'DTSTART;TZID=' . self::TIMEZONE . ':20200115T143000',
+				'DTEND;TZID=' . self::TIMEZONE . ':20200115T163000',
+				'END:VEVENT',
+				'BEGIN:VEVENT',
+				'DTSTART;TZID=' . self::TIMEZONE . ':20350715T143000',
+				'DTEND;TZID=' . self::TIMEZONE . ':20350715T163000',
+				'END:VEVENT',
+			)
+		);
+
+		$block = $this->timezone_block(
+			Timezone_Component::get_instance()->render_for_body( $body ) . "\r\n",
+			self::TIMEZONE
+		);
+
+		$this->assertNotSame( '', $block, 'The referenced zone must be defined.' );
+
+		$onsets = $this->properties_in( $block, 'DTSTART' );
+
+		$this->assertLessThanOrEqual(
+			'20200115T143000',
+			min( $onsets ),
+			'The earliest instant in the body needs an observance that begins before it.'
+		);
+		$this->assertNotEmpty(
+			$this->properties_in( $block, 'RRULE' ),
+			'A zone whose policy is unchanged across the span is described by a rule that reaches the far end of it.'
+		);
+	}
+
+	/**
+	 * Two transitions on the same yearly position with different offsets are
+	 * not one rule, however alike their names are.
+	 *
+	 * This is what a jurisdiction abolishing daylight saving looks like in
+	 * tzdata: the same first-Sunday-of-November 02:00 position, changing to
+	 * `-0500` in one year and to `-0400` in the next. A signature built from
+	 * position alone -- or from position and name -- calls the pair regular and
+	 * emits one unbounded yearly rule, so every date after the policy change is
+	 * computed an hour wrong for as long as the subscription lives.
+	 *
+	 * Synthetic rather than pinned to a real identifier, because which zones
+	 * exhibit this is a property of the host's tz database and changes with it:
+	 * a fixture naming one would silently stop testing the defect on the next
+	 * tzdata update (rule 3a #7).
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::is_regular
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::sub_component
+	 *
+	 * @return void
+	 */
+	public function test_equal_abbreviations_with_different_offsets_are_not_regular(): void {
+		$instance    = Timezone_Component::get_instance();
+		$transitions = array(
+			array(
+				'from'  => -14400,
+				'to'    => -18000,
+				'abbr'  => 'EST',
+				'local' => '20261101T020000',
+				'month' => 11,
+				'byday' => '1SU',
+			),
+			array(
+				'from'  => -14400,
+				'to'    => -14400,
+				'abbr'  => 'EST',
+				'local' => '20271107T020000',
+				'month' => 11,
+				'byday' => '1SU',
+			),
+		);
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method( $instance, 'is_regular', array( $transitions ) ),
+			'A pair that changes to different offsets is two observances, not one repeating rule.'
+		);
+
+		$lines = Utility::invoke_hidden_method(
+			$instance,
+			'sub_component',
+			array( 'STANDARD', $transitions )
+		);
+
+		$this->assertSame(
+			2,
+			count( array_keys( $lines, 'BEGIN:STANDARD', true ) ),
+			'Each policy period must be written out on its own rather than collapsed into the first.'
+		);
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$lines,
+					static function ( string $line ): bool {
+						return str_starts_with( $line, 'RRULE:' );
+					}
+				)
+			),
+			'An unbounded rule must not be claimed for a pattern the zone stops following.'
+		);
+		$this->assertSame(
+			array( 'TZOFFSETTO:-0500', 'TZOFFSETTO:-0400' ),
+			array_values(
+				array_filter(
+					$lines,
+					static function ( string $line ): bool {
+						return str_starts_with( $line, 'TZOFFSETTO:' );
+					}
+				)
+			),
+			'Both offsets the zone actually moved to must reach the client.'
+		);
+	}
+
+	/**
+	 * A pair that agrees on offsets and name as well as position still collapses
+	 * to one rule.
+	 *
+	 * The companion to the case above: widening the signature must not make
+	 * every zone irregular, which would replace one rule with a sub-component
+	 * per transition for every ordinary daylight-saving zone on the site.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::is_regular
+	 *
+	 * @return void
+	 */
+	public function test_a_genuinely_repeating_transition_is_still_regular(): void {
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				Timezone_Component::get_instance(),
+				'is_regular',
+				array(
+					array(
+						array(
+							'from'  => -14400,
+							'to'    => -18000,
+							'abbr'  => 'EST',
+							'local' => '20261101T020000',
+							'month' => 11,
+							'byday' => '1SU',
+						),
+						array(
+							'from'  => -14400,
+							'to'    => -18000,
+							'abbr'  => 'EST',
+							'local' => '20271107T020000',
+							'month' => 11,
+							'byday' => '1SU',
+						),
+					),
+				)
+			),
+			'Transitions that agree on position, offsets and name are one rule.'
+		);
+	}
+
+	/**
+	 * Moving occurrence rows between posts invalidates both sides.
+	 *
+	 * `move_to_post()` is the primitive REQ-18's forward split moves rows with.
+	 * It is bare SQL: no post row, no meta row and no term relationship changes,
+	 * so nothing the cache watches fires by itself. A move is a write on **two**
+	 * series -- the source stops carrying the dates and the destination starts --
+	 * and a subscriber revalidating either against an unmoved `Last-Modified` is
+	 * told `304` for a body that no longer describes it.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::move_to_post
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::invalidate_post_query_cache
+	 *
+	 * @return void
+	 */
+	public function test_moving_occurrence_rows_invalidates_both_posts(): void {
+		$source = $this->create_weekly_series();
+		// The destination is a bare event post with no rows of its own, which is
+		// the shape a forward split creates before it moves anything into it.
+		$destination = $this->create_plain_event();
+		$moved_id    = $this->occurrence_id( 2 );
+
+		$this->enable_pretty_permalinks();
+		$this->backdate_calendar_stamp( HOUR_IN_SECONDS );
+
+		$stale_stamp  = Calendar_Cache::get_instance()->get_last_modified();
+		$stale_count  = Calendar_Cache::get_instance()->get_change_count();
+		$stale_posts  = wp_cache_get_last_changed( 'posts' );
+		$source_url   = $this->series_ical_url( $source );
+		$before_rows  = Occurrences::get_instance()->select_for_series( array( $destination ) );
+		$before_lines = $this->lines_for( $this->body_for( $source_url ), 'DTSTART' );
+
+		$this->assertNotEmpty(
+			$before_lines,
+			'The source feed must render before the move for the comparison to mean anything.'
+		);
+		// Prime the request-scoped resolution memo against the ownership the
+		// move is about to change. Nothing else in the request will tell it that
+		// storage moved under it.
+		$this->assertNull(
+			Context::resolve_in_series( $destination, $moved_id ),
+			'The destination cannot own the row before the move, or the memo assertion below proves nothing.'
+		);
+
+		$this->assertSame(
+			1,
+			Occurrences::get_instance()->move_to_post( $source, $destination, array( $moved_id ) ),
+			'The fixture must actually move a row, or every assertion below passes vacuously.'
+		);
+
+		$this->assertNotSame(
+			$stale_stamp,
+			Calendar_Cache::get_instance()->get_last_modified(),
+			'A move changes what both feeds emit and must stamp the calendar.'
+		);
+		$this->assertGreaterThan(
+			$stale_count,
+			Calendar_Cache::get_instance()->get_change_count(),
+			'Both sides of the move must be announced, so the change counter moves at least once.'
+		);
+		$this->assertNotSame(
+			$stale_posts,
+			wp_cache_get_last_changed( 'posts' ),
+			'Occurrence-scoped post query results are cached on the posts group and must be invalidated too.'
+		);
+		$this->assertCount(
+			count( $before_rows ) + 1,
+			Occurrences::get_instance()->select_for_series( array( $destination ) ),
+			'The row must be owned by the destination after the move.'
+		);
+		$this->assertNotNull(
+			Context::resolve_in_series( $destination, $moved_id ),
+			'A resolution memoized against the old ownership must not survive the move that invalidated it.'
+		);
+	}
+
+	/**
+	 * A second change inside one second is not served the body the first one
+	 * produced.
+	 *
+	 * The response cache is namespaced by `Last-Modified`, which has one-second
+	 * resolution. Render, change, render again in the same second and the second
+	 * lookup lands on the key the first render filled -- so the change is
+	 * correctly absent from the stored body and correctly reported as fresh.
+	 * Cancelling two dates of a series is one operator action and lands well
+	 * inside a second, so this is the ordinary case rather than a race.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Cache::get_versioned_key
+	 * @covers \GatherPress\Core\Calendar\Cache::get_change_count
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed
+	 *
+	 * @return void
+	 */
+	public function test_a_change_in_the_same_second_is_not_served_the_cached_body(): void {
+		$post_id = $this->create_weekly_series();
+
+		$this->enable_pretty_permalinks();
+
+		$url         = $this->series_ical_url( $post_id );
+		$occurrences = Occurrences::get_instance();
+
+		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
+
+		$opened = (int) gmdate( 'U' );
+		$first  = $this->body_for( $url );
+
+		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
+
+		$second = $this->body_for( $url );
+		$closed = (int) gmdate( 'U' );
+
+		$this->assertSame(
+			$opened,
+			$closed,
+			'Both renders and the change between them must land in one second, or the cache key moves anyway.'
+		);
+		$this->assertSame(
+			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 1 ) ) ),
+			$this->lines_for( $this->unfold( $first ), 'EXDATE' ),
+			'Failed to render the first exclusion, so the comparison below would prove nothing.'
+		);
+		$this->assertSame(
+			array(
+				sprintf(
+					'EXDATE;TZID=%s:%s,%s',
+					self::TIMEZONE,
+					$this->occurrence_id( 1 ),
+					$this->occurrence_id( 2 )
+				),
+			),
+			$this->lines_for( $this->unfold( $second ), 'EXDATE' ),
+			'The second cancellation must reach the response rather than being masked by the first render.'
+		);
+	}
+
+	/**
+	 * Two occurrence writes in the same second still produce strictly
+	 * increasing revisions, and the second reaches the response.
+	 *
+	 * `SEQUENCE` is the only signal by which a client decides whether an
+	 * incoming component supersedes one it already holds, and both of the
+	 * obvious sources of it have one-second resolution: `post_modified_gmt`,
+	 * which an occurrence write does not touch at all, and `time()`. Cancelling
+	 * two dates of a series is one loop and lands well inside a second, so this
+	 * is the ordinary case rather than a race.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Revision::advance
+	 * @covers \GatherPress\Core\Calendar\Revision::current
+	 * @covers \GatherPress\Core\Calendar\Revision::stored
+	 * @covers ::get_sequence
+	 *
+	 * @return void
+	 */
+	public function test_two_changes_in_one_second_still_raise_the_sequence(): void {
+		$post_id = $this->create_weekly_series();
+
+		$this->enable_pretty_permalinks();
+
+		$occurrences = Occurrences::get_instance();
+		$revision    = Revision::get_instance();
+		$before      = $revision->current( $post_id );
+
+		$opened = (int) gmdate( 'U' );
+
+		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
+
+		$middle = $revision->current( $post_id );
+
+		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
+
+		$after  = $revision->current( $post_id );
+		$closed = (int) gmdate( 'U' );
+
+		$this->assertSame(
+			$opened,
+			$closed,
+			'Both writes must land in the same second, or this test proves nothing about resolution.'
+		);
+		$this->assertGreaterThan( $before, $middle, 'The first cancellation must advance the revision.' );
+		$this->assertGreaterThan( $middle, $after, 'The second must advance it again, in the same second.' );
+		$this->assertSame(
+			$after,
+			$this->sequence_in( $this->body_for( $this->series_ical_url( $post_id ) ) ),
+			'The advanced revision is what the serialized component has to report.'
+		);
+	}
+
+	/**
+	 * The `SEQUENCE` value a payload's component carries.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body The iCal payload.
+	 *
+	 * @return int The revision number.
+	 */
+	protected function sequence_in( string $body ): int {
+		$lines = $this->lines_for( $body, 'SEQUENCE' );
+
+		return (int) substr( (string) ( $lines[0] ?? 'SEQUENCE:0' ), strlen( 'SEQUENCE:' ) );
+	}
+
+	/**
+	 * Unfold an iCal payload back to its logical content lines.
+	 *
+	 * RFC 5545 section 3.1: a CRLF followed by a single linear white space
+	 * character is removed when the content is processed. Byte-for-byte, which
+	 * is the point -- a folder that drops or duplicates an octet round-trips to
+	 * something the assertion would not recognize.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body The iCal payload.
+	 *
+	 * @return string The payload with every fold removed.
+	 */
+	protected function unfold( string $body ): string {
+		return str_replace( array( "\r\n ", "\r\n\t" ), '', $body );
+	}
+
+	/**
+	 * Every physical line of a payload longer than the RFC 5545 ceiling.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body The iCal payload.
+	 *
+	 * @return string[] The over-length lines, if any.
+	 */
+	protected function over_length_lines( string $body ): array {
+		return array_values(
+			array_filter(
+				explode( "\r\n", $body ),
+				static function ( string $line ): bool {
+					return strlen( $line ) > 75;
+				}
+			)
 		);
 	}
 
@@ -560,9 +1126,9 @@ class Test_Calendar_Recurrence extends Base {
 			'The occurrence download must not be served the cached series component.'
 		);
 		$this->assertSame(
-			array( sprintf( 'UID:gatherpress_%d_%s', $post_id, $this->occurrence_id( 2 ) ) ),
-			$this->lines_for( $occurrence, 'UID' ),
-			'The occurrence download must carry its own UID even when the series was requested first.'
+			array( sprintf( 'RECURRENCE-ID;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),
+			$this->lines_for( $occurrence, 'RECURRENCE-ID' ),
+			'The occurrence download must name its own instance even when the series was requested first.'
 		);
 	}
 

@@ -844,6 +844,74 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * A folded ids query is totally ordered, so two series tied on their
+	 * selected aggregate date cannot swap between pages.
+	 *
+	 * The two fixtures share an anchor to the second, so `MIN( COALESCE(...) )`
+	 * returns the same value for both groups and the aggregate alone cannot
+	 * separate them. MySQL's sort is not stable, which is what lets a tied pair
+	 * come back one way for the first page and the other way for the second --
+	 * putting one series on both pages of an aggregate feed and the other on
+	 * neither.
+	 *
+	 * Asserts the emitted `ORDER BY` as well as the pages. Whether an untied
+	 * sort *happens* to be consistent on a given plan is not something a test
+	 * can pin down; that the clause names a unique column is.
+	 *
+	 * @covers ::fold_event_clauses
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_folded_ids_pagination_is_stable_when_two_series_tie(): void {
+		global $wpdb;
+
+		$now    = $this->now();
+		$anchor = $now->modify( '+1 hour' );
+		$first  = $this->create_series_at( $anchor, $anchor->modify( '+1 hour' ) );
+		$second = $this->create_series_at( $anchor, $anchor->modify( '+1 hour' ) );
+
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		$page_one = new WP_Query(
+			$this->event_query_args(
+				'upcoming',
+				array(
+					'fields'         => 'ids',
+					'posts_per_page' => 1,
+					'paged'          => 1,
+				)
+			)
+		);
+		$page_two = new WP_Query(
+			$this->event_query_args(
+				'upcoming',
+				array(
+					'fields'         => 'ids',
+					'posts_per_page' => 1,
+					'paged'          => 2,
+				)
+			)
+		);
+
+		$this->assertStringContainsString(
+			', `' . $wpdb->posts . '`.ID ASC',
+			(string) $page_one->request,
+			'A folded ordering must name a column unique to the grouped row, or tied series have no order at all.'
+		);
+		$this->assertSame(
+			array( min( $first, $second ) ),
+			array_map( 'intval', $page_one->posts ),
+			'The first page of a tied pair must be the one the tie-break puts first.'
+		);
+		$this->assertSame(
+			array( max( $first, $second ) ),
+			array_map( 'intval', $page_two->posts ),
+			'The second page must be the other series, never a repeat of the first.'
+		);
+	}
+
+	/**
 	 * Direct coverage for `aggregate_orderby()`'s two paths.
 	 *
 	 * Xdebug does not trace a private helper reached through a same-class
@@ -857,10 +925,16 @@ class Test_Query extends Base {
 	 * @return void
 	 */
 	public function test_aggregate_orderby_direct_invoke_covers_both_paths(): void {
+		global $wpdb;
+
 		$instance = Query::get_instance();
+		// Spelled out rather than built with `prepare()`, so the expectation
+		// states the SQL the tie-break has to be rather than repeating the call
+		// that produces it.
+		$tie_break = ', `' . $wpdb->posts . '`.ID ASC';
 
 		$this->assertSame(
-			'MIN( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) ASC',
+			'MIN( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) ASC' . $tie_break,
 			Utility::invoke_hidden_method(
 				$instance,
 				'aggregate_orderby',
@@ -869,7 +943,7 @@ class Test_Query extends Base {
 			'An ascending sort takes the earliest occurrence in the group.'
 		);
 		$this->assertSame(
-			'MAX( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) DESC',
+			'MAX( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) DESC' . $tie_break,
 			Utility::invoke_hidden_method(
 				$instance,
 				'aggregate_orderby',

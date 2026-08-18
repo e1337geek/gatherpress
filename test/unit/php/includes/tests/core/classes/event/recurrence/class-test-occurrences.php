@@ -78,6 +78,197 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A move with nothing to move writes nothing and announces nothing.
+	 *
+	 * Both guards matter to the caller a forward split will be. An empty
+	 * identifier list would build `IN ( )`, which is a syntax error rather than
+	 * a no-op; a source equal to the destination would announce two changes and
+	 * invalidate every cached feed on the site for an update that moved nothing.
+	 *
+	 * @covers ::move_to_post
+	 *
+	 * @return void
+	 */
+	public function test_move_to_post_is_a_no_op_without_work_to_do(): void {
+		$post_id     = $this->create_and_project();
+		$destination = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+		$announced   = 0;
+
+		add_action(
+			'gatherpress_occurrences_changed',
+			static function () use ( &$announced ): void {
+				++$announced;
+			}
+		);
+
+		$this->assertSame(
+			0,
+			Occurrences::get_instance()->move_to_post( $post_id, (int) $destination, array() ),
+			'An empty identifier list must not reach the database.'
+		);
+		$this->assertSame(
+			0,
+			Occurrences::get_instance()->move_to_post( $post_id, $post_id, array( '20260903T180000' ) ),
+			'A move onto the post that already owns the rows is not a move.'
+		);
+		$this->assertSame( 0, $announced, 'Neither no-op may invalidate a cache.' );
+	}
+
+	/**
+	 * A move that matches no row changes nothing and announces nothing.
+	 *
+	 * The scope is the composite `(series_post_id, recurrence_id)` key, so an
+	 * identifier that belongs to another series matches nothing here -- and the
+	 * announcement is gated on rows actually having moved rather than on the
+	 * statement having run.
+	 *
+	 * @covers ::move_to_post
+	 *
+	 * @return void
+	 */
+	public function test_move_to_post_announces_nothing_when_no_row_matches(): void {
+		$post_id     = $this->create_and_project();
+		$destination = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+		$announced   = 0;
+
+		add_action(
+			'gatherpress_occurrences_changed',
+			static function () use ( &$announced ): void {
+				++$announced;
+			}
+		);
+
+		$this->assertSame(
+			0,
+			Occurrences::get_instance()->move_to_post( $post_id, (int) $destination, array( '20991231T000000' ) ),
+			'An identifier this series does not carry must move nothing.'
+		);
+		$this->assertSame( 0, $announced, 'A statement that moved nothing has nothing to announce.' );
+	}
+
+	/**
+	 * The preview reports what a candidate rule would produce, and writes nothing.
+	 *
+	 * REQ-13's last criterion: the organizer is shown how many RSVPs a rule
+	 * change would strand *before* it is applied, which means answering "what
+	 * would this rule produce?" without the upsert or the stale-row delete
+	 * `project()` performs.
+	 *
+	 * @covers ::preview_recurrence_ids
+	 *
+	 * @return void
+	 */
+	public function test_preview_recurrence_ids_reports_a_candidate_without_writing(): void {
+		$post_id = $this->create_and_project();
+		$stored  = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$preview = Occurrences::get_instance()->preview_recurrence_ids(
+			$post_id,
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+
+		$this->assertSame(
+			array( '20260903T180000', '20260904T180000', '20260905T180000' ),
+			$preview,
+			'The preview must expand the candidate rule against the series anchor.'
+		);
+		$this->assertSame(
+			$stored,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'A preview is read-only: the stored rows must be byte-identical afterwards.'
+		);
+	}
+
+	/**
+	 * A post with no anchor previews nothing rather than warning.
+	 *
+	 * @covers ::preview_recurrence_ids
+	 *
+	 * @return void
+	 */
+	public function test_preview_recurrence_ids_returns_nothing_without_an_anchor(): void {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->preview_recurrence_ids(
+				(int) $post_id,
+				Rule::from_array(
+					array(
+						'frequency' => 'daily',
+						'interval'  => 1,
+						'end_type'  => 'count',
+						'count'     => 3,
+					)
+				)
+			),
+			'An event with no datetime has nothing for a candidate rule to expand from.'
+		);
+	}
+
+	/**
+	 * A series the expander rejects previews nothing rather than throwing.
+	 *
+	 * The same live scenario `expand_or_clear()`'s catch exists for: the
+	 * `gatherpress_timezone` filter runs after GatherPress's own validation and
+	 * can hand back a fixed offset, which `Expander::expand()` refuses on its
+	 * first line. The preview runs on organizer input from a REST route, so
+	 * that has to come back as "this produces no dates" rather than as a fatal.
+	 *
+	 * @covers ::preview_recurrence_ids
+	 *
+	 * @return void
+	 */
+	public function test_preview_recurrence_ids_swallows_an_unexpandable_series(): void {
+		$post_id = $this->create_and_project();
+		$filter  = static fn() => '+05:30';
+
+		add_filter( 'gatherpress_timezone', $filter );
+
+		$preview = Occurrences::get_instance()->preview_recurrence_ids(
+			$post_id,
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+
+		remove_filter( 'gatherpress_timezone', $filter );
+
+		$this->assertSame(
+			array(),
+			$preview,
+			'A series whose timezone cannot carry a rule must preview as empty rather than fatal.'
+		);
+	}
+
+	/**
 	 * Coverage for `__construct` and `setup_hooks`.
 	 *
 	 * @covers ::__construct

@@ -2364,6 +2364,18 @@ final class Occurrences {
 	 * Scopes by both `series_post_id` and `recurrence_id`, never by
 	 * `recurrence_id` alone.
 	 *
+	 * A move is a write on **two** series, so both are announced: the source
+	 * loses rows from its feed and its aggregate bucket, the destination gains
+	 * them, and a subscriber revalidating either one against an unmoved
+	 * `Last-Modified` is told `304` for a body that no longer describes it. The
+	 * resolved-context memo is dropped for the same reason -- it maps an
+	 * occurrence to the post that owned it, and that is precisely what changed.
+	 *
+	 * The RSVP comments carried by a moved row survive the row itself, but their
+	 * taxonomy term slug embeds the owning post ID, so a caller moving rows must
+	 * rename the terms in the same operation. That coordination belongs to the
+	 * split, not here; this method moves rows and announces the consequences.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int      $from_post_id   Post the rows currently belong to.
@@ -2390,9 +2402,17 @@ final class Occurrences {
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
-		return (int) $wpdb->query( $wpdb->prepare( $sql, $values ) );
+		$moved = (int) $wpdb->query( $wpdb->prepare( $sql, $values ) );
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		if ( 0 < $moved ) {
+			Context::flush_resolved();
+			$this->announce_change( $from_post_id );
+			$this->announce_change( $to_post_id );
+		}
+
+		return $moved;
 	}
 
 	/**

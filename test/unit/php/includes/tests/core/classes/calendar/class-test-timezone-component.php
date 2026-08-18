@@ -67,12 +67,12 @@ class Test_Timezone_Component extends Base {
 
 		$this->assertSame(
 			'',
-			Utility::invoke_hidden_method( $instance, 'build', array( 'UTC+5' ) ),
+			Utility::invoke_hidden_method( $instance, 'build', array( 'UTC+5', time(), time() ) ),
 			'A fixed UTC offset cannot be named in a TZID and so defines nothing.'
 		);
 		$this->assertSame(
 			'',
-			Utility::invoke_hidden_method( $instance, 'build', array( 'Mars/Olympus_Mons' ) ),
+			Utility::invoke_hidden_method( $instance, 'build', array( 'Mars/Olympus_Mons', time(), time() ) ),
 			'An identifier absent from the tz database defines nothing either.'
 		);
 		$this->assertSame(
@@ -93,7 +93,7 @@ class Test_Timezone_Component extends Base {
 		$component = Utility::invoke_hidden_method(
 			Timezone_Component::get_instance(),
 			'build',
-			array( 'Europe/Berlin' )
+			array( 'Europe/Berlin', time(), time() )
 		);
 
 		$this->assertStringStartsWith( "BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\n", $component );
@@ -101,29 +101,124 @@ class Test_Timezone_Component extends Base {
 	}
 
 	/**
-	 * The second and later calls for one identifier are served from the memo.
+	 * The second and later calls for one identifier and range are served from
+	 * the memo, and a different range is not.
 	 *
 	 * A feed commonly carries many events in one zone; the transition list is
-	 * the same for all of them and reading it is the expensive part.
+	 * the same for all of them and reading it is the expensive part. It is only
+	 * the same for the same range, though, which is why the range is part of
+	 * the memo key: serving a definition built for 2026 to a body reaching back
+	 * to 2020 is the defect the range exists to fix, reintroduced by the cache.
 	 *
 	 * @covers ::render
 	 *
 	 * @return void
 	 */
-	public function test_a_definition_is_built_once_per_identifier(): void {
+	public function test_a_definition_is_built_once_per_identifier_and_range(): void {
 		$instance = Timezone_Component::get_instance();
-		$first    = $instance->render( 'Europe/Berlin' );
+		$early    = strtotime( '2020-01-15 00:00:00 UTC' );
+		$late     = strtotime( '2026-01-15 00:00:00 UTC' );
+		$first    = $instance->render( 'Europe/Berlin', $early, $late );
 
-		Utility::set_and_get_hidden_property( $instance, 'rendered', array( 'Europe/Berlin' => 'SENTINEL' ) );
+		Utility::set_and_get_hidden_property(
+			$instance,
+			'rendered',
+			array( sprintf( 'Europe/Berlin|%d|%d', $early, $late ) => 'SENTINEL' )
+		);
 
 		$this->assertNotSame( '', $first, 'The first call must build something for the memo to hold.' );
 		$this->assertSame(
 			'SENTINEL',
-			$instance->render( 'Europe/Berlin' ),
-			'A second call for the same identifier must be served from the memo rather than rebuilt.'
+			$instance->render( 'Europe/Berlin', $early, $late ),
+			'A second call for the same identifier and range must be served from the memo rather than rebuilt.'
+		);
+		$this->assertNotSame(
+			'SENTINEL',
+			$instance->render( 'Europe/Berlin', $late, $late ),
+			'A different range is a different definition and must not be served from the same entry.'
 		);
 
 		Utility::set_and_get_hidden_property( $instance, 'rendered', array() );
+	}
+
+	/**
+	 * A rule with no last instant extends the range to the lookahead horizon.
+	 *
+	 * An open-ended series names no final date, so the only concrete moments in
+	 * its component are its own start and end -- which would bound the window to
+	 * a single day and leave the definition unable to describe the dates the
+	 * rule goes on producing. Both arms of the check matter: a bounded rule must
+	 * *not* extend the window, or every feed on the site pays for transitions
+	 * nothing refers to.
+	 *
+	 * Invoked directly because xdebug does not trace a private helper reached
+	 * through a same-class delegation.
+	 *
+	 * @covers ::has_open_ended_rule
+	 * @covers ::range_of
+	 *
+	 * @return void
+	 */
+	public function test_an_open_ended_rule_extends_the_range_forward(): void {
+		$instance = Timezone_Component::get_instance();
+		$bounded  = "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20200115T140000\r\n"
+			. "RRULE:FREQ=WEEKLY;COUNT=5\r\nEND:VEVENT";
+		$open     = "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20200115T140000\r\n"
+			. "RRULE:FREQ=WEEKLY\r\nEND:VEVENT";
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method( $instance, 'has_open_ended_rule', array( $bounded ) ),
+			'A rule carrying COUNT names its last instant.'
+		);
+		$this->assertTrue(
+			Utility::invoke_hidden_method( $instance, 'has_open_ended_rule', array( $open ) ),
+			'A rule carrying neither UNTIL nor COUNT does not.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'has_open_ended_rule',
+				array( "BEGIN:VEVENT\r\nRRULE:FREQ=WEEKLY;UNTIL=20301231T000000Z\r\nEND:VEVENT" )
+			),
+			'An UNTIL bound names it too.'
+		);
+
+		[ , $bounded_end ] = Utility::invoke_hidden_method( $instance, 'range_of', array( $bounded ) );
+		[ , $open_end ]    = Utility::invoke_hidden_method( $instance, 'range_of', array( $open ) );
+
+		$this->assertGreaterThan(
+			$bounded_end,
+			$open_end,
+			'An open-ended rule must reach past the last concrete date written beside it.'
+		);
+		$this->assertGreaterThan(
+			time() + ( 2 * YEAR_IN_SECONDS ),
+			$open_end,
+			'And it must reach the lookahead horizon rather than merely the present.'
+		);
+	}
+
+	/**
+	 * An unparsable date-time token in a body is skipped rather than counted.
+	 *
+	 * @covers ::range_of
+	 *
+	 * @return void
+	 */
+	public function test_an_unparsable_moment_does_not_widen_the_range(): void {
+		$instance = Timezone_Component::get_instance();
+
+		[ $start, $end ] = Utility::invoke_hidden_method(
+			$instance,
+			'range_of',
+			array( "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:99999999T999999\r\nEND:VEVENT" )
+		);
+
+		$this->assertSame(
+			$start,
+			$end,
+			'A body with no readable moment collapses to the present rather than to a nonsense span.'
+		);
 	}
 
 	/**

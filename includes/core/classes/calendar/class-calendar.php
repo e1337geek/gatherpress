@@ -49,12 +49,24 @@ final class Calendar {
 	 * Epoch the VEVENT `SEQUENCE` counts from, as a Unix timestamp.
 	 *
 	 * 2020-01-01 00:00:00 UTC. See `get_sequence()` for why the sequence is
-	 * measured from an epoch rather than being a raw timestamp.
+	 * measured from an epoch rather than being a raw timestamp. Aliased from
+	 * `Revision` so the serializer and the primitive that advances it cannot
+	 * drift apart.
 	 *
 	 * @since 0.35.0
 	 * @var int
 	 */
-	private const SEQUENCE_EPOCH = 1577836800;
+	private const SEQUENCE_EPOCH = Revision::EPOCH;
+
+	/**
+	 * Largest number of octets a content line may carry, excluding its break.
+	 *
+	 * RFC 5545 section 3.1. See `fold_content_line()`.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	private const MAX_LINE_OCTETS = 75;
 
 	/**
 	 * Event this Calendar instance wraps.
@@ -264,9 +276,9 @@ final class Calendar {
 			$location .= sprintf( ', %s', $venue['address'] );
 		}
 
-		$summary     = $this->fold_ical_text( $this->escape_ical_text( $this->event->event->post_title ) );
-		$description = $this->fold_ical_text( $this->escape_ical_text( $description ) );
-		$location    = $this->fold_ical_text( $this->escape_ical_text( $location ) );
+		$summary     = $this->escape_ical_text( $this->event->event->post_title );
+		$description = $this->escape_ical_text( $description );
+		$location    = $this->escape_ical_text( $location );
 
 		$args = array_merge(
 			array(
@@ -284,12 +296,12 @@ final class Calendar {
 			),
 			$this->recurrence_lines( $timezone, $occurrence ),
 			array(
-				sprintf( 'UID:%s', $this->uid( $occurrence ) ),
+				sprintf( 'UID:%s', $this->uid() ),
 				'END:VEVENT',
 			)
 		);
 
-		return implode( "\r\n", $args );
+		return implode( "\r\n", array_map( array( $this, 'fold_content_line' ), $args ) );
 	}
 
 	/**
@@ -481,22 +493,25 @@ final class Calendar {
 	/**
 	 * The unique identifier for this component.
 	 *
-	 * RFC 5545 requires a distinct `UID` per component. A series and each of
-	 * its individually downloaded occurrences are distinct components, so the
-	 * occurrence identifier joins the post ID whenever one is in play --
-	 * without it every occurrence of a series collides on the series' own
-	 * identifier and a calendar client keeps only the last one it saw.
+	 * One identifier for the whole recurrence set, occurrences included. RFC
+	 * 5545 section 3.8.4.7 is explicit that the `UID` references the *entire*
+	 * recurrence set and that `RECURRENCE-ID` is what identifies one instance
+	 * within it, so a single-occurrence download is an override of that
+	 * instance rather than a component of its own. Minting a per-occurrence
+	 * identifier instead gives a client no way to correlate the download with
+	 * the series it belongs to, and it shows up as a second, duplicate event
+	 * sitting on top of the one the rule already produced.
+	 *
+	 * The identity that distinguishes two occurrences of one series is
+	 * therefore the `(UID, RECURRENCE-ID)` tuple, whose second half
+	 * `recurrence_lines()` emits.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param array|null $occurrence The occurrence this component describes, or null.
-	 *
 	 * @return string The `UID` value.
 	 */
-	private function uid( ?array $occurrence ): string {
-		$uid = 'gatherpress_' . intval( $this->event->event->ID );
-
-		return null === $occurrence ? $uid : $uid . '_' . $occurrence['recurrence_id'];
+	private function uid(): string {
+		return 'gatherpress_' . intval( $this->event->event->ID );
 	}
 
 	/**
@@ -507,7 +522,7 @@ final class Calendar {
 	 * emits a stable `UID`, so without a sequence an edited event keeps
 	 * showing its original date in a subscribed calendar.
 	 *
-	 * The value is seconds since `SEQUENCE_EPOCH`, read from
+	 * The floor is seconds since `SEQUENCE_EPOCH`, read from
 	 * `post_modified_gmt`. That field only moves forward, so the sequence is
 	 * strictly monotonic per event, which is the only thing the property
 	 * requires. It emits around 2.1e8 today and reaches the RFC's INTEGER
@@ -518,6 +533,14 @@ final class Calendar {
 	 * a sequence that moves backwards is one clients may ignore. A raw
 	 * timestamp is monotonic but hits the same ceiling in January 2038; the
 	 * epoch is what buys the other sixty years at the same resolution.
+	 *
+	 * That field alone is not sufficient, though, which is what `Revision`
+	 * exists for. Occurrence rows, rule mirrors and a forward split are all
+	 * written by statements that leave `post_modified_gmt` untouched, and its
+	 * one-second resolution cannot separate two changes that land in the same
+	 * second either. The stored revision is the greater of the two whenever
+	 * something has advanced it, so a change the post row never saw still
+	 * reaches subscribers.
 	 *
 	 * The clamp guards against corrupt data, not ordinary growth. Saturating
 	 * it would freeze the event in subscribers' calendars, since every later
@@ -531,14 +554,14 @@ final class Calendar {
 	 */
 	private function get_sequence(): int {
 		$modified = strtotime( (string) $this->event->event->post_modified_gmt );
-
-		if ( false === $modified ) {
-			return 0;
-		}
-
 		// Floor at zero for anything modified before the epoch; clamp at the
 		// RFC ceiling for dates far enough out to be data corruption.
-		return min( max( 0, $modified - self::SEQUENCE_EPOCH ), 2147483647 );
+		$from_post = ( false === $modified ) ? 0 : max( 0, $modified - self::SEQUENCE_EPOCH );
+
+		return min(
+			max( $from_post, Revision::get_instance()->stored( (int) $this->event->event->ID ) ),
+			Revision::CEILING
+		);
 	}
 
 	/**
@@ -666,35 +689,55 @@ final class Calendar {
 	}
 
 	/**
-	 * Fold text per [iCal specifications](http://www.ietf.org/rfc/rfc2445.txt).
+	 * Fold one assembled content line per RFC 5545 section 3.1.
 	 *
-	 * Lines of text SHOULD NOT be longer than 75 octets, excluding the line
-	 * break. Long content lines SHOULD be split into a multiple line
-	 * representations using a line "folding" technique. That is, a long
-	 * line can be split between any two characters by inserting a CRLF
-	 * immediately followed by a single linear white space character (i.e.,
-	 * SPACE, US-ASCII decimal 32 or HTAB, US-ASCII decimal 9). Any sequence
-	 * of CRLF followed immediately by a single linear white space character
-	 * is ignored (i.e., removed) when processing the content type.
+	 * "Lines of text SHOULD NOT be longer than 75 octets, excluding the line
+	 * break", and a longer one is split by inserting a CRLF followed by a single
+	 * space, which a parser removes again when it reads the value. Octets, not
+	 * characters: the limit is a byte budget, so a multi-byte character counts
+	 * for as many bytes as it occupies -- and must never be split across a fold,
+	 * which would leave two invalid byte sequences that do not reassemble.
 	 *
-	 * @author Stephen Harris (@stephenharris)
-	 * @source https://github.com/stephenharris/Event-Organiser/blob/develop/includes/event-organiser-utility-functions.php#L1663
+	 * Applied to the whole property line rather than to a value, because the
+	 * limit is a property of the line: `EXDATE;TZID=America/New_York:` is 29
+	 * octets of it before the first identifier, and an exclusion list grows
+	 * without bound as a series accumulates cancellations. Folding the value
+	 * alone measures the wrong string and emits over-length lines a strict
+	 * parser may reject or truncate -- which puts cancelled dates back on the
+	 * subscriber's calendar.
 	 *
 	 * @since 0.34.0
 	 *
-	 * @param string $text The string to be escaped.
+	 * @since 0.36.0 Folds a whole content line on an octet budget, replacing a
+	 *               character-counted helper applied to selected values.
 	 *
-	 * @return string The escaped string.
+	 * @param string $line One complete content line, without its line break.
+	 *
+	 * @return string The line, folded where it exceeded the limit.
 	 */
-	private function fold_ical_text( string $text ): string {
-		$text_arr = array();
-
-		$lines = ceil( mb_strlen( $text ) / 75 );
-
-		for ( $i = 0; $i < $lines; $i++ ) {
-			$text_arr[ $i ] = mb_substr( $text, $i * 75, 75 );
+	private function fold_content_line( string $line ): string {
+		if ( self::MAX_LINE_OCTETS >= strlen( $line ) ) {
+			return $line;
 		}
 
-		return join( "\r\n ", $text_arr );
+		$folded  = array();
+		$current = '';
+		// The first physical line spends its whole budget on content; every
+		// continuation spends one octet of it on the leading space.
+		$budget = self::MAX_LINE_OCTETS;
+
+		foreach ( mb_str_split( $line ) as $character ) {
+			if ( strlen( $current ) + strlen( $character ) > $budget ) {
+				$folded[] = $current;
+				$current  = '';
+				$budget   = self::MAX_LINE_OCTETS - 1;
+			}
+
+			$current .= $character;
+		}
+
+		$folded[] = $current;
+
+		return implode( "\r\n ", $folded );
 	}
 }

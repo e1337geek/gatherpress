@@ -68,6 +68,23 @@ final class Cache {
 	const LAST_MODIFIED_OPTION = 'gatherpress_calendar_last_modified';
 
 	/**
+	 * Option holding a strictly increasing count of calendar-relevant changes.
+	 *
+	 * `Last-Modified` has one-second resolution, and it is the whole cache
+	 * namespace: two changes inside one second produce the same stamp, so the
+	 * second one resolves to a key the first already filled and is served the
+	 * body it just invalidated. Cancelling two occurrences of a series is one
+	 * loop, well inside a second, so this is the ordinary case rather than a
+	 * race. The counter separates them without pretending the HTTP validator has
+	 * finer resolution than it does.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @var string
+	 */
+	const CHANGE_COUNT_OPTION = 'gatherpress_calendar_change_count';
+
+	/**
 	 * Default seconds a client may reuse a calendar response without asking.
 	 *
 	 * Fifteen minutes matches the shortest polling interval the common clients
@@ -176,6 +193,21 @@ final class Cache {
 	 */
 	public function mark_changed(): void {
 		update_option( self::LAST_MODIFIED_OPTION, current_time( 'mysql', true ), false );
+		update_option( self::CHANGE_COUNT_OPTION, $this->get_change_count() + 1, false );
+	}
+
+	/**
+	 * How many calendar-relevant changes this site has recorded.
+	 *
+	 * Part of the cache namespace rather than of any response: it exists to
+	 * separate two changes `Last-Modified` cannot, and a client never sees it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int The current count, starting at zero.
+	 */
+	public function get_change_count(): int {
+		return max( 0, (int) get_option( self::CHANGE_COUNT_OPTION, 0 ) );
 	}
 
 	/**
@@ -214,7 +246,9 @@ final class Cache {
 	 *
 	 * The scope key and the stamp are hashed together rather than concatenated
 	 * so the result stays inside the 172-character ceiling on option names, no
-	 * matter how long the caller's key grows.
+	 * matter how long the caller's key grows. The change counter joins them
+	 * because the stamp alone cannot separate two changes in one second, and a
+	 * key that does not move is a cached body that does not either.
 	 *
 	 * @since 0.36.0
 	 *
@@ -223,7 +257,9 @@ final class Cache {
 	 * @return string Versioned transient name.
 	 */
 	public function get_versioned_key( string $key ): string {
-		return self::TRANSIENT_PREFIX . md5( $this->get_last_modified() . ':' . $key ); // NOSONAR.
+		return self::TRANSIENT_PREFIX . md5( // NOSONAR.
+			$this->get_last_modified() . ':' . $this->get_change_count() . ':' . $key
+		);
 	}
 
 	/**
@@ -252,12 +288,24 @@ final class Cache {
 	 *
 	 * @since 0.36.0
 	 *
+	 * The series' calendar revision advances with it. The stamp invalidates the
+	 * *server's* copy, but a subscriber already holding the old component decides
+	 * whether to replace it by comparing `SEQUENCE`, and an occurrence write
+	 * leaves `post_modified_gmt` -- which that number is otherwise derived from
+	 * -- exactly where it was. Without the advance a cancelled date is correctly
+	 * absent from the body and still on the subscriber's calendar.
+	 *
 	 * @param int|string $post_id The series post whose occurrence rows changed.
 	 *
 	 * @return void
 	 */
 	public function mark_changed_for_occurrences( $post_id ): void {
-		$this->mark_changed_for_post( $post_id );
+		if ( ! $this->is_calendar_post_type( (string) get_post_type( (int) $post_id ) ) ) {
+			return;
+		}
+
+		Revision::get_instance()->advance( (int) $post_id );
+		$this->mark_changed();
 	}
 
 	/**

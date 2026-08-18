@@ -9,6 +9,7 @@
 namespace GatherPress\Tests\Core\Calendar;
 
 use GatherPress\Core\Calendar\Cache;
+use GatherPress\Core\Calendar\Revision;
 use GatherPress\Core\Event\Event;
 use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Venue;
@@ -43,6 +44,41 @@ class Test_Cache extends Base {
 			Cache::class,
 			Cache::get_instance(),
 			'Failed to assert that the constructor returns a Cache instance.'
+		);
+	}
+
+	/**
+	 * An occurrence announcement for a post no calendar reads is ignored.
+	 *
+	 * The action carries a bare post ID and any plugin may fire it. Stamping on
+	 * one that contributes to no feed would strand every cached body on the site
+	 * and advance a revision that describes nothing.
+	 *
+	 * @covers ::mark_changed_for_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_an_occurrence_change_on_a_non_calendar_post_is_ignored(): void {
+		$post_id = $this->factory->post->create( array( 'post_type' => 'post' ) );
+		$stamp   = Cache::get_instance()->get_last_modified();
+		$count   = Cache::get_instance()->get_change_count();
+
+		Cache::get_instance()->mark_changed_for_occurrences( $post_id );
+
+		$this->assertSame(
+			$stamp,
+			Cache::get_instance()->get_last_modified(),
+			'A post that appears in no calendar cannot invalidate every calendar.'
+		);
+		$this->assertSame(
+			$count,
+			Cache::get_instance()->get_change_count(),
+			'And it cannot move the cache namespace either.'
+		);
+		$this->assertSame(
+			'',
+			(string) get_post_meta( (int) $post_id, Revision::META_KEY, true ),
+			'Nor acquire a calendar revision it has no use for.'
 		);
 	}
 

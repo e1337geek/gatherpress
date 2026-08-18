@@ -688,11 +688,12 @@ final class Query {
 	 * same range and ordering rewrites apply, so the bucket is decided by the
 	 * series' scheduled occurrences; the `GROUP BY` on the post ID then
 	 * collapses the result back to one row per post. That matters beyond
-	 * tidiness: RFC 5545 requires a distinct `UID` per component, GatherPress
-	 * derives a series' `UID` from its post ID, and one component per occurrence
-	 * would be a feed full of duplicate identifiers a client keeps only the last
-	 * of. One component carrying an `RRULE` is how a series is representable at
-	 * all.
+	 * tidiness: a series shares one `UID` across its whole recurrence set (RFC
+	 * 5545 section 3.8.4.7), so one component per occurrence would repeat that
+	 * identifier once per date with nothing but `RECURRENCE-ID` to tell the
+	 * copies apart -- a feed that overrides every instance of a rule it also
+	 * carries. One component carrying an `RRULE` is how a series is representable
+	 * at all.
 	 *
 	 * Ordering is aggregated for the same reason it is grouped -- see
 	 * `aggregate_orderby()`.
@@ -746,6 +747,15 @@ final class Query {
 	 * on the group key or deliberately unordered, and aggregating them would
 	 * either change nothing or defeat them.
 	 *
+	 * The aggregate alone is not a total order, which is the same defect the
+	 * expanded path solves with the canonical list key. Two series whose next
+	 * scheduled occurrence falls at the same instant tie on the aggregate, MySQL
+	 * does not sort stably, and a tied pair can be ordered one way for
+	 * `LIMIT 0, 10` and the other for `LIMIT 10, 10` -- which repeats one series
+	 * across two pages of a feed and drops the other from both. The group key is
+	 * unique per row of a folded result and is what breaks the tie; nothing
+	 * finer is needed, because folding has already collapsed the occurrences.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param string $orderby The `orderby` clause, already `COALESCE()`-rewritten.
@@ -753,6 +763,8 @@ final class Query {
 	 * @return string The clause, aggregated when it needs to be.
 	 */
 	private function aggregate_orderby( string $orderby ): string {
+		global $wpdb;
+
 		if ( ! str_contains( $orderby, 'COALESCE(' ) ) {
 			return $orderby;
 		}
@@ -765,7 +777,7 @@ final class Query {
 			$descending ? 'MAX' : 'MIN',
 			$expression,
 			$descending ? 'DESC' : 'ASC'
-		);
+		) . $wpdb->prepare( ', %i.ID ASC', $wpdb->posts );
 	}
 
 	/**
