@@ -117,13 +117,46 @@ describe( 'OccurrencesPanel', () => {
 		expect( container ).toBeEmptyDOMElement();
 	} );
 
-	test( 'falls back to an empty list when the initial fetch fails', async () => {
-		mockApiFetch.mockRejectedValue( new Error( 'network error' ) );
+	test( 'surfaces the error and a retry action when the initial fetch fails', async () => {
+		mockApiFetch.mockRejectedValueOnce( new Error( 'network error' ) );
 
-		const { container } = render( <OccurrencesPanel /> );
+		render( <OccurrencesPanel /> );
 
-		await waitFor( () => expect( mockApiFetch ).toHaveBeenCalled() );
-		expect( container ).toBeEmptyDOMElement();
+		await waitFor( () =>
+			expect( screen.getByText( 'network error' ) ).toBeInTheDocument(),
+		);
+
+		// A failed load is not an empty list: the panel stays mounted with a
+		// way back rather than reading as "this event has no occurrences".
+		expect( screen.getByText( 'Occurrences' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Retry' ) ).toBeInTheDocument();
+
+		mockApiFetch.mockResolvedValueOnce( [ occurrence() ] );
+
+		fireEvent.click( screen.getByText( 'Retry' ) );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument(),
+		);
+
+		expect( screen.queryByText( 'network error' ) ).not.toBeInTheDocument();
+		expect( mockApiFetch ).toHaveBeenLastCalledWith( {
+			path: '/gatherpress/v1/event/occurrences?post_id=42',
+		} );
+	} );
+
+	test( 'falls back to a localized message when the failure carries none', async () => {
+		mockApiFetch.mockRejectedValue( {} );
+
+		render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'Could not load the occurrences for this event.',
+				),
+			).toBeInTheDocument(),
+		);
 	} );
 
 	test( 'falls back to an empty list when the fetch resolves with a nullish value', async () => {
@@ -226,6 +259,136 @@ describe( 'OccurrencesPanel', () => {
 				status: 'scheduled',
 			},
 		} );
+	} );
+
+	test( "submits the row's own owner post ID, not the post open in the editor", async () => {
+		// The list route returns every sibling post's rows, so the row a
+		// reviewer clicks need not belong to post 42 at all.
+		mockApiFetch.mockResolvedValueOnce( [
+			occurrence( { series_post_id: 84 } ),
+		] );
+
+		render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument(),
+		);
+
+		mockApiFetch.mockResolvedValueOnce(
+			occurrence( { series_post_id: 84, status: 'cancelled' } ),
+		);
+
+		fireEvent.click( screen.getByText( 'Cancel' ) );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Restore' ) ).toBeInTheDocument(),
+		);
+
+		expect( mockApiFetch ).toHaveBeenLastCalledWith( {
+			path: '/gatherpress/v1/event/occurrence-status',
+			method: 'POST',
+			data: {
+				post_id: 84,
+				recurrence_id: '20260903T180000',
+				status: 'cancelled',
+			},
+		} );
+	} );
+
+	test( 'coerces a stringified owner post ID from the REST payload', async () => {
+		mockApiFetch.mockResolvedValueOnce( [
+			occurrence( { series_post_id: '84' } ),
+		] );
+
+		render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument(),
+		);
+
+		mockApiFetch.mockResolvedValueOnce(
+			occurrence( { series_post_id: 84, status: 'cancelled' } ),
+		);
+
+		fireEvent.click( screen.getByText( 'Cancel' ) );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Restore' ) ).toBeInTheDocument(),
+		);
+
+		expect(
+			mockApiFetch.mock.calls.at( -1 )[ 0 ].data.post_id,
+		).toBe( 84 );
+	} );
+
+	test( 'keeps two siblings sharing one recurrence ID distinct', async () => {
+		const keyWarnings = jest
+			.spyOn( console, 'error' )
+			.mockImplementation( () => {} );
+
+		mockApiFetch.mockResolvedValueOnce( [
+			occurrence( { series_post_id: 42 } ),
+			occurrence( { series_post_id: 84 } ),
+		] );
+
+		render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( screen.getAllByText( 'Cancel' ) ).toHaveLength( 2 ),
+		);
+
+		// Same `recurrence_id`, different owner: keying on the recurrence ID
+		// alone gives both rows one React key.
+		expect(
+			keyWarnings.mock.calls.some( ( call ) =>
+				String( call[ 0 ] ).includes( 'same key' ),
+			),
+		).toBe( false );
+
+		let resolveUpdate;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve ) => {
+				resolveUpdate = resolve;
+			} ),
+		);
+
+		fireEvent.click( screen.getAllByText( 'Cancel' )[ 1 ] );
+
+		// Only the clicked row is busy, so the busy key carries both halves
+		// of the identity too.
+		await waitFor( () =>
+			expect(
+				screen
+					.getAllByRole( 'button' )
+					.map( ( button ) => button.dataset.busy ),
+			).toEqual( [ 'false', 'true' ] ),
+		);
+
+		resolveUpdate(
+			occurrence( { series_post_id: 84, status: 'cancelled' } ),
+		);
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Restore' ) ).toBeInTheDocument(),
+		);
+
+		expect( mockApiFetch ).toHaveBeenLastCalledWith( {
+			path: '/gatherpress/v1/event/occurrence-status',
+			method: 'POST',
+			data: {
+				post_id: 84,
+				recurrence_id: '20260903T180000',
+				status: 'cancelled',
+			},
+		} );
+
+		// The sibling row that was not clicked must still be scheduled.
+		expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Scheduled' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Cancelled' ) ).toBeInTheDocument();
+
+		keyWarnings.mockRestore();
 	} );
 
 	test( 'shows an error notice and leaves the row unchanged when the status update fails', async () => {

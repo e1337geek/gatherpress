@@ -3,7 +3,7 @@
  */
 import { __ } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
-import { PanelRow } from '@wordpress/components';
+import { Button, PanelRow } from '@wordpress/components';
 import { useDispatch, useSelect } from '@wordpress/data';
 import { useEffect, useState } from '@wordpress/element';
 
@@ -13,6 +13,53 @@ import { useEffect, useState } from '@wordpress/element';
 import { usePostTypeSupports } from '../../../helpers/event';
 import { EVENT_REST_API } from '../../../helpers/namespace';
 import OccurrenceRow from './occurrence-row';
+
+/**
+ * Build the composite identity of an occurrence row.
+ *
+ * An occurrence is identified by `(series_post_id, recurrence_id)` — the
+ * occurrence table's composite primary key — and never by either half alone.
+ * The list route deliberately returns every sibling post's rows
+ * (`Series::resolve_post_ids()`), so two rows can share a `recurrence_id`
+ * while belonging to different posts: keying on `recurrence_id` alone gives
+ * them the same React key, the same busy state, and makes a status update to
+ * one flip both.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} occurrence Occurrence row from the `occurrences` REST route.
+ *
+ * @return {string} The row's composite key.
+ */
+function occurrenceKey( occurrence ) {
+	return `${ occurrence.series_post_id }:${ occurrence.recurrence_id }`;
+}
+
+/**
+ * Coerce the REST payload into rows with a numeric owner post ID.
+ *
+ * `$wpdb->get_results( …, ARRAY_A )` stringifies every column, so
+ * `series_post_id` can arrive as `"84"`. Normalizing once on load keeps every
+ * downstream identity comparison a plain `===` rather than a per-call-site
+ * cast, and turns a non-array payload into the empty list the panel renders
+ * as "nothing to show".
+ *
+ * @since 0.36.0
+ *
+ * @param {*} rows Raw REST payload.
+ *
+ * @return {Object[]} Occurrence rows with a numeric `series_post_id`.
+ */
+function normalizeOccurrences( rows ) {
+	if ( ! Array.isArray( rows ) ) {
+		return [];
+	}
+
+	return rows.map( ( row ) => ( {
+		...row,
+		series_post_id: Number( row.series_post_id ),
+	} ) );
+}
 
 /**
  * Sidebar list of a series' upcoming occurrences, each with a cancel/restore
@@ -25,8 +72,15 @@ import OccurrenceRow from './occurrence-row';
  * the `occurrence-status` REST route -- it never reaches into the recurrence
  * rule itself (PRD C-5).
  *
+ * Every request the panel issues carries the row's own composite identity:
+ * the GET is scoped to the edited post, but the status write submits
+ * `occurrence.series_post_id`, which is the sibling that actually owns the
+ * row, not the post currently open in the editor.
+ *
  * Renders nothing for a non-recurring event: the `occurrences` REST route
- * returns an empty list, and an empty list has no action worth surfacing.
+ * returns an empty list, and an empty list has no action worth surfacing. A
+ * *failed* load is not an empty list, and is surfaced with a retry action
+ * rather than silently collapsing the panel.
  *
  * @since 0.36.0
  *
@@ -44,7 +98,9 @@ const OccurrencesPanel = () => {
 	);
 
 	const [ occurrences, setOccurrences ] = useState( [] );
-	const [ updatingId, setUpdatingId ] = useState( null );
+	const [ updatingKey, setUpdatingKey ] = useState( null );
+	const [ loadError, setLoadError ] = useState( null );
+	const [ reloadCount, setReloadCount ] = useState( 0 );
 
 	useEffect( () => {
 		if ( ! isEventDateSupported || ! postId ) {
@@ -54,9 +110,21 @@ const OccurrencesPanel = () => {
 		apiFetch( {
 			path: `${ EVENT_REST_API }/occurrences?post_id=${ postId }`,
 		} )
-			.then( ( result ) => setOccurrences( result ?? [] ) )
-			.catch( () => setOccurrences( [] ) );
-	}, [ isEventDateSupported, postId ] );
+			.then( ( result ) => {
+				setOccurrences( normalizeOccurrences( result ) );
+				setLoadError( null );
+			} )
+			.catch( ( error ) => {
+				setOccurrences( [] );
+				setLoadError(
+					error?.message ||
+						__(
+							'Could not load the occurrences for this event.',
+							'gatherpress',
+						),
+				);
+			} );
+	}, [ isEventDateSupported, postId, reloadCount ] );
 
 	/**
 	 * Flip one occurrence between scheduled and cancelled.
@@ -69,13 +137,13 @@ const OccurrencesPanel = () => {
 		const nextStatus =
 			'cancelled' === occurrence.status ? 'scheduled' : 'cancelled';
 
-		setUpdatingId( occurrence.recurrence_id );
+		setUpdatingKey( occurrenceKey( occurrence ) );
 
 		apiFetch( {
 			path: `${ EVENT_REST_API }/occurrence-status`,
 			method: 'POST',
 			data: {
-				post_id: postId,
+				post_id: occurrence.series_post_id,
 				recurrence_id: occurrence.recurrence_id,
 				status: nextStatus,
 			},
@@ -83,7 +151,7 @@ const OccurrencesPanel = () => {
 			.then( ( updated ) => {
 				setOccurrences( ( current ) =>
 					current.map( ( entry ) =>
-						entry.recurrence_id === occurrence.recurrence_id
+						occurrenceKey( entry ) === occurrenceKey( occurrence )
 							? { ...entry, status: updated.status }
 							: entry,
 					),
@@ -98,10 +166,36 @@ const OccurrencesPanel = () => {
 					{ type: 'snackbar' },
 				);
 			} )
-			.finally( () => setUpdatingId( null ) );
+			.finally( () => setUpdatingKey( null ) );
 	};
 
-	if ( ! isEventDateSupported || 0 === occurrences.length ) {
+	if ( ! isEventDateSupported ) {
+		return null;
+	}
+
+	if ( loadError ) {
+		return (
+			<PanelRow>
+				<div className="gatherpress-occurrences-panel">
+					<h3>{ __( 'Occurrences', 'gatherpress' ) }</h3>
+					<output className="gatherpress-occurrences-panel__error">
+						{ loadError }
+					</output>
+					<Button
+						variant="secondary"
+						size="small"
+						onClick={ () =>
+							setReloadCount( ( current ) => current + 1 )
+						}
+					>
+						{ __( 'Retry', 'gatherpress' ) }
+					</Button>
+				</div>
+			</PanelRow>
+		);
+	}
+
+	if ( 0 === occurrences.length ) {
 		return null;
 	}
 
@@ -111,10 +205,12 @@ const OccurrencesPanel = () => {
 				<h3>{ __( 'Occurrences', 'gatherpress' ) }</h3>
 				{ occurrences.map( ( occurrence ) => (
 					<OccurrenceRow
-						key={ occurrence.recurrence_id }
+						key={ occurrenceKey( occurrence ) }
 						occurrence={ occurrence }
 						onToggle={ handleToggle }
-						isUpdating={ updatingId === occurrence.recurrence_id }
+						isUpdating={
+							updatingKey === occurrenceKey( occurrence )
+						}
 					/>
 				) ) }
 			</div>
