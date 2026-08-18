@@ -31,6 +31,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 use DateTimeImmutable;
 use DateTimeZone;
 use GatherPress\Core\Calendar\Calendar;
+use GatherPress\Core\Calendar\Setup as Calendar_Setup;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
@@ -92,6 +93,7 @@ class Test_Permalink extends Base {
 		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
 		Rsvp_Setup::get_instance()->register_taxonomy();
 		Rest_Api::get_instance()->register_endpoints();
+		Calendar_Setup::get_instance()->register_endpoints();
 		Settings::get_instance()->set( 'enable_open_rsvp', true );
 
 		global $wp_rewrite;
@@ -363,6 +365,54 @@ class Test_Permalink extends Base {
 			sprintf( "URL:%s\r\n", $series_url ),
 			$vevent,
 			'Failed to assert the VEVENT URL field is not the bare series URL.'
+		);
+	}
+
+	/**
+	 * The calendar endpoint URL is a series URL, in or out of occurrence context.
+	 *
+	 * `Calendar::get_endpoint_url()` appends a path segment to the post's
+	 * permalink. Once `Context::permalink()` answers with an occurrence's URL,
+	 * a naive read produces `/event/my-series/20260903T180000/ical/`, which
+	 * matches no rewrite rule and 404s — so the "Download iCal" button on an
+	 * occurrence page would break. This was already true inside a Query Loop
+	 * before the singular-page arm existed, since the loop arm rewrote the same
+	 * read; both are fixed by the same series-permalink read.
+	 *
+	 * Both halves are asserted: the exact URL, and that the URL actually
+	 * resolves. The exact URL alone would not catch a rule that matched but
+	 * routed somewhere else, and the 404 check alone would stay green on a URL
+	 * that resolved to the wrong thing.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Calendar::get_endpoint_url
+	 *
+	 * @return void
+	 */
+	public function test_calendar_endpoint_url_stays_a_series_url_on_an_occurrence_page(): void {
+		list( $post_id, , $second ) = $this->create_series();
+
+		$series_url = (string) get_permalink( $post_id );
+
+		$this->go_to( $series_url . $second . '/' );
+
+		$ical_url = ( new Calendar( $post_id ) )->get_ical_url();
+
+		$this->assertSame(
+			$second,
+			Context::get_instance()->current()['recurrence_id'],
+			'Failed to assert the page is an occurrence page; the fixture proves nothing otherwise.'
+		);
+		$this->assertSame(
+			$series_url . Calendar_Setup::ICAL_SLUG . '/',
+			$ical_url,
+			'Failed to assert the iCal endpoint URL is composed on the series permalink.'
+		);
+
+		$this->go_to( (string) $ical_url );
+
+		$this->assertFalse(
+			is_404(),
+			'Failed to assert the iCal endpoint URL emitted from an occurrence page actually resolves.'
 		);
 	}
 }
