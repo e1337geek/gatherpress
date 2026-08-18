@@ -10,6 +10,7 @@ namespace GatherPress\Tests\Core;
 
 use GatherPress\Core\Assets;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Settings;
 use GatherPress\Core\Setup;
 use GatherPress\Core\Utility as GatherPress_Utility;
@@ -462,7 +463,8 @@ class Test_Setup extends Base {
 	/**
 	 * Coverage for on_site_delete method.
 	 *
-	 * Verifies that the custom event table is added to the list of tables to drop.
+	 * Verifies that every custom table the plugin creates is added to the
+	 * list of tables to drop, under the current blog's prefix.
 	 *
 	 * @covers ::on_site_delete
 	 *
@@ -485,6 +487,11 @@ class Test_Setup extends Base {
 			$expected_table,
 			$result,
 			'Failed to assert that the GatherPress events table is included in tables to delete.'
+		);
+		$this->assertContains(
+			sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+			$result,
+			'Failed to assert that the GatherPress occurrence table is included in tables to delete.'
 		);
 		$this->assertContains(
 			$wpdb->prefix . 'posts',
@@ -726,6 +733,93 @@ class Test_Setup extends Base {
 		// Clean up.
 		unset( $active_sitewide_plugins['gatherpress/gatherpress.php'] );
 		update_site_option( 'active_sitewide_plugins', $active_sitewide_plugins );
+	}
+
+	/**
+	 * Coverage for on_site_delete in a real multisite deletion: deleting a
+	 * blog must drop that blog's occurrence table along with its events
+	 * table, and must leave every other blog's tables alone.
+	 *
+	 * Driven through `wp_delete_site()` rather than by calling
+	 * `on_site_delete()` directly, because the defect this closes was a
+	 * missing table name in the `wpmu_drop_tables` payload -- data surviving
+	 * the blog that owned it. Only the real deletion proves the rows are
+	 * actually gone.
+	 *
+	 * @group multisite
+	 * @covers ::on_site_delete
+	 *
+	 * @return void
+	 */
+	public function test_on_site_delete_drops_the_occurrence_table_for_that_blog_only(): void {
+		global $wpdb;
+
+		$main_occurrences = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$blog_id = $this->factory()->blog->create();
+
+		switch_to_blog( $blog_id );
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$blog_events      = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$blog_occurrences = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$this->assertSame(
+			$blog_occurrences,
+			$this->find_table( $blog_occurrences ),
+			'Failed to assert that the subsite occurrence table exists before the blog is deleted.'
+		);
+		$this->assertNotSame(
+			$main_occurrences,
+			$blog_occurrences,
+			'Failed to assert that the subsite occurrence table carries its own blog prefix.'
+		);
+
+		restore_current_blog();
+
+		wp_delete_site( $blog_id );
+
+		$this->assertNull(
+			$this->find_table( $blog_occurrences ),
+			'Failed to assert that the deleted blog\'s occurrence table was dropped.'
+		);
+		$this->assertNull(
+			$this->find_table( $blog_events ),
+			'Failed to assert that the deleted blog\'s events table was dropped.'
+		);
+		$this->assertSame(
+			$main_occurrences,
+			$this->find_table( $main_occurrences ),
+			'Failed to assert that another blog\'s occurrence table survived the deletion.'
+		);
+	}
+
+	/**
+	 * Look a table up by its exact name.
+	 *
+	 * `SHOW TABLES LIKE` treats `_` as a single-character wildcard, so the
+	 * name is escaped before the probe and the returned name is compared
+	 * exactly by the caller -- a lookalike table must not answer for the
+	 * real one.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $table Full table name, including prefix.
+	 *
+	 * @return string|null The table name when it exists, null otherwise.
+	 */
+	protected function find_table( string $table ): ?string {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$found = $wpdb->get_var(
+			$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) )
+		);
+
+		return null === $found ? null : (string) $found;
 	}
 
 	/**

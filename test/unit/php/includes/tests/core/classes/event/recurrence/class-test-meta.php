@@ -404,6 +404,84 @@ class Test_Meta extends Base {
 	}
 
 	/**
+	 * `set_recurrence()` clears the mirrors when a later save moves the
+	 * series onto a fixed-offset timezone, which `Timezone_Guard` refuses:
+	 * a fixed offset carries no DST rules, so a series anchored on one
+	 * silently drifts. The rejection must not leave the previous rule's
+	 * mirrors behind, or the event goes on describing itself as recurring
+	 * with a rule the plugin has just refused to honor.
+	 *
+	 * Driven through the real `wp_after_insert_post` hook rather than by
+	 * calling `write_recurrence()` directly, so the assertion covers the
+	 * path a REST write actually takes -- the write that can carry a fixed
+	 * offset without ever passing through the editor.
+	 *
+	 * @covers ::set_recurrence
+	 * @covers ::write_recurrence
+	 * @covers ::clear_mirrors
+	 * @covers ::read_timezone
+	 *
+	 * @return void
+	 */
+	public function test_set_recurrence_clears_mirrors_when_timezone_becomes_a_fixed_offset(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$this->assertSame(
+			'daily',
+			get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ),
+			'Failed to assert the fixture started out with valid recurrence mirrors.'
+		);
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site started out with a recurring event.'
+		);
+
+		// The same rule, re-saved after the series moves onto a fixed UTC
+		// offset -- the shape Utility::maybe_convert_utc_offset() produces
+		// for a site whose timezone is set as an offset rather than a
+		// tz-database identifier.
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => 'UTC+5:30',
+				)
+			)
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'wp_after_insert_post', $post_id, get_post( $post_id ), true, null );
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Failed to assert that {$derived_key} was cleared after the timezone became a fixed offset."
+			);
+		}
+
+		$this->assertNull(
+			Rule::from_post( $post_id ),
+			'Failed to assert that no rule is reconstructable after a fixed-offset rejection.'
+		);
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert that the has-recurring-events flag was recomputed after the rejection.'
+		);
+	}
+
+	/**
 	 * `Query::refresh_has_recurring_events()` runs after `write_mirrors()`,
 	 * never before it -- a regression test for the ordering, since
 	 * `refresh_has_recurring_events()` reads the frequency mirror directly

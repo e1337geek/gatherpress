@@ -370,4 +370,98 @@ class Test_Projection_Cron extends Base {
 			'Failed to assert that deactivate() is registered on the real WordPress deactivation hook.'
 		);
 	}
+
+	/**
+	 * Coverage for REQ-6: a site that removes its last recurrence must lose
+	 * the hourly sweep, not keep dispatching an early-returning callback for
+	 * the life of the plugin. The `1 -> 0` transition is the whole point --
+	 * a never-recurring site has nothing to unschedule, so the existing
+	 * "does nothing on a site with no recurring events" test stays green
+	 * whether or not the unscheduling branch exists at all.
+	 *
+	 * @covers ::maybe_schedule_sweep
+	 *
+	 * @return void
+	 */
+	public function test_maybe_schedule_sweep_unschedules_when_the_last_recurrence_is_removed(): void {
+		$instance = Projection_Cron::get_instance();
+
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+		$instance->maybe_schedule_sweep();
+
+		$this->assertNotFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert that the sweep was scheduled while the site had a recurrence.'
+		);
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+		$instance->maybe_schedule_sweep();
+
+		$this->assertFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert that removing the last recurrence unschedules the hourly sweep.'
+		);
+	}
+
+	/**
+	 * Coverage for REQ-6: adding a recurrence schedules the sweep exactly
+	 * once, however many times `init` runs. `wp_next_scheduled()` returns
+	 * only the soonest timestamp, so it cannot see a second, later
+	 * registration of the same hook -- this counts the real cron array
+	 * entries instead.
+	 *
+	 * The second half seeds an existing schedule an hour out before calling
+	 * again, and that is the half that measures the dedup guard: WordPress
+	 * core refuses a recurring duplicate only when the two timestamps are
+	 * within ten minutes of each other, so back-to-back calls in the same
+	 * second stay at one entry whether or not this class checks
+	 * `wp_next_scheduled()` itself. An `init` an hour after the first one is
+	 * the real shape of the second run, and core does not deduplicate it.
+	 *
+	 * @covers ::maybe_schedule_sweep
+	 *
+	 * @return void
+	 */
+	public function test_maybe_schedule_sweep_schedules_exactly_one_event(): void {
+		$instance = Projection_Cron::get_instance();
+
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
+		$instance->maybe_schedule_sweep();
+		$instance->maybe_schedule_sweep();
+
+		$this->assertSame(
+			1,
+			$this->count_scheduled_sweeps(),
+			'Failed to assert that adding a recurrence schedules the sweep exactly once.'
+		);
+
+		wp_clear_scheduled_hook( Projection_Cron::SWEEP_ACTION );
+		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
+
+		$instance->maybe_schedule_sweep();
+
+		$this->assertSame(
+			1,
+			$this->count_scheduled_sweeps(),
+			'Failed to assert that a later init run does not add a second sweep entry.'
+		);
+	}
+
+	/**
+	 * Count the sweep entries present in the real WordPress cron array.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int Number of scheduled sweep entries across all timestamps.
+	 */
+	protected function count_scheduled_sweeps(): int {
+		$count = 0;
+
+		foreach ( (array) _get_cron_array() as $hooks ) {
+			$count += count( (array) ( $hooks[ Projection_Cron::SWEEP_ACTION ] ?? array() ) );
+		}
+
+		return $count;
+	}
 }

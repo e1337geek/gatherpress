@@ -2794,4 +2794,382 @@ class Test_Occurrences extends Base {
 			'Failed to assert that the second read repaired the series the first read skipped.'
 		);
 	}
+
+	/**
+	 * Coverage for the review's rowless-repair blocker: a valid recurring
+	 * series whose occurrence rows are gone -- a partial restore, a
+	 * projection that failed halfway, a manual `DELETE` -- must be repaired
+	 * by the scheduled sweep. Candidate selection used to be driven from the
+	 * occurrence table itself, which made "has a rule but no rows" the one
+	 * state repair could never reach: `is_series_stale()` knew the series was
+	 * stale, and nothing ever asked it.
+	 *
+	 * Driven through the real cron hook, and asserted on rows rather than on
+	 * the candidate list alone, so nothing but the sweep can account for the
+	 * rows coming back: the fixture deletes them and no other code in this
+	 * test writes to the table.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_rowless_series_is_repaired_by_the_scheduled_sweep(): void {
+		list( $post_id ) = $this->create_short_horizon_never_ending_series();
+
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the fixture projected rows before they were deleted.'
+		);
+
+		Occurrences::get_instance()->delete_for_post( $post_id );
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the fixture series starts the sweep with zero rows.'
+		);
+		$this->assertContains(
+			$post_id,
+			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
+			'Failed to assert that a series with a valid rule and zero rows is a sweep candidate.'
+		);
+
+		Query::refresh_has_recurring_events();
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.DynamicHooknameFound -- SWEEP_ACTION is a gatherpress_-prefixed class constant.
+		do_action( Projection_Cron::SWEEP_ACTION );
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$this->assertNotEmpty(
+			$rows,
+			'Failed to assert that the sweep restored the rows of a rowless series.'
+		);
+		$this->assertNotEmpty(
+			array_filter(
+				$rows,
+				static fn( $row ) => $row['datetime_start_gmt'] > gmdate( 'Y-m-d H:i:s' )
+			),
+			'Failed to assert that the restored rows reach forward of now, rather than only backfilling the past.'
+		);
+	}
+
+	/**
+	 * Coverage for the rowless-repair blocker on the lazy path: an
+	 * upcoming-events read that surfaces a rowless series through
+	 * `select_by_horizon()`'s no-rows fallback must repair it. The fallback
+	 * ref carries a null `recurrence_id` -- indistinguishable from an
+	 * ordinary non-recurring event by shape alone, which is why the lazy
+	 * path skipped it and why the `end_type` mirror is what separates them.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 * @covers ::has_recurrence_rule
+	 *
+	 * @return void
+	 */
+	public function test_rowless_series_is_repaired_by_an_upcoming_read(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '+1 week' );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'never',
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		Occurrences::get_instance()->delete_for_post( $post_id );
+		delete_transient( sprintf( 'gatherpress_projected_%d', $post_id ) );
+
+		Query::refresh_has_recurring_events();
+
+		$refs = Occurrences::get_instance()->select_upcoming( 10 );
+
+		$this->assertNotEmpty(
+			array_filter( $refs, static fn( Occurrence_Ref $ref ) => $ref->post_id === $post_id ),
+			'Failed to assert that the rowless series still surfaced on the upcoming read.'
+		);
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that an upcoming read repaired a series whose rows were gone.'
+		);
+	}
+
+	/**
+	 * A rowless `UNTIL`-bounded series whose `until` is already in the past
+	 * can only ever expand to nothing, so it must not become a permanent
+	 * hourly candidate the rowless-repair fix would otherwise create. The
+	 * sweep predicate and `is_series_stale()` have to agree on this, or a
+	 * series one path leaves alone is re-selected by the other.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 * @covers ::is_series_stale
+	 * @covers ::is_expired_until
+	 *
+	 * @return void
+	 */
+	public function test_rowless_expired_until_series_is_never_a_repair_candidate(): void {
+		$post_id = $this->create_completed_until_series();
+
+		Occurrences::get_instance()->delete_for_post( $post_id );
+
+		$this->assertNotContains(
+			$post_id,
+			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
+			'Failed to assert that a rowless, expired until-bounded series is not a sweep candidate.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method( Occurrences::get_instance(), 'is_series_stale', array( $post_id ) ),
+			'Failed to assert that is_series_stale agrees a rowless, expired until-bounded series is complete.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `is_expired_until()`'s three return paths -- the
+	 * helper is called only from `is_series_stale()`'s no-rows branch, which
+	 * xdebug does not trace into reliably.
+	 *
+	 * @covers ::is_expired_until
+	 *
+	 * @return void
+	 */
+	public function test_is_expired_until_covers_every_branch(): void {
+		list( $never_id ) = $this->create_short_horizon_never_ending_series();
+		$until_id         = $this->create_completed_until_series();
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'is_expired_until',
+				array( $never_id, Rule::END_TYPE_NEVER )
+			),
+			'Failed to assert that a never-ending rule is never treated as an expired until rule.'
+		);
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'is_expired_until',
+				array( $until_id, Rule::END_TYPE_UNTIL )
+			),
+			'Failed to assert that an until-bounded rule whose until has passed is reported expired.'
+		);
+
+		delete_post_meta( $until_id, 'gatherpress_recurrence_until' );
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'is_expired_until',
+				array( $until_id, Rule::END_TYPE_UNTIL )
+			),
+			'Failed to assert that a missing until mirror is not treated as an expired bound.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `has_recurrence_rule()`'s two return paths -- it is
+	 * called only from inside `maybe_lazy_repair()`'s loop, which xdebug does
+	 * not trace into reliably.
+	 *
+	 * @covers ::has_recurrence_rule
+	 *
+	 * @return void
+	 */
+	public function test_has_recurrence_rule_covers_every_branch(): void {
+		list( $recurring_id ) = $this->create_short_horizon_never_ending_series();
+		$ordinary_id          = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'has_recurrence_rule',
+				array( $recurring_id )
+			),
+			'Failed to assert that a series carrying an end-type mirror is recognized as a series.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'has_recurrence_rule',
+				array( $ordinary_id )
+			),
+			'Failed to assert that an ordinary event is not treated as a series.'
+		);
+	}
+
+	/**
+	 * Coverage for the review's total-ordering finding on the limited event
+	 * query: `ORDER BY effective_start_gmt` alone is not a total order, so
+	 * two events sharing one start instant can swap places between two
+	 * identical reads and a paginated list can repeat or drop one.
+	 *
+	 * The statement itself is pinned, not merely the row order. InnoDB
+	 * returns tied rows in clustered-key order today, so a row-order
+	 * assertion passes with or without the tie-breakers -- it measures the
+	 * current plan rather than the guarantee. Pinning the emitted `ORDER BY`
+	 * is what fails if a future refactor drops it.
+	 *
+	 * @covers ::select_by_horizon
+	 * @covers ::select_upcoming
+	 * @covers ::select_past
+	 *
+	 * @return void
+	 */
+	public function test_limited_event_query_emits_a_total_order(): void {
+		global $wpdb;
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$directions = array(
+			'ASC'  => true,
+			'DESC' => false,
+		);
+
+		foreach ( $directions as $direction => $upcoming ) {
+			$query_count_before = count( $wpdb->queries );
+
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'select_by_horizon',
+				array( 5, array(), $upcoming )
+			);
+
+			$statements = array_values(
+				array_filter(
+					array_slice( $wpdb->queries, $query_count_before ),
+					static function ( $query ) use ( $occurrences_table ) {
+						return str_contains( $query[0], $occurrences_table )
+							&& str_contains( $query[0], 'effective_start_gmt' );
+					}
+				)
+			);
+
+			$this->assertCount(
+				1,
+				$statements,
+				sprintf( 'Failed to capture exactly one %s horizon statement.', $direction )
+			);
+			$this->assertStringContainsString(
+				sprintf(
+					'ORDER BY effective_start_gmt %1$s, `%2$s`.ID %1$s, scheduled_occurrence.recurrence_id %1$s',
+					$direction,
+					$wpdb->posts
+				),
+				$statements[0][0],
+				sprintf(
+					'Failed to assert that the %s horizon query breaks ties on post ID and recurrence ID.',
+					$direction
+				)
+			);
+		}
+	}
+
+	/**
+	 * Behavioral companion to the pinned statement above: three events
+	 * sharing one start instant must page consistently, with page 1 a strict
+	 * prefix of page 2 and no entry repeated or dropped across the boundary.
+	 *
+	 * @covers ::select_by_horizon
+	 * @covers ::select_upcoming
+	 *
+	 * @return void
+	 */
+	public function test_tied_events_page_without_repeating_or_dropping(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$start    = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '+2 weeks' );
+		$post_ids = array();
+
+		for ( $index = 0; $index < 3; $index++ ) {
+			$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+			add_post_meta(
+				$post_id,
+				'gatherpress_datetime',
+				wp_json_encode(
+					array(
+						'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+						'dateTimeEnd'   => $start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+						'timezone'      => 'America/New_York',
+					)
+				)
+			);
+			Event_Setup::get_instance()->set_datetimes( $post_id );
+
+			$post_ids[] = $post_id;
+		}
+
+		sort( $post_ids );
+
+		$page_one = Occurrences::get_instance()->select_upcoming( 1 );
+		$page_two = Occurrences::get_instance()->select_upcoming( 2 );
+
+		$this->assertSame(
+			array( $post_ids[0] ),
+			array_map( static fn( Occurrence_Ref $ref ) => $ref->post_id, $page_one ),
+			'Failed to assert that the first page of tied events is the lowest post ID.'
+		);
+		$this->assertSame(
+			array( $post_ids[0], $post_ids[1] ),
+			array_map( static fn( Occurrence_Ref $ref ) => $ref->post_id, $page_two ),
+			'Failed to assert that a wider page of tied events extends the same order rather than reshuffling it.'
+		);
+	}
+
+	/**
+	 * Coverage for the review's total-ordering finding on the sweep's own
+	 * limited query. Rowless candidates all share one `NULL` sort key, so
+	 * without the `post_id` tie-breaker the batch boundary among them is
+	 * whatever the plan happens to emit -- one rowless series could be
+	 * selected every hour while another is never selected at all.
+	 *
+	 * Pins the emitted statement for the same reason the event-query test
+	 * does, and pairs it with the batch-of-one behavior the tie-breaker
+	 * guarantees.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_sweep_candidate_query_emits_a_total_order(): void {
+		global $wpdb;
+
+		list( $first_id )  = $this->create_short_horizon_never_ending_series();
+		list( $second_id ) = $this->create_short_horizon_never_ending_series();
+
+		Occurrences::get_instance()->delete_for_post( $first_id );
+		Occurrences::get_instance()->delete_for_post( $second_id );
+
+		$query_count_before = count( $wpdb->queries );
+
+		$candidates = Occurrences::get_instance()->select_series_needing_top_up( 1 );
+
+		$statements = array_values(
+			array_filter(
+				array_slice( $wpdb->queries, $query_count_before ),
+				static function ( $query ) {
+					return str_contains( $query[0], 'series_post_id' )
+						&& str_contains( $query[0], 'ORDER BY' );
+				}
+			)
+		);
+
+		$this->assertCount( 1, $statements, 'Failed to capture exactly one sweep candidate statement.' );
+		$this->assertStringContainsString(
+			'ORDER BY MAX( o.datetime_start_gmt ) ASC, end_type_meta.post_id ASC',
+			$statements[0][0],
+			'Failed to assert that the sweep candidate query breaks ties on series post ID.'
+		);
+		$this->assertSame(
+			array( min( $first_id, $second_id ) ),
+			$candidates,
+			'Failed to assert that a batch of one takes the lowest-ID rowless candidate.'
+		);
+	}
 }

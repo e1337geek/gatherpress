@@ -299,21 +299,17 @@ final class Meta {
 			// depending on that mirror would make this depend on that class
 			// having already run on this pass.
 			Timezone_Guard::assert_named( $this->read_timezone( $post_id ) );
-			// @codeCoverageIgnoreStart
-			// Untestable today: Timezone_Guard::assert_named() is still a T0
-			// no-op skeleton owned by another task and never throws, so this
-			// catch is provably unreachable in the current tree (confirmed by
-			// reading class-timezone-guard.php, not assumed). The behavior is
-			// correct and wired now on purpose -- a fixed-offset timezone must
-			// reject the rule, not fatal the post save on a REST write that
-			// bypasses the editor -- and this block activates automatically,
-			// with no code change here, the moment the guard's real
-			// implementation lands.
 		} catch ( InvalidArgumentException $e ) {
+			// A fixed-offset timezone (`UTC+5:30`) rejects the rule rather
+			// than fataling the save: a REST write can carry one just as
+			// easily as the editor can. The mirrors are cleared here, not
+			// merely left unwritten, because a series that *was* valid and
+			// is now saved with a fixed offset would otherwise keep the
+			// previous rule's mirrors and go on describing itself as
+			// recurring after its rule was refused.
 			$this->clear_mirrors( $post_id );
 
 			return;
-			// @codeCoverageIgnoreEnd
 		}
 
 		$this->write_mirrors( $post_id, $rule );

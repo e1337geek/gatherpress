@@ -99,6 +99,12 @@ final class Projection_Cron {
 	 * event and an option write regardless of whether the site has ever
 	 * published a recurring event at all.
 	 *
+	 * The flag is a transition, not a constant: a site that removes its last
+	 * recurrence goes back to having no recurring events, and the hourly
+	 * event scheduled while it did must be cleared rather than left
+	 * dispatching an early-returning callback forever. Only deactivation
+	 * cleaned it up before, which a site that keeps the plugin never reaches.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
@@ -110,6 +116,14 @@ final class Projection_Cron {
 		// are both a cost, and the overwhelming majority of GatherPress
 		// installs never publish a recurring event at all.
 		if ( ! Query::site_has_recurring_events() ) {
+			// Guarded on wp_next_scheduled() so the never-recurring site --
+			// the overwhelming majority -- still pays nothing: an unguarded
+			// wp_clear_scheduled_hook() rewrites the cron option on every
+			// init of every install that has no sweep scheduled at all.
+			if ( false !== wp_next_scheduled( self::SWEEP_ACTION ) ) {
+				wp_clear_scheduled_hook( self::SWEEP_ACTION );
+			}
+
 			return;
 		}
 

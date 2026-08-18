@@ -437,6 +437,11 @@ final class Setup {
 	 * which custom tables associated with the plugin should be deleted. It returns an
 	 * updated array of table names to be dropped during site deletion.
 	 *
+	 * Every custom table `create_tables()` creates must be listed here, or the
+	 * blog's rows survive the blog. `$wpdb->prefix` is read at call time and
+	 * WordPress runs this callback inside the deleted blog's context, so the
+	 * names are always the deleted blog's own -- never another blog's.
+	 *
 	 * @since 0.27.0
 	 *
 	 * @param array $tables An array of names of the site tables to be dropped.
@@ -447,6 +452,7 @@ final class Setup {
 		global $wpdb;
 
 		$tables[] = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$tables[] = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 
 		return $tables;
 	}

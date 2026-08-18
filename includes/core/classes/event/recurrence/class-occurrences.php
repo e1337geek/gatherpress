@@ -403,7 +403,17 @@ final class Occurrences {
 			. ' AND ( scheduled_occurrence.recurrence_id IS NOT NULL'
 			. ' OR NOT EXISTS ( SELECT 1 FROM %i WHERE series_post_id = %i.ID ) )'
 			. " HAVING effective_start_gmt {$comparison} %s"
-			. " ORDER BY effective_start_gmt {$order}"
+			// The sort key alone is not unique: any number of events can
+			// share one start instant, and one series contributes many rows
+			// with the same key only by coincidence -- but ties under a
+			// LIMIT are resolved by whatever order the plan happens to
+			// produce, so a paginated list can repeat or drop an entry after
+			// an index or statistics change. post_id then recurrence_id makes
+			// the order total, and both tie-breakers follow the primary
+			// direction so page N+1 continues where page N stopped in either
+			// direction.
+			. " ORDER BY effective_start_gmt {$order}, %i.ID {$order},"
+			. " scheduled_occurrence.recurrence_id {$order}"
 			. ' LIMIT %d';
 
 		$values = array_merge(
@@ -426,6 +436,7 @@ final class Occurrences {
 				$occurrences_table,
 				$wpdb->posts,
 				current_time( 'mysql', true ),
+				$wpdb->posts,
 				$limit,
 			)
 		);
@@ -455,8 +466,14 @@ final class Occurrences {
 	 *
 	 * Short-circuits on `Query::site_has_recurring_events()` first, so a
 	 * site with no recurring events never pays even the transient lookup.
-	 * Only refs carrying a non-null `recurrence_id` name an actual series --
-	 * a non-recurring event's ref has nothing to repair.
+	 *
+	 * A ref carrying a non-null `recurrence_id` names an occurrence row and
+	 * therefore a series. A ref carrying a null one is ambiguous: it is
+	 * either an ordinary non-recurring event, which has nothing to repair, or
+	 * a series whose rows are *gone*, which `select_by_horizon()` renders
+	 * through its rowless fallback and which is exactly the case repair
+	 * exists for. The `end_type` mirror separates the two, and reads from the
+	 * post's already-primed meta cache rather than issuing a query per ref.
 	 *
 	 * The per-read cap is applied *after* filtering out series already
 	 * suppressed by their debounce transient, not before: refs arrive in
@@ -485,7 +502,7 @@ final class Occurrences {
 		$post_ids = array();
 
 		foreach ( $refs as $ref ) {
-			if ( null !== $ref->recurrence_id ) {
+			if ( null !== $ref->recurrence_id || $this->has_recurrence_rule( $ref->post_id ) ) {
 				$post_ids[ $ref->post_id ] = true;
 			}
 		}
@@ -516,6 +533,24 @@ final class Occurrences {
 		foreach ( array_slice( $unsuppressed, 0, $limit ) as $post_id ) {
 			$this->maybe_repair_stale_series( $post_id );
 		}
+	}
+
+	/**
+	 * Report whether a post carries a recurrence rule at all.
+	 *
+	 * Reads the `end_type` mirror, the same key `is_series_stale()` and
+	 * `select_series_needing_top_up()` treat as the presence test for a rule,
+	 * so all three agree on what counts as a series. `get_post_meta()` is
+	 * served from the post meta cache a read has already primed.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID to check.
+	 *
+	 * @return bool True when the post has a non-empty recurrence end-type mirror.
+	 */
+	protected function has_recurrence_rule( int $post_id ): bool {
+		return '' !== (string) get_post_meta( $post_id, 'gatherpress_recurrence_end_type', true );
 	}
 
 	/**
@@ -558,8 +593,13 @@ final class Occurrences {
 	 * best and a rewrite of the same rows forever at worst. An empty end type
 	 * means the post carries no recurrence rule at all. A series with a rule
 	 * but zero projected rows (a failed projection, a partial restore) is
-	 * always reported stale, since it would otherwise be invisible to both
-	 * the sweep and the lazy repair forever.
+	 * reported stale, since it would otherwise be invisible to both the sweep
+	 * and the lazy repair forever -- unless it is `UNTIL`-bounded with an
+	 * `until` already in the past, which can only ever expand to nothing and
+	 * would otherwise be re-projected fruitlessly forever. That exception is
+	 * the same one `select_series_needing_top_up()` encodes in SQL; the two
+	 * predicates must agree or a series repaired by one path is re-selected
+	 * by the other.
 	 *
 	 * @since 0.36.0
 	 *
@@ -595,7 +635,7 @@ final class Occurrences {
 		$latest_gmt = null === $row ? null : $row['latest_gmt'];
 
 		if ( null === $latest_gmt ) {
-			return true;
+			return ! $this->is_expired_until( $post_id, $end_type );
 		}
 
 		if ( $this->has_reached_until( $post_id, $end_type, (string) $row['latest_local'] ) ) {
@@ -603,6 +643,36 @@ final class Occurrences {
 		}
 
 		return $latest_gmt < $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+	}
+
+	/**
+	 * Report whether a rule is `UNTIL`-bounded with an `until` already past.
+	 *
+	 * Distinct from `has_reached_until()`, which asks whether the projected
+	 * rows have caught up with the bound: this asks whether the bound itself
+	 * is behind us, which is the only thing a series with no rows at all can
+	 * be asked. Such a series expands to nothing however many times it is
+	 * projected, so it is complete rather than stale.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id  Series post ID.
+	 * @param string $end_type One of the `Rule::END_TYPE_*` constants.
+	 *
+	 * @return bool True when the series is `UNTIL`-bounded and its `until` is in the past.
+	 */
+	protected function is_expired_until( int $post_id, string $end_type ): bool {
+		if ( Rule::END_TYPE_UNTIL !== $end_type ) {
+			return false;
+		}
+
+		$until = (string) get_post_meta( $post_id, 'gatherpress_recurrence_until', true );
+
+		if ( '' === $until ) {
+			return false;
+		}
+
+		return $until < ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d' );
 	}
 
 	/**
@@ -678,18 +748,30 @@ final class Occurrences {
 	 * `GROUP BY` / `HAVING MAX()` is the correct tool here rather than a
 	 * violation of the "never aggregate a result set of event rows" rule.
 	 *
+	 * Candidate selection is driven from the `end_type` mirror in
+	 * `wp_postmeta`, with the occurrence table `LEFT JOIN`ed on, rather than
+	 * driven from the occurrence table itself. Driving it from occurrence
+	 * rows made a series with a valid rule and *zero* rows -- a partial
+	 * restore, a projection that failed halfway, a manual `DELETE` --
+	 * structurally unselectable: the only candidates were series that
+	 * already had at least one row, so precisely the series that most needed
+	 * repair could never be repaired. `MAX( o.datetime_start_gmt ) IS NULL`
+	 * is therefore treated as maximally stale rather than as "not a series".
+	 *
 	 * Excluded structurally, in SQL, so none of the following is ever a
 	 * candidate: a post with no recurrence rule at all (empty `end_type`
 	 * mirror -- kept in parity with `is_series_stale()`'s own empty-end-type
 	 * branch, since the two predicates disagreeing would silently make an
 	 * unrecognized/blank end type a permanent hourly candidate);
-	 * `COUNT`-bounded rules, via the `end_type` mirror; and `UNTIL`-bounded
+	 * `COUNT`-bounded rules, via the `end_type` mirror; `UNTIL`-bounded
 	 * rules whose latest projected occurrence has already reached their
-	 * `until` mirror. The `COUNT` and reached-`UNTIL` cases are complete by
-	 * design and would otherwise look permanently "stale" (their fixed,
-	 * final occurrence only ever falls further behind
-	 * `resolve_top_up_cutoff()` as real time passes) and get rewritten by
-	 * every sweep forever.
+	 * `until` mirror; and rowless `UNTIL`-bounded rules whose `until` is
+	 * already in the past, which can only ever expand to nothing and would
+	 * otherwise be re-projected, fruitlessly, by every sweep forever. The
+	 * `COUNT` and reached-`UNTIL` cases are complete by design and would
+	 * otherwise look permanently "stale" (their fixed, final occurrence only
+	 * ever falls further behind `resolve_top_up_cutoff()` as real time
+	 * passes) and get rewritten by every sweep forever.
 	 *
 	 * `ORDER BY MAX( o.datetime_start_gmt ) ASC` rotates the batch by
 	 * staleness rather than by `series_post_id`. Without it, `LIMIT` alone
@@ -697,7 +779,11 @@ final class Occurrences {
 	 * for an unordered `GROUP BY` tracks storage/insertion order, i.e. the
 	 * lowest post IDs) on every sweep -- a site with more stale candidates
 	 * than one batch can starve a newer, more-overdue series behind older,
-	 * lower-ID ones indefinitely.
+	 * lower-ID ones indefinitely. Rowless series sort first, since SQL `ASC`
+	 * orders `NULL` before every value, which is also the priority they
+	 * deserve. The trailing `post_id` tie-breaker makes that order total:
+	 * every rowless candidate shares the same `NULL` sort key, so without it
+	 * the batch boundary among them is whatever the plan happens to emit.
 	 *
 	 * @since 0.36.0
 	 *
@@ -710,6 +796,7 @@ final class Occurrences {
 
 		$table  = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$cutoff = $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+		$today  = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d' );
 
 		// The joined meta columns are aliased (et_value, until_value) rather
 		// than referenced as bare `end_type_meta.meta_value` /
@@ -724,23 +811,26 @@ final class Occurrences {
 		// `incompatible_sql_modes` back in would silently get an empty
 		// candidate list forever). Aliasing costs nothing and is correct
 		// under every SQL mode.
-		$sql = 'SELECT o.series_post_id,'
+		$sql = 'SELECT end_type_meta.post_id AS series_post_id,'
 			. ' end_type_meta.meta_value AS et_value, until_meta.meta_value AS until_value'
-			. ' FROM %i o'
-			. ' INNER JOIN %i end_type_meta'
-			. ' ON end_type_meta.post_id = o.series_post_id AND end_type_meta.meta_key = %s'
+			. ' FROM %i end_type_meta'
 			. ' LEFT JOIN %i until_meta'
-			. ' ON until_meta.post_id = o.series_post_id AND until_meta.meta_key = %s'
-			. ' WHERE end_type_meta.meta_value != %s AND end_type_meta.meta_value != %s'
-			. ' GROUP BY o.series_post_id, et_value, until_value'
-			. ' HAVING MAX( o.datetime_start_gmt ) < %s'
+			. ' ON until_meta.post_id = end_type_meta.post_id AND until_meta.meta_key = %s'
+			. ' LEFT JOIN %i o ON o.series_post_id = end_type_meta.post_id'
+			. ' WHERE end_type_meta.meta_key = %s'
+			. ' AND end_type_meta.meta_value != %s AND end_type_meta.meta_value != %s'
+			. ' GROUP BY end_type_meta.post_id, et_value, until_value'
+			. ' HAVING ( MAX( o.datetime_start_gmt ) IS NULL OR MAX( o.datetime_start_gmt ) < %s )'
 			. ' AND ('
 			. '     et_value != %s'
 			. '     OR until_value IS NULL'
 			. '     OR until_value = %s'
+			. '     OR ('
+			. '         MAX( o.datetime_start ) IS NULL AND until_value >= %s'
+			. '     )'
 			. '     OR DATE( MAX( o.datetime_start ) ) < until_value'
 			. ' )'
-			. ' ORDER BY MAX( o.datetime_start_gmt ) ASC'
+			. ' ORDER BY MAX( o.datetime_start_gmt ) ASC, end_type_meta.post_id ASC'
 			. ' LIMIT %d';
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -748,16 +838,17 @@ final class Occurrences {
 		$rows = $wpdb->get_col(
 			$wpdb->prepare(
 				$sql,
-				$table,
 				$wpdb->postmeta,
-				'gatherpress_recurrence_end_type',
 				$wpdb->postmeta,
 				'gatherpress_recurrence_until',
+				$table,
+				'gatherpress_recurrence_end_type',
 				Rule::END_TYPE_COUNT,
 				'',
 				$cutoff,
 				Rule::END_TYPE_UNTIL,
 				'',
+				$today,
 				$limit
 			)
 		);
