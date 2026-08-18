@@ -312,18 +312,34 @@ final class Context {
 	}
 
 	/**
-	 * Replace a loop row's permalink with its occurrence's permalink.
+	 * Replace a post's permalink with its occurrence's permalink.
 	 *
-	 * Filters `post_type_link` and `post_link`. Scoped to the loop's stamped
-	 * result object and deliberately *not* to the request's own occurrence
-	 * context: on a singular occurrence request the requested URL already is
-	 * the occurrence URL, and rewriting `get_permalink()` there would change
-	 * what core's canonical-redirect machinery compares against for no gain
-	 * this defect asks for.
+	 * Filters `post_type_link` and `post_link`. Resolution goes through
+	 * `resolve()`, so a loop row answers with its own stamped occurrence and
+	 * the singular occurrence page answers with the occurrence the request
+	 * named.
+	 *
+	 * That second arm used to be withheld, on the theory that rewriting
+	 * `get_permalink()` on a singular occurrence request would disturb core's
+	 * canonical-redirect machinery. Measured against
+	 * `wp-includes/canonical.php`, it does not: on a resolved singular request
+	 * `redirect_canonical()` reaches `get_permalink()` only through branches
+	 * this request cannot be in — `is_singular() && $wp_query->post_count < 1`,
+	 * the `is_404()` recovery, the query-string `?name=`/`?p=` forms, and the
+	 * paginated `get_query_var( 'page' )` arm, none of which a matched
+	 * occurrence rewrite rule produces. It ends at
+	 * `if ( ! $redirect_url || $redirect_url === $requested_url ) { return; }`
+	 * with `$redirect_url` still `false`, before and after this change alike.
+	 *
+	 * Withholding it, meanwhile, was a live defect rather than a neutral
+	 * choice: every link emitted from an occurrence page — the iCal `URL:`
+	 * field, `rel="canonical"`, share links, the RSVP confirmation email —
+	 * pointed at the bare series URL, which PRD D-4 resolves to the *next
+	 * upcoming* occurrence rather than the one being viewed.
 	 *
 	 * The `$post` core hands this filter is `get_post()`'s cached object, not
-	 * the stamped clone, which is exactly why identity is resolved through
-	 * `loop_occurrence()` by ID rather than read off `$post` directly.
+	 * the stamped clone, which is exactly why identity is resolved by ID
+	 * rather than read off `$post` directly.
 	 *
 	 * @since 0.36.0
 	 *
@@ -332,7 +348,7 @@ final class Context {
 	 *                          `WP_Post` because this is a public callback on a singleton, and a
 	 *                          fatal is a poor answer to a caller that hands it something else.
 	 *
-	 * @return string The occurrence's permalink during an occurrence loop iteration, otherwise unchanged.
+	 * @return string The occurrence's permalink when one applies to this post, otherwise unchanged.
 	 */
 	public function permalink( $permalink, $post ): string {
 		$post_id = ( $post instanceof WP_Post ) ? (int) $post->ID : 0;
@@ -341,7 +357,7 @@ final class Context {
 			return (string) $permalink;
 		}
 
-		$occurrence = $this->loop_occurrence( $post_id );
+		$occurrence = $this->resolve( $post_id );
 
 		return ( null === $occurrence )
 			? (string) $permalink
