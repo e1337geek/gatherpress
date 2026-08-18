@@ -2,13 +2,19 @@
 /**
  * Class handles unit tests for occurrence-aware permalinks.
  *
- * The defect this file pins is `Context::permalink()` declining to answer for
- * the request's own occurrence, so `get_permalink()` on
- * `/event/my-series/20260903T180000/` returned the bare series URL. Every link
- * emitted from that page inherited it: the iCal `URL:` field,
- * `rel="canonical"`, share links. The RSVP confirmation email shares the
- * symptom but is composed on paths that never reach `wp`; its tests live with
- * the per-occurrence RSVP work, which is where that fix lands.
+ * Two separate defects share one symptom, a link to an occurrence resolving to
+ * a different date. They share this file because they share the fixture that
+ * can tell them apart.
+ *
+ * The first is `Context::permalink()` declining to answer for the request's
+ * own occurrence, so `get_permalink()` on `/event/my-series/20260903T180000/`
+ * returned the bare series URL. Every link emitted from that page inherited it:
+ * the iCal `URL:` field, `rel="canonical"`, share links.
+ *
+ * The second is the RSVP confirmation email, composed from `Rsvp\Token` while
+ * the comment is being inserted, on paths that never reach `wp`. There is no
+ * request context to read, so the comment's own `_gatherpress_occurrence` term
+ * is the authoritative source.
  *
  * **Every assertion here names an exact URL**, and every fixture puts the
  * occurrence under test somewhere other than first. A bare series URL resolves
@@ -32,9 +38,15 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
+use GatherPress\Core\Event\Rest_Api;
 use GatherPress\Core\Event\Setup as Event_Setup;
+use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
+use GatherPress\Core\Rsvp\Token;
+use GatherPress\Core\Settings;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
+use WP_REST_Request;
 
 /**
  * Class Test_Permalink.
@@ -58,10 +70,18 @@ class Test_Permalink extends Base {
 	);
 
 	/**
-	 * Create the occurrence table, register the calendar endpoints, and put
-	 * the event post type behind pretty permalinks with the occurrence rewrite
-	 * rule flushed, so `get_permalink()` and `$this->go_to()` both exercise
-	 * the real URL shape rather than the plain `?p=` form.
+	 * Bodies of every email `wp_mail()` was asked to send.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	protected array $sent_mail = array();
+
+	/**
+	 * Create the occurrence table, register the RSVP routes, and put the event
+	 * post type behind pretty permalinks with the occurrence rewrite rule
+	 * flushed, so `get_permalink()` and `$this->go_to()` both exercise the real
+	 * URL shape rather than the plain `?p=` form.
 	 *
 	 * @return void
 	 */
@@ -69,7 +89,10 @@ class Test_Permalink extends Base {
 		parent::setUp();
 
 		gatherpress_reset_custom_tables();
+		Rsvp_Setup::get_instance()->register_taxonomy();
+		Rest_Api::get_instance()->register_endpoints();
 		Calendar_Setup::get_instance()->register_endpoints();
+		Settings::get_instance()->set( 'enable_open_rsvp', true );
 
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '/%postname%/' );
@@ -86,6 +109,11 @@ class Test_Permalink extends Base {
 		$wp_rewrite->flush_rules();
 
 		Context::get_instance()->clear();
+		Context::flush_resolved();
+
+		$this->sent_mail = array();
+
+		add_filter( 'pre_wp_mail', array( $this, 'capture_mail' ), 10, 2 );
 	}
 
 	/**
@@ -94,22 +122,41 @@ class Test_Permalink extends Base {
 	 * @return void
 	 */
 	public function tearDown(): void {
+		remove_filter( 'pre_wp_mail', array( $this, 'capture_mail' ), 10 );
+
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '' );
 		$wp_rewrite->flush_rules();
 
 		Context::get_instance()->clear();
+		Context::flush_resolved();
 
 		parent::tearDown();
 	}
 
 	/**
+	 * Short-circuit `wp_mail()` and record the body it was handed.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param null|bool $short_circuit Short-circuit value, null when nothing has filtered yet.
+	 * @param array     $attributes    The `wp_mail()` arguments.
+	 *
+	 * @return bool True, so nothing is actually delivered from a test run.
+	 */
+	public function capture_mail( $short_circuit, array $attributes ): bool {
+		$this->sent_mail[] = (string) ( $attributes['message'] ?? '' );
+
+		return true;
+	}
+
+	/**
 	 * Build the anchor every fixture here is dated from.
 	 *
-	 * Thirty days out, so nothing is ever in the past: the assertions here
-	 * lean on the bare-series fallback resolving to the *first* occurrence,
-	 * and against a pinned anchor that answer would silently drift to a later
-	 * occurrence once real time crossed it.
+	 * Thirty days out, so nothing is ever in the past: `Rsvp\Form::process_rsvp()`
+	 * bails 400 on `has_event_past()`, reading the *series* meta, and against a
+	 * pinned anchor the email tests would silently stop writing anything once
+	 * real time crossed it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -158,6 +205,7 @@ class Test_Permalink extends Base {
 		Meta::get_instance()->set_recurrence( $post_id );
 		Occurrences::get_instance()->project( $post_id );
 		Recurrence_Query::refresh_has_recurring_events();
+		Context::flush_resolved();
 
 		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
 
@@ -200,8 +248,36 @@ class Test_Permalink extends Base {
 
 		Event_Setup::get_instance()->set_datetimes( $post_id );
 		Recurrence_Query::refresh_has_recurring_events();
+		Context::flush_resolved();
 
 		return (int) $post_id;
+	}
+
+	/**
+	 * Dispatch one open-RSVP submission through the real REST server.
+	 *
+	 * `rest_do_request()`, never `Form::process_rsvp()` directly: the argument
+	 * definition, its validation and the occurrence-context entry all live
+	 * between the two, and the confirmation email is composed inside the
+	 * innermost one.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $params Request parameters.
+	 *
+	 * @return \WP_REST_Response The dispatched response.
+	 */
+	protected function submit_rsvp( array $params ) {
+		$request = new WP_REST_Request(
+			'POST',
+			sprintf( '/%s/event/rsvp-form', GATHERPRESS_REST_NAMESPACE )
+		);
+
+		foreach ( $params as $key => $value ) {
+			$request->set_param( $key, $value );
+		}
+
+		return rest_do_request( $request );
 	}
 
 	/**
@@ -294,6 +370,84 @@ class Test_Permalink extends Base {
 	}
 
 	/**
+	 * The RSVP confirmation email links to the occurrence the responder took.
+	 *
+	 * Driven through `rest_do_request()` on the `rsvp-form` route — the entry
+	 * point a browser reaches — because the occurrence term the link is
+	 * composed from is written by `Rsvp\Form` a few frames below it, and a test
+	 * calling `Token::generate_url()` directly would have to stamp that term by
+	 * hand and would prove nothing about the wiring.
+	 *
+	 * The RSVP is taken on the **second** occurrence, so the bare-series answer
+	 * and the correct answer differ. This is the outbound half of the defect:
+	 * once sent, a link to the wrong date cannot be corrected.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Token::generate_url
+	 * @covers \GatherPress\Core\Rsvp\Token::get_event_url
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::series_post_id_from_slug
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_confirmation_email_links_to_the_occurrence_the_responder_took(): void {
+		list( $post_id, $first, $second ) = $this->create_series();
+
+		$series_url = (string) get_permalink( $post_id );
+		$response   = $this->submit_rsvp(
+			array(
+				'comment_post_ID' => $post_id,
+				'author'          => 'Ada Lovelace',
+				'email'           => 'ada@example.test',
+				'recurrence_id'   => $second,
+			)
+		);
+
+		$this->assertSame( 200, $response->get_status(), 'Failed to assert the RSVP submission succeeded.' );
+
+		$comment_id = (int) $response->get_data()['comment_id'];
+
+		$this->assertSame(
+			array( Rsvp_Occurrence::term_slug( $post_id, $second ) ),
+			wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) ),
+			'Failed to assert the RSVP was bound to the second occurrence — without that the email has nothing'
+				. ' authoritative to read.'
+		);
+		$this->assertCount( 1, $this->sent_mail, 'Failed to assert one confirmation email was sent.' );
+
+		$token = ( new Token( $comment_id ) )->get_token();
+
+		$this->assertNotEmpty( $token, 'Failed to assert the confirmation token was generated.' );
+
+		$expected = add_query_arg(
+			Token::NAME,
+			sprintf( '%d_%s', $comment_id, $token ),
+			$series_url . $second . '/'
+		);
+
+		$this->assertStringContainsString(
+			esc_url( $expected ),
+			$this->sent_mail[0],
+			'Failed to assert the confirmation email links to the occurrence the responder RSVPd to.'
+		);
+		$this->assertStringNotContainsString(
+			esc_url(
+				add_query_arg(
+					Token::NAME,
+					sprintf( '%d_%s', $comment_id, $token ),
+					$series_url . $first . '/'
+				)
+			),
+			$this->sent_mail[0],
+			'Failed to assert the confirmation email does not link to the next-upcoming occurrence.'
+		);
+		$this->assertStringNotContainsString(
+			esc_url( add_query_arg( Token::NAME, sprintf( '%d_%s', $comment_id, $token ), $series_url ) ),
+			$this->sent_mail[0],
+			'Failed to assert the confirmation email does not link to the bare series URL.'
+		);
+	}
+
+	/**
 	 * The calendar endpoint URL is a series URL, in or out of occurrence context.
 	 *
 	 * `Calendar::get_endpoint_url()` appends a path segment to the post's
@@ -338,6 +492,208 @@ class Test_Permalink extends Base {
 		$this->assertFalse(
 			is_404(),
 			'Failed to assert the iCal endpoint URL emitted from an occurrence page actually resolves.'
+		);
+	}
+
+	/**
+	 * An RSVP on an ordinary event still gets the plain event permalink.
+	 *
+	 * The other arm of `Token::get_event_url()`, and the shape every
+	 * non-recurring site keeps.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Token::get_event_url
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_confirmation_email_on_a_plain_event_keeps_the_event_permalink(): void {
+		$post_id  = $this->create_plain_event();
+		$response = $this->submit_rsvp(
+			array(
+				'comment_post_ID' => $post_id,
+				'author'          => 'Grace Hopper',
+				'email'           => 'grace@example.test',
+			)
+		);
+
+		$this->assertSame( 200, $response->get_status(), 'Failed to assert the RSVP submission succeeded.' );
+
+		$comment_id = (int) $response->get_data()['comment_id'];
+		$token      = ( new Token( $comment_id ) )->get_token();
+		$expected   = add_query_arg(
+			Token::NAME,
+			sprintf( '%d_%s', $comment_id, $token ),
+			(string) get_permalink( $post_id )
+		);
+
+		$this->assertCount( 1, $this->sent_mail, 'Failed to assert one confirmation email was sent.' );
+		$this->assertStringContainsString(
+			esc_url( $expected ),
+			$this->sent_mail[0],
+			'Failed to assert an ordinary event\'s confirmation email keeps its plain permalink.'
+		);
+	}
+
+	/**
+	 * REQ-16: the email path costs a non-recurring site no query and no option write.
+	 *
+	 * Captured across `rest_do_request()` on the `rsvp-form` route — the real
+	 * entry point, which is where the confirmation email is composed — rather
+	 * than across `Token::generate_url()`, because a capture around the body of
+	 * the work is exactly the shape that let two earlier entry points ship
+	 * unguarded (rule 6a).
+	 *
+	 * Both halves are asserted. The query half proves nothing reached the
+	 * occurrence table or the occurrence taxonomy; the option half proves the
+	 * autoloaded flag was read, not written, and that nothing else was added.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Token::get_event_url
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 *
+	 * @return void
+	 */
+	public function test_email_path_touches_no_occurrence_storage_on_a_non_recurring_site(): void {
+		global $wpdb;
+
+		$post_id = $this->create_plain_event();
+
+		wp_cache_delete( 'alloptions', 'options' );
+
+		$options_before = wp_load_alloptions();
+		$queries_before = count( $wpdb->queries );
+
+		$response = $this->submit_rsvp(
+			array(
+				'comment_post_ID' => $post_id,
+				'author'          => 'Katherine Johnson',
+				'email'           => 'katherine@example.test',
+			)
+		);
+
+		$since = array_slice( $wpdb->queries, $queries_before );
+
+		$this->assertSame( 200, $response->get_status(), 'Failed to assert the RSVP submission succeeded.' );
+		$this->assertCount( 1, $this->sent_mail, 'Failed to assert the email path actually ran.' );
+		$this->assertNotEmpty(
+			$since,
+			'Failed to capture any query; SAVEQUERIES must be on for this assertion to mean anything.'
+		);
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$since,
+					static function ( array $query ) use ( $occurrences_table ): bool {
+						return str_contains( $query[0], $occurrences_table )
+							|| str_contains( $query[0], Rsvp_Occurrence::TAXONOMY );
+					}
+				)
+			),
+			'Failed to assert the RSVP form route touched no occurrence storage on a non-recurring site.'
+		);
+
+		wp_cache_delete( 'alloptions', 'options' );
+
+		$options_after = wp_load_alloptions();
+
+		$this->assertSame(
+			array_keys( $options_before ),
+			array_keys( $options_after ),
+			'Failed to assert the email path added or removed no option.'
+		);
+		$this->assertSame(
+			'0',
+			$options_after[ Recurrence_Query::HAS_RECURRING_OPTION ] ?? '0',
+			'Failed to assert the has-recurring-events flag is still 0 after the email path ran.'
+		);
+	}
+
+	/**
+	 * A comment carrying no occurrence term resolves to no occurrence.
+	 *
+	 * The `empty( $slugs )` arm of `occurrence_for_comment()`, reached on a
+	 * recurring site so the REQ-16 guard above it is not what answers.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_for_comment_is_null_for_an_unstamped_comment(): void {
+		list( $post_id ) = $this->create_series();
+
+		$comment_id = $this->factory->comment->create( array( 'comment_post_ID' => $post_id ) );
+
+		$this->assertNull(
+			Rsvp_Occurrence::occurrence_for_comment( (int) $comment_id ),
+			'Failed to assert a comment with no occurrence term resolves to no occurrence.'
+		);
+	}
+
+	/**
+	 * Occurrence resolution is refused before any term read on a plain site, and
+	 * for a non-positive comment ID.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_for_comment_is_null_without_recurring_events_or_a_comment(): void {
+		list( $post_id, , $second ) = $this->create_series();
+
+		$comment_id = (int) $this->factory->comment->create( array( 'comment_post_ID' => $post_id ) );
+
+		Rsvp_Occurrence::get_instance()->assign( $comment_id, $post_id, $second );
+
+		$this->assertNotNull(
+			Rsvp_Occurrence::occurrence_for_comment( $comment_id ),
+			'Failed to assert the stamped comment resolves while the site has recurring events — without that'
+				. ' the negative below would be produced by the fixture rather than by the guard.'
+		);
+
+		$this->assertNull(
+			Rsvp_Occurrence::occurrence_for_comment( 0 ),
+			'Failed to assert a non-positive comment ID resolves to no occurrence.'
+		);
+
+		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '0' );
+
+		$this->assertNull(
+			Rsvp_Occurrence::occurrence_for_comment( $comment_id ),
+			'Failed to assert the REQ-16 guard refuses before reading a term relationship.'
+		);
+	}
+
+	/**
+	 * The series post ID is recovered from a term slug, and refused otherwise.
+	 *
+	 * Every return path of `series_post_id_from_slug()`, driven directly
+	 * because xdebug does not reliably trace a same-class static helper reached
+	 * only through its caller.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::series_post_id_from_slug
+	 *
+	 * @return void
+	 */
+	public function test_series_post_id_from_slug_covers_every_return_path(): void {
+		$this->assertSame(
+			12,
+			Rsvp_Occurrence::series_post_id_from_slug( Rsvp_Occurrence::term_slug( 12, '20260903T180000' ) ),
+			'Failed to assert the series post ID round-trips out of a real term slug.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::series_post_id_from_slug( '20260903t180000' ),
+			'Failed to assert a slug with no separator carries no series post ID.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::series_post_id_from_slug( 'series-20260903t180000' ),
+			'Failed to assert a non-numeric prefix carries no series post ID.'
+		);
+		$this->assertNull(
+			Rsvp_Occurrence::series_post_id_from_slug( '0-20260903t180000' ),
+			'Failed to assert a zero prefix carries no series post ID.'
 		);
 	}
 }
