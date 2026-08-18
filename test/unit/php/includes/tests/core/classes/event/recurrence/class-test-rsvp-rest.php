@@ -33,10 +33,12 @@ use GatherPress\Core\Rsvp\Cache;
 use GatherPress\Core\Rsvp\Form;
 use GatherPress\Core\Rsvp\Rsvp;
 use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
+use GatherPress\Core\Rsvp\Token;
 use GatherPress\Core\Settings;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
+use ReflectionMethod;
 use WP_REST_Request;
 
 /**
@@ -517,7 +519,14 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * An unknown occurrence identifier is refused rather than read as the series.
 	 *
-	 * @covers ::validate_recurrence_id
+	 * The refusal is a 404 rather than the 400 an argument validator would
+	 * produce, and the difference is the security property. Membership is
+	 * resolved after the permission callback, so a well-formed identifier that
+	 * names no row of this series cannot be distinguished from a real one until
+	 * the caller has been authorized to look. Malformed syntax is still a 400,
+	 * because that is refusable from the string alone.
+	 *
+	 * @covers ::enter_occurrence_context
 	 *
 	 * @return void
 	 */
@@ -538,7 +547,7 @@ class Test_Rsvp_Rest extends Base {
 		);
 
 		$this->assertSame(
-			400,
+			404,
 			$response->get_status(),
 			'Failed to assert an occurrence identifier matching no row is refused.'
 		);
@@ -596,7 +605,7 @@ class Test_Rsvp_Rest extends Base {
 	 * occurrence of every series that meets at that moment, so validating the
 	 * identifier alone would let a caller scope one series' RSVPs by another's.
 	 *
-	 * @covers ::validate_recurrence_id
+	 * @covers ::enter_occurrence_context
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::find_in_series
 	 *
 	 * @return void
@@ -615,7 +624,7 @@ class Test_Rsvp_Rest extends Base {
 		wp_set_current_user( $user_id );
 
 		$this->assertSame(
-			400,
+			404,
 			$this->dispatch(
 				'GET',
 				'rsvp-responses',
@@ -1070,7 +1079,7 @@ class Test_Rsvp_Rest extends Base {
 		$since = array_slice( $wpdb->queries, $before );
 
 		$this->assertSame(
-			400,
+			404,
 			$response->get_status(),
 			'Failed to assert a fabricated occurrence identifier is refused on a non-recurring site too.'
 		);
@@ -1100,7 +1109,7 @@ class Test_Rsvp_Rest extends Base {
 	 * names a post that owns no occurrence rows at all, and only a resolver call
 	 * can reach the sibling that does.
 	 *
-	 * @covers ::validate_recurrence_id
+	 * @covers ::requested_occurrence
 	 * @covers \GatherPress\Core\Event\Recurrence\Context::resolve_in_series
 	 * @covers \GatherPress\Core\Event\Recurrence\Series::resolve_post_ids
 	 *
@@ -1145,7 +1154,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * PRD C-2: an RSVP on a sibling post is stamped, not silently widened.
+	 * PRD C-2: an RSVP named on a sibling post lands on the occurrence's owner.
 	 *
 	 * The failure this pins is the quiet one. `Context` deliberately resolves
 	 * across the series, so validation passes and context is entered — and
@@ -1153,10 +1162,23 @@ class Test_Rsvp_Rest extends Base {
 	 * against the post the request named and reject the mismatch. Every scoping
 	 * consumer returned null, so the RSVP was written **series-wide with no
 	 * occurrence term** while the responder believed they had booked one date,
-	 * and there was no error anywhere to say so. The 200 above cannot see that;
-	 * only the term can.
+	 * and there was no error anywhere to say so. A 200 cannot see that; only the
+	 * stored row can.
+	 *
+	 * This test also states the ownership invariant. The comment's
+	 * `comment_post_ID` and the occurrence term's post prefix must be the same
+	 * post, because `Rsvp\Storage` narrows every occurrence-scoped read by both
+	 * at once: a row whose two owners disagree is readable through neither, and
+	 * the same responder can then create a second response on the other post.
+	 * The owner is the post the occurrence row lives on, so the response is
+	 * written there rather than on the sibling the request named.
+	 *
+	 * Visibility is asserted through `Rsvp::responses()`, the production roster
+	 * every consumer reads, rather than through the taxonomy: a term assertion
+	 * passes on exactly the split-owner state this invariant exists to forbid.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::current_occurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrence_Identity::resolve
 	 * @covers \GatherPress\Core\Rsvp\Storage::save
 	 *
 	 * @return void
@@ -1186,17 +1208,39 @@ class Test_Rsvp_Rest extends Base {
 			)
 		);
 
-		$rsvp = ( new Rsvp( $sibling_post_id ) )->find( $user_id );
+		$rsvp = ( new Rsvp( $owner_post_id ) )->find( $user_id );
 
-		$this->assertNotNull( $rsvp, 'Failed to assert the RSVP on the sibling post was written at all.' );
+		$this->assertNotNull(
+			$rsvp,
+			'Failed to assert the RSVP named on the sibling post was written against the occurrence owner.'
+		);
 
-		// The slug carries the *owner* post — the post the occurrence row lives
-		// on — not the post the request named. Keying it off the request would
-		// produce a slug no reader of that occurrence ever queries by.
+		$comment_id = (int) $rsvp->comment->comment_ID;
+
+		// The two owners agree: the comment's post and the occurrence term's
+		// post prefix are the same post.
+		$this->assertSame(
+			$owner_post_id,
+			(int) $rsvp->comment->comment_post_ID,
+			'Failed to assert the stored comment belongs to the post that owns the occurrence.'
+		);
 		$this->assertSame(
 			array( Rsvp_Occurrence::term_slug( $owner_post_id, $occurrence_id ) ),
-			$this->term_slugs( (int) $rsvp->comment->comment_ID, Rsvp_Occurrence::TAXONOMY ),
+			$this->term_slugs( $comment_id, Rsvp_Occurrence::TAXONOMY ),
 			'Failed to assert an RSVP on a sibling post is stamped with the occurrence it names.'
+		);
+
+		// Rule 3a #3: the roster consumers actually read, not the taxonomy.
+		Context::get_instance()->set_for_series( $owner_post_id, $occurrence_id );
+
+		$responses = ( new Rsvp( $owner_post_id ) )->responses();
+
+		Context::get_instance()->clear();
+
+		$this->assertSame(
+			array( $comment_id ),
+			array_map( 'intval', wp_list_pluck( $responses['attending']['records'], 'comment_id' ) ),
+			'Failed to assert the response is visible exactly once through the production roster.'
 		);
 	}
 
@@ -1497,5 +1541,864 @@ class Test_Rsvp_Rest extends Base {
 		Context::flush_resolved();
 
 		$this->series_filters[] = $filter;
+	}
+
+	/**
+	 * Issue a real guest token against one occurrence.
+	 *
+	 * Goes through the public form route rather than constructing the comment,
+	 * so the token and its occurrence term are the ones the production path
+	 * produces, then redeems the link exactly as a visitor clicking it would.
+	 * Redemption matters: an open-form RSVP is stored unapproved, and every
+	 * roster read is scoped to approved responses, so an unredeemed response is
+	 * invisible to the assertions these fixtures exist to make.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int         $post_id       Event post ID.
+	 * @param string      $email         Responder email.
+	 * @param string|null $recurrence_id Occurrence to book, or null for a series-wide RSVP.
+	 *
+	 * @return array{comment_id: int, token: string} The stored comment and its magic-link token string.
+	 */
+	protected function issue_token( int $post_id, string $email, ?string $recurrence_id ): array {
+		$params = array(
+			'comment_post_ID' => $post_id,
+			'author'          => 'Ada Lovelace',
+			'email'           => $email,
+		);
+
+		if ( null !== $recurrence_id ) {
+			$params['recurrence_id'] = $recurrence_id;
+		}
+
+		$response = $this->dispatch( 'POST', 'rsvp-form', $params );
+
+		$this->assertSame( 200, $response->get_status(), 'Failed to arrange an accepted form submission.' );
+
+		$comment_id = (int) $response->get_data()['comment_id'];
+		$token      = new Token( $comment_id );
+		$token_str  = sprintf( '%d_%s', $comment_id, $token->get_token() );
+
+		$token->approve_comment();
+
+		return array(
+			'comment_id' => $comment_id,
+			'token'      => $token_str,
+		);
+	}
+
+	/**
+	 * Count the responses stored against one occurrence, through the production roster.
+	 *
+	 * Rule 3a #3: read through `Rsvp::responses()`, the API every consumer
+	 * reaches, rather than through the taxonomy. A term-level count passes on
+	 * exactly the split-owner state the ownership invariant exists to forbid.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int         $post_id       Event post ID.
+	 * @param string|null $recurrence_id Occurrence to scope to, or null for the series.
+	 *
+	 * @return int[] Comment IDs on the roster, across every status.
+	 */
+	protected function roster( int $post_id, ?string $recurrence_id ): array {
+		if ( null !== $recurrence_id ) {
+			Context::get_instance()->set_for_series( $post_id, $recurrence_id );
+		}
+
+		$responses = ( new Rsvp( $post_id ) )->responses();
+
+		Context::get_instance()->clear();
+
+		$ids = array();
+
+		foreach ( array( 'attending', 'not_attending', 'waiting_list' ) as $status ) {
+			$ids = array_merge( $ids, array_column( $responses[ $status ]['records'], 'comment_id' ) );
+		}
+
+		sort( $ids );
+
+		return array_map( 'intval', $ids );
+	}
+
+	/**
+	 * B1: a magic-link token for occurrence A cannot write occurrence B.
+	 *
+	 * The measured defect. The permission callback compared the token's *event
+	 * post* against the request's, which every occurrence of a series satisfies,
+	 * and the callback then entered whichever occurrence the request named. So
+	 * the holder of a confirmation link for one date could write the token
+	 * holder's identity into any other date of the same series, and the route
+	 * answered `success: true`.
+	 *
+	 * The refusal is asserted three ways, because a 403 alone does not prove the
+	 * roster survived: B's roster is compared before and after, and A's own
+	 * roster is compared too, so a refusal that quietly moved the response would
+	 * fail.
+	 *
+	 * @covers ::can_update_rsvp
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrence_Identity::matches
+	 *
+	 * @return void
+	 */
+	public function test_a_token_for_one_occurrence_cannot_write_another(): void {
+		$post_id = $this->create_and_project();
+
+		wp_set_current_user( 0 );
+
+		$issued = $this->issue_token( $post_id, 'ada@example.test', $this->occurrence_a );
+
+		$roster_a_before = $this->roster( $post_id, $this->occurrence_a );
+		$roster_b_before = $this->roster( $post_id, $this->occurrence_b );
+
+		$this->assertSame(
+			array( $issued['comment_id'] ),
+			$roster_a_before,
+			'Failed to arrange a response on occurrence A to be defended.'
+		);
+
+		$response = $this->dispatch(
+			'POST',
+			'rsvp',
+			array(
+				'post_id'       => $post_id,
+				'status'        => 'attending',
+				'rsvp_token'    => $issued['token'],
+				'recurrence_id' => $this->occurrence_b,
+			)
+		);
+
+		$this->assertSame(
+			403,
+			$response->get_status(),
+			'Failed to assert a token issued for one occurrence is refused on a sibling occurrence.'
+		);
+		$this->assertSame(
+			$roster_b_before,
+			$this->roster( $post_id, $this->occurrence_b ),
+			'Failed to assert the refused request left the sibling occurrence roster unchanged.'
+		);
+		$this->assertSame(
+			$roster_a_before,
+			$this->roster( $post_id, $this->occurrence_a ),
+			'Failed to assert the refused request left the token holder\'s own occurrence unchanged.'
+		);
+	}
+
+	/**
+	 * B1: the same token on its own occurrence still works.
+	 *
+	 * The other half of the verdict. A refusal that also broke the legitimate
+	 * case would satisfy the test above and break every confirmation link.
+	 *
+	 * @covers ::can_update_rsvp
+	 * @covers ::update_rsvp
+	 *
+	 * @return void
+	 */
+	public function test_a_token_writes_its_own_occurrence(): void {
+		$post_id = $this->create_and_project();
+
+		wp_set_current_user( 0 );
+
+		$issued = $this->issue_token( $post_id, 'ada@example.test', $this->occurrence_a );
+
+		$response = $this->dispatch(
+			'POST',
+			'rsvp',
+			array(
+				'post_id'       => $post_id,
+				'status'        => 'not_attending',
+				'rsvp_token'    => $issued['token'],
+				'recurrence_id' => $this->occurrence_a,
+			)
+		);
+
+		$this->assertSame(
+			200,
+			$response->get_status(),
+			'Failed to assert a token authorizes a write to the occurrence it was issued for.'
+		);
+		$this->assertTrue(
+			$response->get_data()['success'],
+			'Failed to assert the token holder\'s own occurrence accepted the write.'
+		);
+		$this->assertSame(
+			array( $issued['comment_id'] ),
+			$this->roster( $post_id, $this->occurrence_a ),
+			'Failed to assert the write landed on the token holder\'s own occurrence exactly once.'
+		);
+	}
+
+	/**
+	 * B1: authority is symmetric, so neither side of an absent occurrence leaks.
+	 *
+	 * An occurrence token acting series-wide would write a response readable on
+	 * every date; a series-wide token acting on one occurrence would scope a
+	 * response the responder never scoped. Both are refused, and both refusals
+	 * are the same 403 an unknown candidate produces, so the status cannot be
+	 * read as an answer about which occurrences exist.
+	 *
+	 * @covers ::can_update_rsvp
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrence_Identity::matches
+	 *
+	 * @return void
+	 */
+	public function test_token_authority_is_symmetric_about_an_absent_occurrence(): void {
+		$post_id = $this->create_and_project();
+
+		wp_set_current_user( 0 );
+
+		$scoped = $this->issue_token( $post_id, 'ada@example.test', $this->occurrence_a );
+		$series = $this->issue_token( $post_id, 'grace@example.test', null );
+
+		$this->assertSame(
+			403,
+			$this->dispatch(
+				'POST',
+				'rsvp',
+				array(
+					'post_id'    => $post_id,
+					'status'     => 'attending',
+					'rsvp_token' => $scoped['token'],
+				)
+			)->get_status(),
+			'Failed to assert an occurrence-scoped token cannot act series-wide.'
+		);
+		$this->assertSame(
+			403,
+			$this->dispatch(
+				'POST',
+				'rsvp',
+				array(
+					'post_id'       => $post_id,
+					'status'        => 'attending',
+					'rsvp_token'    => $series['token'],
+					'recurrence_id' => $this->occurrence_a,
+				)
+			)->get_status(),
+			'Failed to assert a series-wide token cannot act on one occurrence.'
+		);
+		$this->assertSame(
+			403,
+			$this->dispatch(
+				'POST',
+				'rsvp',
+				array(
+					'post_id'       => $post_id,
+					'status'        => 'attending',
+					'rsvp_token'    => $scoped['token'],
+					'recurrence_id' => self::UNKNOWN_OCCURRENCE,
+				)
+			)->get_status(),
+			'Failed to assert a token naming an occurrence that does not exist is refused identically.'
+		);
+	}
+
+	/**
+	 * B1: a request naming the token under two parameters is refused.
+	 *
+	 * The token used to arrive under two names, with authorization reading one
+	 * and identification reading the other, so a caller could satisfy the check
+	 * with one value and be identified by another. `rsvp_token` is now the only
+	 * recognized name, and a request carrying the page-URL name beside it is
+	 * treated as having presented no token at all rather than having one of the
+	 * two silently win. An anonymous caller then falls to the logged-in branch,
+	 * which is a 401.
+	 *
+	 * @covers ::request_token_string
+	 * @covers ::can_update_rsvp
+	 *
+	 * @return void
+	 */
+	public function test_a_request_naming_the_token_twice_is_refused(): void {
+		$post_id = $this->create_and_project();
+
+		wp_set_current_user( 0 );
+
+		$issued          = $this->issue_token( $post_id, 'ada@example.test', $this->occurrence_a );
+		$roster_a_before = $this->roster( $post_id, $this->occurrence_a );
+
+		$response = $this->dispatch(
+			'POST',
+			'rsvp',
+			array(
+				'post_id'                => $post_id,
+				'status'                 => 'not_attending',
+				'rsvp_token'             => $issued['token'],
+				'gatherpress_rsvp_token' => $issued['token'],
+				'recurrence_id'          => $this->occurrence_a,
+			)
+		);
+
+		$this->assertSame(
+			401,
+			$response->get_status(),
+			'Failed to assert a request naming the token under two parameters is refused.'
+		);
+		$this->assertSame(
+			$roster_a_before,
+			$this->roster( $post_id, $this->occurrence_a ),
+			'Failed to assert the refused duplicate-parameter request wrote nothing.'
+		);
+	}
+
+	/**
+	 * B4: an unauthorized caller cannot tell a real occurrence from a fabricated one.
+	 *
+	 * The measured defect was an ordering one. Argument validation runs before
+	 * the permission callback, and the validator resolved the identifier against
+	 * storage, so a real occurrence of a private event reached permission
+	 * handling and returned 401 while an unknown one was rejected as an invalid
+	 * argument and returned 400. Reading the difference gave an unauthenticated
+	 * visitor the private event's whole schedule, one candidate at a time.
+	 *
+	 * Status and body are compared, and so is the work done to produce them: the
+	 * query log is asserted to name the occurrence table zero times in both
+	 * cases, which is what makes the two responses indistinguishable by timing
+	 * as well as by content. A test asserting only equal statuses would pass
+	 * against a fix that still ran the lookup and discarded it.
+	 *
+	 * @covers ::validate_recurrence_id
+	 * @covers ::can_read_event_rsvps
+	 *
+	 * @return void
+	 */
+	public function test_a_private_events_occurrences_are_not_enumerable(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		wp_update_post(
+			array(
+				'ID'          => $post_id,
+				'post_status' => 'private',
+			)
+		);
+
+		wp_set_current_user( 0 );
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$observed          = array();
+
+		foreach ( array( $this->occurrence_a, self::UNKNOWN_OCCURRENCE ) as $candidate ) {
+			$before   = count( $wpdb->queries );
+			$response = $this->dispatch(
+				'GET',
+				'rsvp-responses',
+				array(
+					'post_id'       => $post_id,
+					'recurrence_id' => $candidate,
+				)
+			);
+			$since    = array_slice( $wpdb->queries, $before );
+
+			$observed[] = array(
+				'status'           => $response->get_status(),
+				'body'             => $response->get_data(),
+				'occurrence_reads' => count(
+					array_filter(
+						$since,
+						static function ( array $query ) use ( $occurrences_table ): bool {
+							return str_contains( $query[0], $occurrences_table );
+						}
+					)
+				),
+			);
+		}
+
+		$this->assertSame(
+			$observed[0]['status'],
+			$observed[1]['status'],
+			'Failed to assert a real and a fabricated occurrence of a private event return the same status.'
+		);
+		$this->assertSame(
+			$observed[0]['body'],
+			$observed[1]['body'],
+			'Failed to assert a real and a fabricated occurrence of a private event return the same body.'
+		);
+		$this->assertSame(
+			0,
+			$observed[0]['occurrence_reads'],
+			'Failed to assert an unauthorized probe for a real occurrence runs no occurrence lookup.'
+		);
+		$this->assertSame(
+			0,
+			$observed[1]['occurrence_reads'],
+			'Failed to assert an unauthorized probe for a fabricated occurrence runs no occurrence lookup.'
+		);
+	}
+
+	/**
+	 * B4: the public form route discloses nothing either.
+	 *
+	 * `rsvp-form` is the one RSVP route whose `permission_callback` is
+	 * `__return_true`, so it is where an unauthenticated caller could otherwise
+	 * reach occurrence resolution. Viewability is now settled first, and the
+	 * same `Event not found.` 404 comes back for a real occurrence and a
+	 * fabricated one, having run the same work.
+	 *
+	 * @covers ::handle_rsvp_form_submission
+	 *
+	 * @return void
+	 */
+	public function test_the_public_form_route_discloses_no_occurrence_of_a_draft_event(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		wp_update_post(
+			array(
+				'ID'          => $post_id,
+				'post_status' => 'draft',
+			)
+		);
+
+		wp_set_current_user( 0 );
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$observed          = array();
+
+		foreach ( array( $this->occurrence_a, self::UNKNOWN_OCCURRENCE ) as $candidate ) {
+			$before   = count( $wpdb->queries );
+			$response = $this->dispatch(
+				'POST',
+				'rsvp-form',
+				array(
+					'comment_post_ID' => $post_id,
+					'author'          => 'Ada Lovelace',
+					'email'           => 'ada@example.test',
+					'recurrence_id'   => $candidate,
+				)
+			);
+			$since    = array_slice( $wpdb->queries, $before );
+
+			$observed[] = array(
+				'status'           => $response->get_status(),
+				'body'             => $response->get_data(),
+				'occurrence_reads' => count(
+					array_filter(
+						$since,
+						static function ( array $query ) use ( $occurrences_table ): bool {
+							return str_contains( $query[0], $occurrences_table );
+						}
+					)
+				),
+			);
+		}
+
+		$this->assertSame(
+			404,
+			$observed[0]['status'],
+			'Failed to assert the public form route refuses an unviewable event.'
+		);
+		$this->assertSame(
+			$observed[0],
+			$observed[1],
+			'Failed to assert a real and a fabricated occurrence of a draft event are indistinguishable.'
+		);
+	}
+
+	/**
+	 * B3: an inner dispatch for another occurrence restores the outer one.
+	 *
+	 * The committed nested test covered only an inner request naming *no*
+	 * occurrence, which registers no teardown of its own and therefore cannot
+	 * exercise the defect. With a single request slot, an inner request naming
+	 * occurrence B overwrote the outer request's identity, and the inner
+	 * teardown then recognized itself, cleared the context and removed the
+	 * global filter: the outer route finished series-wide and never tore down.
+	 *
+	 * Three moments are asserted, because the fix is a stack rather than a
+	 * comparison and any one of them can regress alone: B during the inner
+	 * callback, A after it returns, and nothing at all once the outer dispatch
+	 * completes.
+	 *
+	 * @covers ::enter_occurrence_context
+	 * @covers ::leave_occurrence_context
+	 * @covers \GatherPress\Core\Event\Recurrence\Context::restore
+	 *
+	 * @return void
+	 */
+	public function test_a_nested_dispatch_for_another_occurrence_restores_the_outer_context(): void {
+		$post_id     = $this->create_and_project();
+		$inner_scope = null;
+		$after_inner = null;
+
+		$inner = new WP_REST_Request(
+			'GET',
+			sprintf( '/%s/event/rsvp-responses', GATHERPRESS_REST_NAMESPACE )
+		);
+
+		$inner->set_param( 'post_id', $post_id );
+		$inner->set_param( 'recurrence_id', $this->occurrence_b );
+
+		// Priority 1 so this observes the inner request while its own teardown,
+		// registered at priority 10, has not yet run.
+		$observe = static function ( $response, $handler, $request ) use ( &$inner_scope, $inner ) {
+			if ( $request === $inner ) {
+				$inner_scope = Context::get_instance()->current();
+			}
+
+			return $response;
+		};
+
+		add_filter( 'rest_request_after_callbacks', $observe, 1, 3 );
+
+		$nested = false;
+		$nest   = static function ( $clauses ) use ( &$nested, &$after_inner, $inner ) {
+			if ( $nested ) {
+				return $clauses;
+			}
+
+			$nested = true;
+
+			rest_do_request( $inner );
+
+			$after_inner = Context::get_instance()->current();
+
+			return $clauses;
+		};
+
+		add_filter( 'comments_clauses', $nest );
+
+		$this->dispatch(
+			'GET',
+			'rsvp-responses',
+			array(
+				'post_id'       => $post_id,
+				'recurrence_id' => $this->occurrence_a,
+			)
+		);
+
+		remove_filter( 'comments_clauses', $nest );
+		remove_filter( 'rest_request_after_callbacks', $observe, 1 );
+
+		$this->assertNotNull( $inner_scope, 'Failed to observe the inner dispatch holding a context at all.' );
+		$this->assertSame(
+			$this->occurrence_b,
+			(string) $inner_scope['recurrence_id'],
+			'Failed to assert the inner dispatch ran in the occurrence it named.'
+		);
+		$this->assertNotNull(
+			$after_inner,
+			'Failed to assert the outer request still held an occurrence after the inner dispatch returned.'
+		);
+		$this->assertSame(
+			$this->occurrence_a,
+			(string) $after_inner['recurrence_id'],
+			'Failed to assert the inner dispatch restored the outer request\'s occurrence rather than clearing it.'
+		);
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert the context is cleared only once the outermost dispatch completes.'
+		);
+	}
+
+	/**
+	 * B3: an outer write still lands on its own occurrence after nesting.
+	 *
+	 * The context assertions above are necessary but not sufficient: restoring
+	 * the row and then storing against the wrong one would satisfy them. This
+	 * drives the write itself, and it nests at the one moment that makes the
+	 * defect visible in stored data — inside `Rsvp\Storage::save()`, after the
+	 * comment args are built and before the occurrence term is stamped. With a
+	 * teardown that cleared rather than restored, the stamp then read no context
+	 * and the response was written series-wide while the responder believed they
+	 * had booked one date.
+	 *
+	 * @covers ::leave_occurrence_context
+	 * @covers \GatherPress\Core\Rsvp\Storage::save
+	 *
+	 * @return void
+	 */
+	public function test_an_outer_write_still_lands_on_its_own_occurrence_after_a_nested_dispatch(): void {
+		$post_id = $this->create_and_project();
+		$user_id = $this->factory->user->create();
+
+		wp_set_current_user( $user_id );
+
+		$inner = new WP_REST_Request(
+			'GET',
+			sprintf( '/%s/event/rsvp-responses', GATHERPRESS_REST_NAMESPACE )
+		);
+
+		$inner->set_param( 'post_id', $post_id );
+		$inner->set_param( 'recurrence_id', $this->occurrence_b );
+
+		$nested = false;
+		$nest   = static function ( $args ) use ( &$nested, $inner ) {
+			if ( ! $nested ) {
+				$nested = true;
+
+				rest_do_request( $inner );
+			}
+
+			return $args;
+		};
+
+		add_filter( 'gatherpress_save_rsvp', $nest );
+
+		$this->dispatch(
+			'POST',
+			'rsvp',
+			array(
+				'post_id'       => $post_id,
+				'status'        => 'attending',
+				'recurrence_id' => $this->occurrence_a,
+			)
+		);
+
+		remove_filter( 'gatherpress_save_rsvp', $nest );
+
+		$this->assertTrue( $nested, 'Failed to arrange a nested dispatch during the outer write.' );
+
+		$stored = ( new Rsvp( $post_id ) )->find( $user_id );
+
+		$this->assertNotNull( $stored, 'Failed to assert the outer write stored anything at all.' );
+		$this->assertSame(
+			array( Rsvp_Occurrence::term_slug( $post_id, $this->occurrence_a ) ),
+			$this->term_slugs( (int) $stored->comment->comment_ID, Rsvp_Occurrence::TAXONOMY ),
+			'Failed to assert the outer write landed on its own occurrence after a nested dispatch.'
+		);
+		$this->assertSame(
+			array( (int) $stored->comment->comment_ID ),
+			$this->roster( $post_id, $this->occurrence_a ),
+			'Failed to assert the outer write is on the roster of the date it named.'
+		);
+		$this->assertSame(
+			array(),
+			$this->roster( $post_id, $this->occurrence_b ),
+			'Failed to assert the outer write is absent from the nested dispatch\'s date.'
+		);
+	}
+
+	/**
+	 * B2/B5: the RSVP cache is keyed on the occurrence owner, not the named post.
+	 *
+	 * Storage, authorization and routing all follow the post that owns the
+	 * occurrence row. A cache that kept following the post a caller named would
+	 * hand the canonical page a roster warmed under a different identity, which
+	 * is indistinguishable from an empty roster and expires no sooner than
+	 * `Cache::CACHE_EXPIRATION`.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Cache::get
+	 * @covers \GatherPress\Core\Rsvp\Cache::set
+	 * @covers \GatherPress\Core\Rsvp\Cache::delete
+	 *
+	 * @return void
+	 */
+	public function test_the_rsvp_cache_follows_the_occurrence_owner(): void {
+		$owner_post_id   = $this->create_and_project();
+		$occurrence_id   = $this->occurrence_a;
+		$sibling_post_id = $this->create_plain_event();
+
+		Recurrence_Query::refresh_has_recurring_events();
+		Context::flush_resolved();
+
+		$this->widen_series( $sibling_post_id, $owner_post_id );
+
+		// Warm the authoritative key explicitly, naming the owner.
+		Cache::set( $owner_post_id, array( 'all' => array( 'count' => 7 ) ), $occurrence_id );
+
+		// A reader that names the sibling, in the occurrence's context, must
+		// compose the same key rather than a second one nobody invalidates.
+		Context::get_instance()->set_for_series( $sibling_post_id, $occurrence_id );
+
+		$this->assertSame(
+			array( 'all' => array( 'count' => 7 ) ),
+			Cache::get( $sibling_post_id ),
+			'Failed to assert a read naming the sibling post composes the owner\'s cache key.'
+		);
+
+		Cache::delete( $sibling_post_id );
+
+		Context::get_instance()->clear();
+
+		$this->assertNull(
+			Cache::get( $owner_post_id, $occurrence_id ),
+			'Failed to assert an invalidation naming the sibling post dropped the owner\'s cache entry.'
+		);
+	}
+
+	/**
+	 * Direct invokes of the private helpers the routes delegate to.
+	 *
+	 * Xdebug does not reliably trace a private method called from a short
+	 * delegation in the same class, so each branch is driven through
+	 * `invoke_hidden_method()` as well as end to end. Both matter: the
+	 * end-to-end tests prove the behavior, these prove every arm is reached.
+	 *
+	 * @covers ::requested_occurrence
+	 * @covers ::request_token_string
+	 * @covers ::can_write_occurrence_owner
+	 *
+	 * @return void
+	 */
+	public function test_the_route_helpers_cover_every_arm(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Rest_Api::get_instance();
+
+		$bare = new WP_REST_Request( 'POST', '/gatherpress/v1/event/rsvp' );
+
+		$bare->set_param( 'post_id', $post_id );
+
+		$named = new WP_REST_Request( 'POST', '/gatherpress/v1/event/rsvp' );
+
+		$named->set_param( 'post_id', $post_id );
+		$named->set_param( 'recurrence_id', $this->occurrence_a );
+
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'requested_occurrence', array( $bare ) ),
+			'Failed to assert a request naming no occurrence resolves to no identity.'
+		);
+
+		$identity = Utility::invoke_hidden_method( $instance, 'requested_occurrence', array( $named ) );
+
+		$this->assertNotNull( $identity, 'Failed to assert a request naming an occurrence resolves one.' );
+		$this->assertSame(
+			$post_id,
+			$identity->owner_post_id,
+			'Failed to assert the resolved identity names the owning post.'
+		);
+
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'request_token_string', array( $bare ) ),
+			'Failed to assert a request carrying no token reads as none.'
+		);
+
+		$canonical = new WP_REST_Request( 'POST', '/gatherpress/v1/event/rsvp' );
+
+		$canonical->set_param( 'rsvp_token', '1_abc' );
+
+		$this->assertSame(
+			'1_abc',
+			Utility::invoke_hidden_method( $instance, 'request_token_string', array( $canonical ) ),
+			'Failed to assert the canonical token parameter is read.'
+		);
+
+		$doubled = new WP_REST_Request( 'POST', '/gatherpress/v1/event/rsvp' );
+
+		$doubled->set_param( 'rsvp_token', '1_abc' );
+		$doubled->set_param( Token::NAME, '1_abc' );
+
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'request_token_string', array( $doubled ) ),
+			'Failed to assert a request naming the token twice reads as none.'
+		);
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'can_write_occurrence_owner',
+				array( null, $post_id )
+			),
+			'Failed to assert a series-wide request needs no owner check.'
+		);
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'can_write_occurrence_owner',
+				array( $identity, $post_id )
+			),
+			'Failed to assert a request naming the owning post needs no second check.'
+		);
+
+		// The owner is now unreadable and the request names a different post of
+		// the same series, which is the shape a forward split produces.
+		wp_update_post(
+			array(
+				'ID'          => $post_id,
+				'post_status' => 'private',
+			)
+		);
+
+		$named_post_id = $this->create_plain_event();
+
+		$this->widen_series( $named_post_id, $post_id );
+
+		wp_set_current_user( 0 );
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'can_write_occurrence_owner',
+				array( $identity, $named_post_id )
+			),
+			'Failed to assert a caller with no read access to the owning post is refused.'
+		);
+	}
+
+	/**
+	 * Direct invokes of the RSVP cache's private key composition.
+	 *
+	 * Same xdebug gap as above: both helpers are reached only from short
+	 * delegations inside `Cache` itself.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_occurrence
+	 * @covers \GatherPress\Core\Rsvp\Cache::resolved_key
+	 *
+	 * @return void
+	 */
+	public function test_the_cache_key_helpers_cover_every_arm(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertSame(
+			array(
+				'post_id'       => $post_id,
+				'recurrence_id' => $this->occurrence_a,
+			),
+			$this->invoke_cache_helper( 'resolve_occurrence', array( $post_id, $this->occurrence_a ) ),
+			'Failed to assert an explicit occurrence identifier is used as given.'
+		);
+		$this->assertNull(
+			$this->invoke_cache_helper( 'resolve_occurrence', array( $post_id, null ) ),
+			'Failed to assert no occurrence resolves outside occurrence context.'
+		);
+		$this->assertSame(
+			sprintf( Cache::CACHE_KEY, $post_id ),
+			$this->invoke_cache_helper( 'resolved_key', array( $post_id, null ) ),
+			'Failed to assert the series-wide key is composed outside occurrence context.'
+		);
+
+		Context::get_instance()->set_for_series( $post_id, $this->occurrence_a );
+
+		$this->assertSame(
+			array(
+				'post_id'       => $post_id,
+				'recurrence_id' => $this->occurrence_a,
+			),
+			$this->invoke_cache_helper( 'resolve_occurrence', array( $post_id, null ) ),
+			'Failed to assert the ambient occurrence is resolved when none is named.'
+		);
+		$this->assertSame(
+			sprintf( Cache::CACHE_KEY_OCCURRENCE, $post_id, $this->occurrence_a ),
+			$this->invoke_cache_helper( 'resolved_key', array( $post_id, null ) ),
+			'Failed to assert the occurrence-scoped key is composed inside occurrence context.'
+		);
+
+		Context::get_instance()->clear();
+	}
+
+	/**
+	 * Call one of `Rsvp\Cache`'s private static helpers.
+	 *
+	 * The PMC helper takes an instance, and `Cache` is static-only, so this is
+	 * the reflection equivalent.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $method Method name.
+	 * @param array  $args   Positional arguments.
+	 *
+	 * @return mixed The method's return value.
+	 */
+	protected function invoke_cache_helper( string $method, array $args ) {
+		$reflection = new ReflectionMethod( Cache::class, $method );
+
+		$reflection->setAccessible( true );
+
+		return $reflection->invokeArgs( null, $args );
 	}
 }

@@ -316,6 +316,30 @@ final class Context {
 	}
 
 	/**
+	 * Put back an occurrence a caller previously held.
+	 *
+	 * The counterpart to `current()` for anything that has to nest. Occurrence
+	 * context is a property of the innermost thing running, not of the process,
+	 * so a caller that enters one must be able to restore whatever was standing
+	 * before it rather than clearing unconditionally: a nested REST dispatch
+	 * clearing on its own way out would leave the outer route reading and
+	 * writing series-wide for the rest of its callback.
+	 *
+	 * The row is taken as-is, with no lookup, because it has already been
+	 * resolved once and re-resolving on the way back out could fail on a row
+	 * that has since been deleted and silently widen the outer scope.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array|null $occurrence The occurrence row to restore, or null for no context.
+	 *
+	 * @return void
+	 */
+	public function restore( ?array $occurrence ): void {
+		$this->occurrence = $occurrence;
+	}
+
+	/**
 	 * Get the occurrence the request is currently rendering.
 	 *
 	 * @since 0.36.0

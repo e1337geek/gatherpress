@@ -314,7 +314,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * @covers \GatherPress\Core\Rsvp\Cache::get
 	 * @covers \GatherPress\Core\Rsvp\Cache::set
 	 * @covers \GatherPress\Core\Rsvp\Cache::cache_key
-	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_recurrence_id
+	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_occurrence
 	 * @covers \GatherPress\Core\Rsvp\Storage::scope_to_occurrence
 	 *
 	 * @return void
@@ -524,7 +524,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * @covers \GatherPress\Core\Rsvp\Cache::get
 	 * @covers \GatherPress\Core\Rsvp\Cache::set
 	 * @covers \GatherPress\Core\Rsvp\Cache::cache_key
-	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_recurrence_id
+	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_occurrence
 	 *
 	 * @return void
 	 */
@@ -555,7 +555,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * @covers ::current_recurrence_id
 	 * @covers \GatherPress\Core\Rsvp\Cache::delete
 	 * @covers \GatherPress\Core\Rsvp\Cache::cache_key
-	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_recurrence_id
+	 * @covers \GatherPress\Core\Rsvp\Cache::resolve_occurrence
 	 *
 	 * @return void
 	 */

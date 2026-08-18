@@ -17,6 +17,8 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Blocks\Rsvp_Form;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Context;
+use GatherPress\Core\Event\Recurrence\Occurrence_Identity;
 use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Traits\Singleton;
@@ -38,6 +40,44 @@ final class Form {
 	 * Enforces a single instance of this class.
 	 */
 	use Singleton;
+
+	/**
+	 * Posted field naming the occurrence a classic form submission belongs to.
+	 *
+	 * The no-JavaScript fallback posts to `wp-comments-post.php`, which never
+	 * fires `wp`, so `Event\Recurrence\Context::sync()` never runs and there is
+	 * no ambient occurrence to read. The occurrence therefore travels as a
+	 * server-rendered hidden field, the same way `comment_post_ID` does, and is
+	 * validated here against the event's own series before anything is written.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const RECURRENCE_ID_FIELD = 'gatherpress_recurrence_id';
+
+	/**
+	 * The occurrence context standing before this submission entered one.
+	 *
+	 * `wp-comments-post.php` ends in a redirect rather than in a teardown hook,
+	 * so the restore is explicit. Holding the previous value rather than a bare
+	 * flag means the classic path composes with anything that already held
+	 * context instead of clearing the process.
+	 *
+	 * @since 0.36.0
+	 * @var array|null
+	 */
+	protected ?array $previous_occurrence = null;
+
+	/**
+	 * Whether this submission entered occurrence context.
+	 *
+	 * Distinct from `$previous_occurrence` being null, which is also the
+	 * ordinary state of a submission that entered one from no context at all.
+	 *
+	 * @since 0.36.0
+	 * @var bool
+	 */
+	protected bool $entered_occurrence_context = false;
 
 	/**
 	 * Class constructor.
@@ -66,11 +106,16 @@ final class Form {
 	/**
 	 * Get the duplicate RSVP error message.
 	 *
+	 * Public because it is registered on the `comment_duplicate_message` filter,
+	 * which WordPress invokes through `call_user_func_array()`. As a private
+	 * method the registration was a fatal `TypeError` the moment core actually
+	 * reached that filter, which only happens on the classic submission path.
+	 *
 	 * @since 0.34.0
 	 *
 	 * @return string The translated error message.
 	 */
-	private function get_duplicate_rsvp_message(): string {
+	public function get_duplicate_rsvp_message(): string {
 		return __( "You've already RSVP'd to this event.", 'gatherpress' );
 	}
 
@@ -132,11 +177,47 @@ final class Form {
 		);
 
 		add_filter(
+			'duplicate_comment_id',
+			array( $this, 'bypass_core_duplicate_check' ),
+			10,
+			2
+		);
+
+		add_filter(
 			'comment_post_redirect',
 			array( $this, 'handle_rsvp_comment_redirect' ),
 			10,
 			2
 		);
+	}
+
+	/**
+	 * Let WordPress's content-identity duplicate check pass an RSVP through.
+	 *
+	 * `wp_allow_comment()` refuses a comment whose author and **content** match
+	 * an existing one on the same post. Every RSVP carries empty content by
+	 * design, so for this comment type the check reduces to "this person has
+	 * already commented on this post" — which is precisely what a recurring
+	 * event makes legitimate. Without this, a responder who booked one date was
+	 * refused on every other date of the same series by core, after this class's
+	 * own occurrence-scoped check had already allowed them.
+	 *
+	 * Bypassing it is safe because it is not the only duplicate check in the
+	 * path: `preprocess_rsvp_comment()` runs first and refuses a genuine
+	 * duplicate with a 409, scoped to the occurrence when the submission names
+	 * one and series-wide when it does not.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int|string $dupe_id     The comment ID core matched, or 0 for none.
+	 * @param array      $commentdata The comment being inserted.
+	 *
+	 * @return int|string 0 for an RSVP, otherwise the match core found.
+	 */
+	public function bypass_core_duplicate_check( $dupe_id, array $commentdata ) {
+		$comment_type = (string) ( $commentdata['comment_type'] ?? '' );
+
+		return Rsvp::COMMENT_TYPE === $comment_type ? 0 : $dupe_id;
 	}
 
 	/**
@@ -155,6 +236,29 @@ final class Form {
 		$author  = Utility::get_http_input( INPUT_POST, 'author' );
 		$email   = Utility::get_http_input( INPUT_POST, 'email', 'sanitize_email' );
 		$post_id = intval( $comment_data['comment_post_ID'] );
+
+		// Resolve, then authorize, then use — the same sequence the REST routes
+		// follow. This has to happen before every check below, because the
+		// past-event gate and the duplicate gate both mean different things per
+		// date: an occurrence in the future on a series whose anchor has passed
+		// is bookable, and a responder who took September 3rd has not already
+		// taken September 10th.
+		$identity = $this->posted_occurrence( $post_id );
+
+		if ( null !== $identity ) {
+			// The response is stored on the post that owns the occurrence.
+			// Identical to the posted post on every unsplit series, and
+			// deliberately not identical once a forward split has moved the
+			// occurrence onto a sibling: `Rsvp\Storage` narrows reads by
+			// `comment_post_ID` *and* by the occurrence term, so a row whose two
+			// owners disagree is readable through neither.
+			$post_id                          = $identity->owner_post_id;
+			$comment_data['comment_post_ID']  = $post_id;
+			$this->previous_occurrence        = Context::get_instance()->current();
+			$this->entered_occurrence_context = true;
+
+			Context::get_instance()->set_for_series( $post_id, $identity->recurrence_id );
+		}
 
 		// Check sitewide/per-event RSVP setting before any post-type check so that
 		// globally-disabled mode returns the correct 403 rather than a misleading 400.
@@ -279,12 +383,36 @@ final class Form {
 			// Set RSVP status to attending.
 			wp_set_object_terms( $comment_id, Status::ATTENDING->value, Status::TAXONOMY );
 
+			$post_id = (int) get_comment( $comment_id )->comment_post_ID;
+
+			// Bind the response to the occurrence the submission named. This is
+			// the whole reason the classic fallback used to write series-wide:
+			// only the REST path stamped the term, so a response made from an
+			// occurrence page with JavaScript unavailable showed on every date
+			// of the series and made every other date unbookable for the same
+			// responder.
+			$this->assign_occurrence( $comment_id, $post_id );
+
+			// Drop the warm counts this insertion just changed. This path never
+			// reaches `Rsvp\Storage::save()` or `handle_rsvp_creation()`, which
+			// is where every other write invalidates, so a classic submission
+			// used to leave both totals stale for the length of
+			// `Cache::CACHE_EXPIRATION` -- shared across every visitor under a
+			// persistent object cache. Called after `assign_occurrence()` so the
+			// occurrence-scoped key resolves and is dropped alongside the
+			// series-wide one.
+			Cache::delete( $post_id );
+
 			// Process all fields.
 			$this->process_fields( $comment_id, $data );
 
-			// Generate and send confirmation email.
+			// Generate and send confirmation email. The link resolves from the
+			// comment's own occurrence term, so it names the date that was
+			// actually booked now that the term above exists.
 			$rsvp_token = new Token( $comment_id );
 			$rsvp_token->generate_token()->send_rsvp_confirmation_email();
+
+			$this->leave_posted_occurrence();
 		}
 	}
 
@@ -435,6 +563,70 @@ final class Form {
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
 		return (int) $count > 0;
+	}
+
+	/**
+	 * Resolve the occurrence a classic form submission names, or refuse it.
+	 *
+	 * The hidden field is user-controllable, so it is validated against the
+	 * event's own series exactly as the REST layer validates its argument, and
+	 * a value that does not resolve is refused rather than silently treated as
+	 * the series. Silent widening is the failure this whole subsystem exists to
+	 * avoid: the visitor believes they booked one date, the response lands on
+	 * all of them, and nothing afterwards can tell that apart from a deliberate
+	 * series RSVP.
+	 *
+	 * `HTTP_REFERER` is deliberately not consulted. It is attacker-controlled
+	 * and routinely stripped by privacy tooling, so scoping a write by it would
+	 * be a worse failure mode than the honest series-wide behavior.
+	 *
+	 * On a site with no recurring events no field is rendered and the resolver
+	 * short-circuits before touching occurrence storage, so this returns null
+	 * and the submission runs the SQL it always ran (REQ-16).
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id The event post ID the submission names.
+	 *
+	 * @return Occurrence_Identity|null The resolved occurrence, or null when the submission names none.
+	 */
+	private function posted_occurrence( int $post_id ): ?Occurrence_Identity {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		$recurrence_id = (string) Utility::get_http_input( INPUT_POST, self::RECURRENCE_ID_FIELD );
+
+		if ( '' === $recurrence_id ) {
+			return null;
+		}
+
+		$identity = Occurrence_Identity::resolve( $post_id, $recurrence_id );
+
+		if ( null === $identity ) {
+			wp_die(
+				esc_html__( 'The requested occurrence no longer exists.', 'gatherpress' ),
+				esc_html__( 'Invalid Occurrence', 'gatherpress' ),
+				400
+			);
+		}
+
+		return $identity;
+	}
+
+	/**
+	 * Put back whatever occurrence context this submission displaced.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	private function leave_posted_occurrence(): void {
+		if ( ! $this->entered_occurrence_context ) {
+			return;
+		}
+
+		Context::get_instance()->restore( $this->previous_occurrence );
+
+		$this->previous_occurrence        = null;
+		$this->entered_occurrence_context = false;
 	}
 
 	/**
