@@ -10,8 +10,10 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Meta;
+use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rule;
+use GatherPress\Core\Setup;
 use GatherPress\Core\Utility;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility as PMC_Utility;
@@ -26,6 +28,55 @@ use WP_REST_Request;
 class Test_Meta extends Base {
 
 	use Occurrence_Fixtures;
+
+	/**
+	 * Ensure the occurrence table exists and holds nothing before every test,
+	 * and leave it that way afterwards.
+	 *
+	 * The timezone-transition tests assert on projected rows, not only on the
+	 * derived mirrors, so the table has to exist. It also has to be empty in
+	 * both directions: `create_tables()` issues DDL, DDL implicitly commits in
+	 * MySQL, and that ends the transaction `WP_UnitTestCase` rolls back at the
+	 * end of a test. Occurrence rows therefore outlive the test that projected
+	 * them while post IDs restart from the rollback, so a later test's
+	 * brand-new post can inherit an earlier series' ID and resolve occurrences
+	 * it never had.
+	 *
+	 * @return void
+	 */
+	public function setUp(): void {
+		parent::setUp();
+
+		PMC_Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		$this->clear_occurrences();
+	}
+
+	/**
+	 * Leave no projected occurrence row behind for a later test class.
+	 *
+	 * @return void
+	 */
+	public function tearDown(): void {
+		$this->clear_occurrences();
+
+		parent::tearDown();
+	}
+
+	/**
+	 * Empty the occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function clear_occurrences(): void {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare( 'DELETE FROM %i', sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ) )
+		);
+	}
 
 	/**
 	 * Coverage for `__construct` and `setup_hooks`.
@@ -58,9 +109,21 @@ class Test_Meta extends Base {
 			),
 			array(
 				'type'     => 'action',
+				'name'     => 'added_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_revalidate_for_datetime' ),
+			),
+			array(
+				'type'     => 'action',
 				'name'     => 'updated_post_meta',
 				'priority' => 10,
 				'callback' => array( $instance, 'maybe_queue_reconciliation' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'updated_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_revalidate_for_datetime' ),
 			),
 			array(
 				'type'     => 'action',
@@ -699,6 +762,251 @@ class Test_Meta extends Base {
 			);
 		}
 		$this->assertNull( Rule::from_post( $post_id ) );
+	}
+
+	/**
+	 * Rewrite a post's `gatherpress_datetime` blob, keeping the anchor and
+	 * changing only the timezone -- the exact edit an organizer makes in the
+	 * Date & Time panel.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id  Post to rewrite the datetime blob on.
+	 * @param string $timezone Timezone value to store.
+	 *
+	 * @return void
+	 */
+	protected function change_timezone( int $post_id, string $timezone ): void {
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => $timezone,
+				)
+			)
+		);
+	}
+
+	/**
+	 * REQ-3: changing an existing recurring series to a fixed-offset timezone
+	 * must not leave the recurrence active.
+	 *
+	 * `set_recurrence()` runs on `wp_after_insert_post`, which fires from
+	 * inside `wp_insert_post()` -- before the request's meta writes land. The
+	 * recurrence blob is already stored on an existing series, so
+	 * `write_recurrence()` validates immediately, against the timezone the
+	 * post had *before* this save. Nothing revisited that decision: the
+	 * mirrors and the projected rows stayed active in a state REQ-3 refuses,
+	 * while the editor disabled the Repeat control -- the stored series and
+	 * the visible UI disagreeing about whether the event repeats.
+	 *
+	 * @covers ::maybe_revalidate_for_datetime
+	 * @covers ::resolve_pending_revalidation
+	 *
+	 * @return void
+	 */
+	public function test_fixed_offset_timezone_change_disables_an_existing_series(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => 5,
+			)
+		);
+
+		$instance = Meta::get_instance();
+
+		$instance->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		$this->assertSame(
+			'daily',
+			get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ),
+			'Precondition: the named-timezone series is active.'
+		);
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Precondition: the named-timezone series has projected rows.'
+		);
+
+		// The real update order: `wp_after_insert_post` fires while the old
+		// named timezone is still stored, then the meta write lands.
+		$instance->set_recurrence( $post_id );
+		$this->change_timezone( $post_id, '+05:30' );
+
+		$this->assertNotFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ) ),
+			'A datetime rewrite on a recurring post must queue a final validation pass.'
+		);
+
+		$instance->resolve_pending_revalidation();
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be cleared once the timezone became a fixed offset."
+			);
+		}
+
+		$this->assertNull( Rule::from_post( $post_id ) );
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Clearing the mirrors is only half of disabling a series -- the projected rows must go too.'
+		);
+	}
+
+	/**
+	 * The authored rule survives the rejection, so switching the timezone back
+	 * to a named identifier re-derives the mirrors and re-projects rather than
+	 * losing the rule to a timezone edit.
+	 *
+	 * @covers ::maybe_revalidate_for_datetime
+	 * @covers ::resolve_pending_revalidation
+	 *
+	 * @return void
+	 */
+	public function test_returning_to_a_named_timezone_restores_the_series(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => 5,
+			)
+		);
+
+		$instance = Meta::get_instance();
+
+		$instance->set_recurrence( $post_id );
+		$this->change_timezone( $post_id, '+05:30' );
+		$instance->resolve_pending_revalidation();
+
+		$this->assertSame( '', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+
+		$this->change_timezone( $post_id, 'America/New_York' );
+		$instance->resolve_pending_revalidation();
+
+		$this->assertSame(
+			'daily',
+			get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ),
+			'The stored rule must come back once the timezone is named again.'
+		);
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'The series must reproject once it is valid again.'
+		);
+	}
+
+	/**
+	 * The revalidation trigger is exact: a meta write that is not the datetime
+	 * blob, a post type without `gatherpress-event-date` support, and a post
+	 * holding no recurrence blob all queue nothing, so an ordinary event save
+	 * never pays for this (REQ-16).
+	 *
+	 * @covers ::maybe_revalidate_for_datetime
+	 *
+	 * @return void
+	 */
+	public function test_maybe_revalidate_ignores_everything_but_a_recurring_datetime_write(): void {
+		$instance = Meta::get_instance();
+
+		remove_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ), 15 );
+
+		$recurring_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		$plain_event_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$unsupported_id = $this->factory->post->create( array( 'post_type' => 'post' ) );
+
+		// Right post, wrong meta key.
+		$instance->maybe_revalidate_for_datetime( 1, $recurring_id, 'gatherpress_max_guest_limit' );
+		$this->assertFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ) ),
+			'A meta key other than the datetime blob must queue nothing.'
+		);
+
+		// Right meta key, post type without event-date support.
+		$instance->maybe_revalidate_for_datetime( 1, $unsupported_id, 'gatherpress_datetime' );
+		$this->assertFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ) ),
+			'An unsupported post type must queue nothing.'
+		);
+
+		// Right meta key and post type, but no recurrence blob to invalidate.
+		$instance->maybe_revalidate_for_datetime( 1, $plain_event_id, 'gatherpress_datetime' );
+		$this->assertFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ) ),
+			'A never-recurring event must queue nothing.'
+		);
+
+		// All three conditions met.
+		$instance->maybe_revalidate_for_datetime( 1, $recurring_id, 'gatherpress_datetime' );
+		$this->assertNotFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ) ),
+			'A datetime write on a recurring post must queue the final pass.'
+		);
+
+		$instance->resolve_pending_revalidation();
+	}
+
+	/**
+	 * `resolve_pending_revalidation()` clears the mirrors when the recurrence
+	 * blob was removed in the same request, and skips a post whose type lost
+	 * `gatherpress-event-date` support (or was deleted) before shutdown.
+	 *
+	 * @covers ::resolve_pending_revalidation
+	 *
+	 * @return void
+	 */
+	public function test_resolve_pending_revalidation_clears_and_skips(): void {
+		$instance = Meta::get_instance();
+
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		$instance->set_recurrence( $post_id );
+
+		$unsupported_id = $this->factory->post->create( array( 'post_type' => 'post' ) );
+
+		PMC_Utility::set_and_get_hidden_property(
+			$instance,
+			'pending_revalidation',
+			array(
+				$post_id        => true,
+				$unsupported_id => true,
+			)
+		);
+
+		delete_post_meta( $post_id, Meta::META_KEY );
+
+		$instance->resolve_pending_revalidation();
+
+		$this->assertSame(
+			'',
+			get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ),
+			'A blob removed in the same request must clear the mirrors on the final pass.'
+		);
+		$this->assertSame(
+			array(),
+			PMC_Utility::get_hidden_property( $instance, 'pending_revalidation' ),
+			'The queue must be drained even when an entry is skipped.'
+		);
 	}
 
 	/**
