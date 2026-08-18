@@ -192,7 +192,10 @@ final class Rest_Api {
 	 * PRD C-2: reads `post_ids` from `Series::resolve_post_ids()` rather than
 	 * wrapping `$post_id` alone, so a future series split across posts
 	 * (REQ-18's `gatherpress_series_post_ids` seam) still lists every
-	 * sibling post's occurrences here.
+	 * sibling post's occurrences here. The permission callback authorizes the
+	 * *requested* post only, so every resolved sibling is authorized
+	 * separately before it is selected -- see
+	 * `authorized_series_post_ids()`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -206,7 +209,7 @@ final class Rest_Api {
 		}
 
 		$post_id  = (int) $request->get_param( 'post_id' );
-		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+		$post_ids = $this->authorized_series_post_ids( $post_id );
 		$now      = current_time( 'mysql', true );
 
 		$rows = array_values(
@@ -255,10 +258,57 @@ final class Rest_Api {
 	}
 
 	/**
+	 * Resolve a post's series and drop every sibling the caller cannot edit.
+	 *
+	 * `has_edit_permission()` authorizes exactly one post: the `post_id` the
+	 * request named. `Series::resolve_post_ids()` can return more than that
+	 * post -- that is the whole point of the `gatherpress_series_post_ids`
+	 * seam -- so selecting straight from its result would return occurrence
+	 * dates and statuses for siblings no capability check ever covered. A
+	 * caller who can edit A but not B must not learn anything about B.
+	 *
+	 * Inaccessible siblings are filtered rather than failing the whole
+	 * request: a partially-visible series is a legitimate state (a sibling
+	 * owned by another author, or private), and the panel's job is to offer
+	 * the actions this caller may actually take. Filtering also keeps the
+	 * response indistinguishable from a series that never had that sibling,
+	 * so the route does not report existence it refuses to describe.
+	 *
+	 * This is the read half of the resolve-authorize-use invariant; the write
+	 * half is `has_edit_permission()` running against the row's own owner,
+	 * which is why the client submits `occurrence.series_post_id` rather than
+	 * the post open in the editor.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID the request named and was authorized against.
+	 *
+	 * @return int[] Series post IDs the current user may edit, possibly empty.
+	 */
+	protected function authorized_series_post_ids( int $post_id ): array {
+		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+
+		return array_values(
+			array_filter(
+				$post_ids,
+				static function ( $series_post_id ): bool {
+					return current_user_can( 'edit_post', (int) $series_post_id );
+				}
+			)
+		);
+	}
+
+	/**
 	 * Report whether the current user may change this occurrence's status.
 	 *
 	 * `current_user_can( 'edit_post', $post_id )` -- never
 	 * `is_user_logged_in()`, never the RSVP subsystem's `moderate_comments`.
+	 *
+	 * The `post_id` this authorizes is the post that owns the occurrence being
+	 * mutated, not necessarily the post open in the editor: the client submits
+	 * the row's own `series_post_id`, and `Occurrences::set_status()` scopes
+	 * its update to that same post. Authorization, resolution, and mutation
+	 * therefore all name one identity.
 	 *
 	 * @since 0.36.0
 	 *

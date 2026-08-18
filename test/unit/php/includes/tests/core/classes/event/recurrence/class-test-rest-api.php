@@ -803,6 +803,161 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
+	 * Reassign a fixture post to another author.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id   Post to reassign.
+	 * @param int $author_id User to make the author.
+	 *
+	 * @return void
+	 */
+	protected function set_author( int $post_id, int $author_id ): void {
+		wp_update_post(
+			array(
+				'ID'          => $post_id,
+				'post_author' => $author_id,
+			)
+		);
+	}
+
+	/**
+	 * The list route authorizes every sibling it returns, not only the post
+	 * the request named. `has_edit_permission()` runs one capability check on
+	 * the request's `post_id`, while `Series::resolve_post_ids()` can widen
+	 * the read to sibling posts the caller was never authorized for -- so a
+	 * user who can edit A but not B must not learn B's occurrence dates or
+	 * statuses from A's panel.
+	 *
+	 * @covers ::get_occurrences
+	 * @covers ::authorized_series_post_ids
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_omits_siblings_the_caller_cannot_edit(): void {
+		list( $post_id, $recurrence_id )            = $this->create_event_with_occurrence();
+		list( $sibling_id, $sibling_recurrence_id ) = $this->create_event_with_occurrence( 10 );
+
+		$author       = $this->factory->user->create( array( 'role' => 'author' ) );
+		$other_author = $this->factory->user->create( array( 'role' => 'author' ) );
+
+		$this->set_author( $post_id, $author );
+		$this->set_author( $sibling_id, $other_author );
+
+		$filter = static function ( array $post_ids, int $requested_post_id ) use ( $post_id, $sibling_id ): array {
+			return $post_id === $requested_post_id ? array( $post_id, $sibling_id ) : $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		wp_set_current_user( $author );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$response = $this->dispatch( $request );
+
+		remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+
+		$this->assertSame( 200, $response->get_status() );
+
+		$data = $response->get_data();
+
+		$this->assertContains(
+			$recurrence_id,
+			array_column( $data, 'recurrence_id' ),
+			"The caller's own post must still be listed."
+		);
+		$this->assertNotContains(
+			$sibling_recurrence_id,
+			array_column( $data, 'recurrence_id' ),
+			'A sibling the caller cannot edit must not appear in the list.'
+		);
+		$this->assertNotContains(
+			(string) $sibling_id,
+			array_map( 'strval', array_column( $data, 'series_post_id' ) ),
+			'No row owned by the unauthorized sibling may be returned.'
+		);
+	}
+
+	/**
+	 * An administrator, who can edit both posts, still sees the whole series.
+	 * The filter must drop only what the caller genuinely cannot edit.
+	 *
+	 * @covers ::authorized_series_post_ids
+	 *
+	 * @return void
+	 */
+	public function test_authorized_series_post_ids_keeps_every_editable_sibling(): void {
+		list( $post_id )    = $this->create_event_with_occurrence();
+		list( $sibling_id ) = $this->create_event_with_occurrence( 10 );
+
+		$filter = static function ( array $post_ids, int $requested_post_id ) use ( $post_id, $sibling_id ): array {
+			return $post_id === $requested_post_id ? array( $post_id, $sibling_id ) : $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$authorized = Utility::invoke_hidden_method(
+			Rest_Api::get_instance(),
+			'authorized_series_post_ids',
+			array( $post_id )
+		);
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'subscriber' ) ) );
+
+		$unauthorized = Utility::invoke_hidden_method(
+			Rest_Api::get_instance(),
+			'authorized_series_post_ids',
+			array( $post_id )
+		);
+
+		remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+
+		$this->assertSame( array( $post_id, $sibling_id ), $authorized );
+		$this->assertSame( array(), $unauthorized );
+	}
+
+	/**
+	 * The write half of the same invariant: the client submits the row's own
+	 * owner post ID, so a caller who can edit A but not sibling B is refused
+	 * outright rather than mutating B through A's authorization.
+	 *
+	 * @covers ::has_edit_permission
+	 *
+	 * @return void
+	 */
+	public function test_cancel_route_refuses_a_sibling_the_caller_cannot_edit(): void {
+		list( $post_id )                            = $this->create_event_with_occurrence();
+		list( $sibling_id, $sibling_recurrence_id ) = $this->create_event_with_occurrence( 10 );
+
+		$author       = $this->factory->user->create( array( 'role' => 'author' ) );
+		$other_author = $this->factory->user->create( array( 'role' => 'author' ) );
+
+		$this->set_author( $post_id, $author );
+		$this->set_author( $sibling_id, $other_author );
+
+		wp_set_current_user( $author );
+
+		$response = $this->dispatch(
+			$this->build_request( $sibling_id, $sibling_recurrence_id, Occurrences::STATUS_CANCELLED )
+		);
+
+		$this->assertSame( 403, $response->get_status() );
+
+		$row = Occurrences::get_instance()->get( $sibling_id, $sibling_recurrence_id );
+
+		$this->assertSame(
+			Occurrences::STATUS_SCHEDULED,
+			$row['status'],
+			"The sibling's occurrence must be untouched."
+		);
+	}
+
+	/**
 	 * Run the occurrence-aware "upcoming" query and reduce the results to
 	 * `post_id|recurrence_id` strings.
 	 *
