@@ -519,7 +519,7 @@ class Test_Permalink extends Base {
 	/**
 	 * The confirmation email reads the comment's term, not the request.
 	 *
-	 * PRD C-2's case, and the only fixture where the two mechanisms disagree.
+	 * The series-wide resolution case, and the only fixture where the two mechanisms disagree.
 	 * The request names a sibling post carrying no occurrence rows of its own,
 	 * and `Series::resolve_post_ids()` reaches the occurrence on the owner post.
 	 * `Context::resolve()` matches an occurrence to a post by exact
@@ -666,13 +666,12 @@ class Test_Permalink extends Base {
 	}
 
 	/**
-	 * REQ-16: the email path costs a non-recurring site no query and no option write.
+	 * The email path costs a non-recurring site no query and no option write.
 	 *
 	 * Captured across `rest_do_request()` on the `rsvp-form` route — the real
 	 * entry point, which is where the confirmation email is composed — rather
 	 * than across `Token::generate_url()`, because a capture around the body of
-	 * the work is exactly the shape that let two earlier entry points ship
-	 * unguarded (rule 6a).
+	 * the work is exactly the shape that leaves an entry point unguarded.
 	 *
 	 * Both halves are asserted. The query half proves nothing reached the
 	 * occurrence table or the occurrence taxonomy; the option half proves the
@@ -746,7 +745,7 @@ class Test_Permalink extends Base {
 	 * A comment carrying no occurrence term resolves to no occurrence.
 	 *
 	 * The `empty( $slugs )` arm of `occurrence_for_comment()`, reached on a
-	 * recurring site so the REQ-16 guard above it is not what answers.
+	 * recurring site so the no-recurring-events guard above it is not what answers.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::occurrence_for_comment
 	 *
@@ -793,7 +792,7 @@ class Test_Permalink extends Base {
 
 		$this->assertNull(
 			Rsvp_Occurrence::occurrence_for_comment( $comment_id ),
-			'Failed to assert the REQ-16 guard refuses before reading a term relationship.'
+			'Failed to assert the no-recurring-events guard refuses before reading a term relationship.'
 		);
 	}
 

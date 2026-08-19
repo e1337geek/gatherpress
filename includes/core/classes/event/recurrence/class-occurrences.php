@@ -529,7 +529,7 @@ final class Occurrences {
 		$comparison        = $upcoming ? '>=' : '<';
 		$order             = $upcoming ? 'ASC' : 'DESC';
 
-		// REQ-16 and the table-less-blog contract, on this read API as well as
+		// The no-recurring-events guard and the table-less-blog contract, on this read API as well as
 		// on the `posts_clauses` filter. Both arms must be checked here and not
 		// only in `Query::expand_event_clauses()`: this method is the public
 		// occurrence-aware read entry point, so a caller reaching it directly
@@ -583,7 +583,7 @@ final class Occurrences {
 			// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
 			// No lazy repair on this arm: there are no occurrence rows to be
-			// stale, and REQ-16 forbids the write it would attempt.
+			// stale, and a site with no recurring events forbids the write it would attempt.
 			return array_map( array( $this, 'row_to_ref' ), $anchor_rows );
 		}
 
@@ -1896,12 +1896,12 @@ final class Occurrences {
 	 * Read one occurrence of a series by its identifier.
 	 *
 	 * Takes an array of post IDs, never a single ID, so the query emits
-	 * `series_post_id IN (…)` and REQ-18 stays reachable. This is the lookup
+	 * `series_post_id IN (…)` and the forward split stays reachable. This is the lookup
 	 * every request-supplied `recurrence_id` is validated against: `get()`
 	 * pins one post, which would refuse an occurrence that a forward split had
 	 * moved to a sibling post of the same series.
 	 *
-	 * `LIMIT 1` needs an `ORDER BY` to mean anything. Once REQ-18 makes a series
+	 * `LIMIT 1` needs an `ORDER BY` to mean anything. Once a forward split makes a series
 	 * span several posts, an identifier can legitimately name a row under more
 	 * than one of them — two posts of one series projected from rules that meet
 	 * at the same moment — and without an ordering the row MySQL happens to

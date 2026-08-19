@@ -626,8 +626,8 @@ class Test_Occurrences extends Base {
 	 * guarantee. Checking only project()'s return value (the test above) is
 	 * not enough to guard this: the fix for orphaned rows made the
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
-	 * clean up unconditionally, which silently added a DELETE query to this
-	 * exact, most-common save path. That regression passed a return-value-only
+	 * silently adds a DELETE query to this
+	 * exact, most-common save path. Such a regression passes a return-value-only
 	 * assertion; it only shows up in the query log, which is why this test
 	 * drives the real `wp_after_insert_post` / `shutdown` hooks rather than
 	 * calling project() directly.
@@ -716,7 +716,7 @@ class Test_Occurrences extends Base {
 	 * hand-called sequence cannot fail even when the wiring it claims to test
 	 * is broken. Inverting `maybe_project()`'s `wp_after_insert_post`
 	 * priority and its dynamic `shutdown` priority so `Occurrences` runs
-	 * *before* `Meta` left the previous, hand-called version of this test
+	 * *before* `Meta` leaves a hand-called version of this test
 	 * green. Firing the hooks for real is what makes the ordering the
 	 * deferred design depends on part of what is under test.
 	 *
@@ -3314,7 +3314,7 @@ class Test_Occurrences extends Base {
 	 * `find_in_series()` matches on the composite key across every post of a series.
 	 *
 	 * The lookup that validates a request-supplied `recurrence_id`. It takes an
-	 * array of post IDs rather than one (PRD C-2), so a forward split that
+	 * array of post IDs rather than one, so a forward split that
 	 * moves an occurrence onto a sibling post does not make the identifier
 	 * stop resolving.
 	 *
@@ -4669,7 +4669,7 @@ class Test_Occurrences extends Base {
 	 * An identifier carried by two posts of one series resolves deterministically.
 	 *
 	 * `find_in_series()` is `LIMIT 1`, and a `LIMIT` without an `ORDER BY` means
-	 * whatever the query plan returns. That is not cosmetic once REQ-18 lets a
+	 * whatever the query plan returns. That is not cosmetic once a forward split lets a
 	 * series span several posts: the `series_post_id` this returns is what every
 	 * consumer keys the RSVP's occurrence term off, so an unstable pick would
 	 * move a responder's RSVP between sibling posts from one request to the

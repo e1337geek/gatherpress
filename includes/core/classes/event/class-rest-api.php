@@ -721,7 +721,7 @@ final class Rest_Api {
 	 *
 	 * The named post and the owner are the same post for every series that has
 	 * never been split, so this is a no-op today. It exists because they stop
-	 * being the same post the moment REQ-18's forward split moves an occurrence
+	 * being the same post the moment the forward split moves an occurrence
 	 * onto a sibling: authorization would then have been granted against the
 	 * fragment the caller named while the write landed on a fragment nobody
 	 * checked. Capability on one fragment must never authorize a mutation of an

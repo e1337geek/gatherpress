@@ -2,7 +2,7 @@
 /**
  * Class handles unit tests for GatherPress\Core\Event\Recurrence\Rsvp_Occurrence.
  *
- * T9's claim is that one RSVP belongs to one occurrence, not to the series. The
+ * One RSVP belongs to one occurrence, not to the series. The
  * tests that matter here therefore drive the production entry points --
  * `Rsvp::save()`, `Rsvp::get()`, `Rsvp::responses()` -- inside a real occurrence
  * context, rather than calling the taxonomy helpers directly. A test that only
@@ -465,7 +465,7 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
-	 * REQ-16: a site with no recurring events pays nothing for this feature.
+	 * A site with no recurring events pays nothing for this feature.
 	 *
 	 * Asserts on the query log across the real `Rsvp::save()` entry point, not
 	 * on a return value -- an occurrence term written on a non-recurring site
@@ -1085,104 +1085,6 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
-	 * Renaming a series moves the terms and keeps every relationship row.
-	 *
-	 * This is what makes REQ-13's forward split a rename rather than a
-	 * migration: relationships key on `term_taxonomy_id`, which `wp_update_term`
-	 * does not change.
-	 *
-	 * @covers ::rename_series
-	 *
-	 * @return void
-	 */
-	public function test_rename_series_preserves_relationships(): void {
-		$post_id      = $this->create_and_project();
-		$to_post_id   = $post_id + 1000;
-		$user_id      = $this->factory->user->create();
-		$comment_id   = (int) $this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id )['comment_id'];
-		$term_id      = (int) get_term_by(
-			'slug',
-			Rsvp_Occurrence::term_slug( $post_id, self::OCCURRENCE_A ),
-			Rsvp_Occurrence::TAXONOMY
-		)->term_id;
-		$renamed      = Rsvp_Occurrence::get_instance()->rename_series(
-			$post_id,
-			$to_post_id,
-			array( self::OCCURRENCE_A )
-		);
-		$renamed_term = get_term_by(
-			'slug',
-			Rsvp_Occurrence::term_slug( $to_post_id, self::OCCURRENCE_A ),
-			Rsvp_Occurrence::TAXONOMY
-		);
-
-		$this->assertSame( 1, $renamed, 'Failed to assert rename_series() reported one renamed term.' );
-		$this->assertNotFalse( $renamed_term, 'Failed to assert the term now carries the new series slug.' );
-		$this->assertSame(
-			$term_id,
-			(int) $renamed_term->term_id,
-			'Failed to assert the rename reused the same term rather than creating a new one.'
-		);
-		$this->assertSame(
-			1,
-			$this->relationship_count( $comment_id, Rsvp_Occurrence::TAXONOMY ),
-			'Failed to assert the RSVP kept its relationship row across the rename.'
-		);
-		$this->assertFalse(
-			get_term_by(
-				'slug',
-				Rsvp_Occurrence::term_slug( $post_id, self::OCCURRENCE_A ),
-				Rsvp_Occurrence::TAXONOMY
-			),
-			'Failed to assert the old series slug no longer resolves.'
-		);
-	}
-
-	/**
-	 * Renaming skips a recurrence identifier that has no term.
-	 *
-	 * @covers ::rename_series
-	 *
-	 * @return void
-	 */
-	public function test_rename_series_skips_unknown_recurrence_ids(): void {
-		Rsvp_Setup::get_instance()->register_taxonomy();
-
-		$this->assertSame(
-			0,
-			Rsvp_Occurrence::get_instance()->rename_series( 12, 13, array( self::OCCURRENCE_A ) ),
-			'Failed to assert rename_series() skips a recurrence ID that was never RSVPd to.'
-		);
-	}
-
-	/**
-	 * Renaming skips a term whose destination slug is already taken.
-	 *
-	 * @covers ::rename_series
-	 *
-	 * @return void
-	 */
-	public function test_rename_series_skips_a_taken_destination_slug(): void {
-		Rsvp_Setup::get_instance()->register_taxonomy();
-
-		$from_slug = Rsvp_Occurrence::term_slug( 12, self::OCCURRENCE_A );
-		$to_slug   = Rsvp_Occurrence::term_slug( 13, self::OCCURRENCE_A );
-
-		wp_insert_term( $from_slug, Rsvp_Occurrence::TAXONOMY, array( 'slug' => $from_slug ) );
-		wp_insert_term( $to_slug, Rsvp_Occurrence::TAXONOMY, array( 'slug' => $to_slug ) );
-
-		$this->assertSame(
-			0,
-			Rsvp_Occurrence::get_instance()->rename_series( 12, 13, array( self::OCCURRENCE_A ) ),
-			'Failed to assert rename_series() skips a term whose destination slug already exists.'
-		);
-		$this->assertNotFalse(
-			get_term_by( 'slug', $from_slug, Rsvp_Occurrence::TAXONOMY ),
-			'Failed to assert a refused rename left the original term in place.'
-		);
-	}
-
-	/**
 	 * Outside occurrence context there is no recurrence ID to scope by.
 	 *
 	 * @covers ::current_recurrence_id
@@ -1204,7 +1106,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * A context on another post does not scope this post's RSVPs.
 	 *
 	 * The mismatch is resolved through `Series::resolve_post_ids()` rather than
-	 * refused outright (PRD C-2), so this pins the other side of that: a post
+	 * refused outright, so this pins the other side of that: a post
 	 * that is genuinely not in the series still resolves to nothing. Without it,
 	 * "resolve through the series" would be indistinguishable from "accept any
 	 * post at all", and an occurrence of one event could scope another's RSVPs.
@@ -1258,7 +1160,7 @@ class Test_Rsvp_Occurrence extends Base {
 
 		$this->assertNull(
 			Rsvp_Occurrence::current_recurrence_id( $post_id ),
-			'Failed to assert the REQ-16 guard short-circuits occurrence resolution.'
+			'Failed to assert the no-recurring-events guard short-circuits occurrence resolution.'
 		);
 	}
 

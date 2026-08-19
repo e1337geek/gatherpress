@@ -562,7 +562,7 @@ describe( 'withRecurrenceId', () => {
 } );
 
 /**
- * The store key is the whole of PRD C-1 on the client: one post rendered many
+ * The store key carries occurrence identity on the client: one post rendered many
  * times must not share one entry in `state.posts`.
  */
 describe( 'getPostKey', () => {

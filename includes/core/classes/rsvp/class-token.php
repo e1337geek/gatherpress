@@ -427,7 +427,7 @@ final class Token {
 	 *
 	 * An RSVP taken on one date of a recurring series has to link back to
 	 * *that* date. `get_permalink()` alone answers with the bare series URL,
-	 * which PRD D-4 resolves to the next upcoming occurrence — so a responder
+	 * which resolves to the next upcoming occurrence — so a responder
 	 * confirming September 3rd would be sent a link to September 10th. The
 	 * email is outbound and cannot be corrected after sending, which is what
 	 * makes this the worse half of the defect.
@@ -442,8 +442,7 @@ final class Token {
 	 *
 	 * `occurrence_for_comment()` short-circuits on the autoloaded
 	 * `gatherpress_has_recurring_events` option, so a site with no recurring
-	 * events pays no query here and gets the same permalink it always did
-	 * (REQ-16).
+	 * events pays no query here and gets the same permalink it always did.
 	 *
 	 * @since 0.36.0
 	 *

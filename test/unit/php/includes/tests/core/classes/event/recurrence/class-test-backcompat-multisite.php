@@ -87,8 +87,8 @@ class Test_Backcompat_Multisite extends Base {
 	 * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` puts
 	 * the fixture into an `upcoming` bucket and then asserts it is what the
 	 * list shows, which is a comparison against the clock -- a pinned anchor
-	 * would pass until that date arrived and then report the CF-9 regression
-	 * instead of a stale fixture. `test_the_fixture_series_is_never_in_the_past()`
+	 * would pass until that date arrived and then report the missing-table
+	 * regression instead of a stale fixture. `test_the_fixture_series_is_never_in_the_past()`
 	 * fails by name if this is ever re-pinned.
 	 *
 	 * @since 0.36.0
@@ -537,7 +537,7 @@ class Test_Backcompat_Multisite extends Base {
 	}
 
 	/**
-	 * (d) CF-9 on the one read API the original CF-9 fix did not cover.
+	 * (d) The same graceful-degradation contract on one further read API.
 	 *
 	 * `Occurrences::select_upcoming()` shares its body with `select_past()` via
 	 * `select_by_horizon()`, and that body names the occurrence table in both a
@@ -547,7 +547,7 @@ class Test_Backcompat_Multisite extends Base {
 	 * swallows the missing-table error and `get_results()` returns `array()`,
 	 * so an ordinary, non-recurring, published event silently disappears from
 	 * this read API with nothing reported anywhere. That is the same shape as
-	 * CF-9, in the method CF-9 did not reach.
+	 * the missing-table regression above, in a method it did not reach.
 	 *
 	 * The contract asserted here is graceful degradation, not merely "does not
 	 * fatal": the blog must show exactly what it would show with no recurrence
@@ -578,7 +578,7 @@ class Test_Backcompat_Multisite extends Base {
 		$post_id = $this->create_event();
 
 		// The hazard is specific to a blog reporting recurring events while its
-		// own table is missing; with the option at '0' REQ-16's guard already
+		// own table is missing; with the option at '0' the no-recurring-events guard already
 		// keeps this code path unreached, which is the safe case.
 		update_option( Query::HAS_RECURRING_OPTION, '1', true );
 
@@ -619,7 +619,7 @@ class Test_Backcompat_Multisite extends Base {
 			array( $post_id ),
 			wp_list_pluck( $refs, 'post_id' ),
 			'Failed to assert a blog missing the occurrence table still sees its ordinary published event --'
-				. ' an empty list here is CF-9: the event silently vanishing with no error surfaced anywhere.'
+				. ' an empty list here is the regression: the event silently vanishing with no error surfaced anywhere.'
 		);
 		$this->assertSame(
 			array(),

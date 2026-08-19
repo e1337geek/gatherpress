@@ -498,7 +498,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	/**
 	 * B2: a classic submission invalidates the counts it just changed.
 	 *
-	 * The third consequence, and the one no reviewer listed. This path never
+	 * The third consequence, and the least obvious one. This path never
 	 * reaches `Rsvp\Storage::save()` or the REST route's
 	 * `handle_rsvp_creation()`, which is where every other write invalidates, so
 	 * `Cache::` appeared nowhere on it at all. Both keys are asserted because
@@ -544,7 +544,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * REQ-16: a submission naming no occurrence behaves exactly as it always did.
+	 * A submission naming no occurrence behaves exactly as it always did.
 	 *
 	 * The parity half. A non-recurring event renders no hidden field, so the
 	 * response is stored series-wide with no occurrence term and the duplicate

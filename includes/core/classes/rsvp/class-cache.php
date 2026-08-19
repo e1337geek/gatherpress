@@ -145,8 +145,7 @@ final class Cache {
 	 * having named the owning post alongside it; passing none asks the request,
 	 * which is what keeps every existing single-argument call site
 	 * occurrence-aware without changing it. On a site with no recurring events
-	 * the lookup short-circuits before any occurrence machinery is touched
-	 * (REQ-16).
+	 * the lookup short-circuits before any occurrence machinery is touched.
 	 *
 	 * @since 0.36.0
 	 *

@@ -708,21 +708,20 @@ class Test_Backcompat extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 on `Occurrences::select_upcoming()`.
+	 * Coverage for the no-recurring-events guard on `Occurrences::select_upcoming()`.
 	 *
 	 * `select_by_horizon()` is the shared body behind both `select_upcoming()`
 	 * and `select_past()`, and this class's own docblocks name it as *the*
 	 * occurrence-aware read API for GatherPress's own lists -- so it is what a
-	 * third-party consumer calls, and it is a public entry point in exactly the
-	 * sense preamble rule 6a means. On a site whose
+	 * third-party consumer calls, and it is a public entry point. On a site whose
 	 * `gatherpress_has_recurring_events` option is `'0'` it must not name the
 	 * occurrence table in any SQL it issues, and it must still return the
 	 * site's ordinary events.
 	 *
 	 * Measured with a `$wpdb->queries` capture across the real entry point
-	 * rather than against the guard in isolation, because the two REQ-16
-	 * defects this build already shipped both had a passing "performs no
-	 * writes" test that drove the body of the work and never the entry point.
+	 * rather than against the guard in isolation, because a "performs no
+	 * writes" test that drives the body of the work and never the entry point
+	 * passes while the guard is missing at the entry point.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_upcoming
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_by_horizon
@@ -748,7 +747,7 @@ class Test_Backcompat extends Base {
 			array(),
 			$this->queries_touching( $sql, $this->occurrence_table() ),
 			'Failed to assert select_upcoming() issues no query naming the occurrence table on a site with no'
-				. ' recurring events -- that is REQ-16, and this method is the read API a third party calls.'
+				. ' recurring events, and this method is the read API a third party calls.'
 		);
 		$this->assertSame(
 			array( $post_id ),
@@ -790,7 +789,7 @@ class Test_Backcompat extends Base {
 	 * Coverage for the guard's other side: once the site does have recurring
 	 * events, `select_upcoming()` expands the series.
 	 *
-	 * Without this, the REQ-16 guard above could be satisfied by a method that
+	 * Without this, the guard above could be satisfied by a method that
 	 * never reads the occurrence table at all.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_upcoming

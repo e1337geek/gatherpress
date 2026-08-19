@@ -146,7 +146,7 @@ class Test_Rsvp_Rest extends Base {
 	 * context never substitutes. Against a pinned anchor the entire suite
 	 * silently stops writing anything the day real time crosses it, and six of
 	 * these tests would have started failing on 2026-09-04 while three others
-	 * kept passing with nothing written at all (rule 3a #7).
+	 * kept passing with nothing written at all.
 	 *
 	 * @since 0.36.0
 	 *
@@ -210,8 +210,8 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * Create an ordinary, never-recurring event on a site with no recurring events.
 	 *
-	 * Dated from the same relative anchor, and for the same reason: the REQ-16
-	 * routes below include two that write, and a write to a past event is
+	 * Dated from the same relative anchor, and for the same reason: the
+	 * no-recurring-events routes below include two that write, and a write to a past event is
 	 * refused before it can touch the storage those tests are watching.
 	 *
 	 * @since 0.36.0
@@ -306,7 +306,7 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * The fixture this class writes against is always in the future.
 	 *
-	 * The guard for rule 3a #7, kept as a first-class test rather than left
+	 * The guard against a date bomb, kept as a first-class test rather than left
 	 * implicit in `relative_anchor()`. Every write in this file passes through
 	 * `! $event->has_event_past()`, which reads the **series** post meta —
 	 * occurrence context never substitutes it. When that gate closes, six tests
@@ -347,7 +347,7 @@ class Test_Rsvp_Rest extends Base {
 		$this->assertMatchesRegularExpression(
 			'/^\d{8}T\d{6}$/',
 			$this->occurrence_a,
-			'Failed to assert the derived identifier keeps the Ymd\THis shape (PRD C-1).'
+			'Failed to assert the derived identifier keeps the Ymd\THis shape.'
 		);
 	}
 
@@ -600,7 +600,7 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * An occurrence of another series is refused on this one.
 	 *
-	 * The composite key is the identity (PRD C-1): the same `Ymd\THis` names an
+	 * The composite key is the identity: the same `Ymd\THis` names an
 	 * occurrence of every series that meets at that moment, so validating the
 	 * identifier alone would let a caller scope one series' RSVPs by another's.
 	 *
@@ -698,8 +698,8 @@ class Test_Rsvp_Rest extends Base {
 	 * Both sides are asserted deliberately. A lone `0` on the sibling is
 	 * produced by two different mechanisms — "the roster is scoped to B" and
 	 * "no RSVP exists anywhere" — so on its own it stays green with the write
-	 * path completely dead, which is exactly how it behaved once the fixture
-	 * anchor went stale (rule 3a #8). The `1` on A is what excludes the
+	 * path completely dead, which is exactly how it behaves once the fixture
+	 * anchor goes stale. The `1` on A is what excludes the
 	 * coincidence: it can only be produced by an RSVP that really was written
 	 * and really is scoped, and this is the only REST-level test of the block
 	 * render path.
@@ -949,7 +949,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * REQ-16: every RSVP route the change touches stays free on a plain site.
+	 * Every RSVP route the change touches stays free on a plain site.
 	 *
 	 * Driven through `rest_do_request()` — the entry point, not the callback —
 	 * because the argument definition, its validation and the context entry all
@@ -1044,7 +1044,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * REQ-16: a fabricated `recurrence_id` costs a plain site nothing either.
+	 * A fabricated `recurrence_id` costs a plain site nothing either.
 	 *
 	 * A crawler appending the argument to an ordinary event's RSVP request
 	 * must not reach the occurrence table — the validation short-circuits on
@@ -1097,7 +1097,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * PRD C-2: the request path resolves through the series, not the named post.
+	 * The request path resolves through the series, not the named post.
 	 *
 	 * Nothing else in the suite pins this. `Test_Occurrences` pins that
 	 * `find_in_series()` emits `IN (…)`, but that is one layer down — replacing
@@ -1153,7 +1153,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * PRD C-2: an RSVP named on a sibling post lands on the occurrence's owner.
+	 * An RSVP named on a sibling post lands on the occurrence's owner.
 	 *
 	 * The failure this pins is the quiet one. `Context` deliberately resolves
 	 * across the series, so validation passes and context is entered — and
@@ -1516,8 +1516,8 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * Widen a series so `$member` resolves to both posts.
 	 *
-	 * Installs the `gatherpress_series_post_ids` filter REQ-18 will populate for
-	 * real, which is the only seam by which a multi-post series can exist —
+	 * Installs the `gatherpress_series_post_ids` filter the forward split will
+	 * populate for real, which is the only seam by which a multi-post series can exist —
 	 * `Series` is final with a protected constructor precisely so no test can
 	 * fake one any other way.
 	 *

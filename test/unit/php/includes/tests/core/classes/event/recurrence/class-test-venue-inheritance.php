@@ -8,9 +8,9 @@
  * is not per-occurrence state at all: it is a `_gatherpress_venue` taxonomy
  * term on the series post, and `Rewrite::parse_request()` resolves every
  * occurrence URL of a series to a post of that series
- * (`Series::resolve_post_ids()` returns `array( $post_id )` until REQ-18
- * widens it). Driving the request is therefore the only way to prove the
- * property REQ-15 actually states -- that a visitor landing on any occurrence
+ * (`Series::resolve_post_ids()` returns `array( $post_id )` until a forward
+ * split widens it). Driving the request is therefore the only way to prove the
+ * property that matters -- that a visitor landing on any occurrence
  * page sees the series' venue -- rather than proving that a term lookup works.
  *
  * @package GatherPress\Core\Event\Recurrence

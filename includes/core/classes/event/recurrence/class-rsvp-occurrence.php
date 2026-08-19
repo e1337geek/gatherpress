@@ -77,12 +77,7 @@ final class Rsvp_Occurrence {
 	 * impossible: two series can share a recurrence identifier, but not a post
 	 * ID.
 	 *
-	 * Both identifiers are unread: this is a frozen signature whose body, the
-	 * one composition of the two into a slug, lands on a later branch.
-	 *
 	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -98,8 +93,8 @@ final class Rsvp_Occurrence {
 	 *
 	 * Returns the **occurrence's own** `series_post_id` alongside the
 	 * identifier, and callers must key their term slug off that rather than off
-	 * the post they asked about. PRD C-2 is the reason: `Context` resolves an
-	 * incoming identifier through `Series::resolve_post_ids()`, so once REQ-18's
+	 * the post they asked about. Resolution is series-wide: `Context` resolves an
+	 * incoming identifier through `Series::resolve_post_ids()`, so once the
 	 * forward split moves an occurrence onto a sibling post of the same series,
 	 * the context legitimately holds a row whose `series_post_id` is not the
 	 * post the request named. Comparing the two for equality — which this method
@@ -108,7 +103,7 @@ final class Rsvp_Occurrence {
 	 * error anywhere: the RSVP would be written with no occurrence term at all
 	 * while the visitor believed they had booked a specific date.
 	 *
-	 * REQ-16 lives on the first guard: a site with no recurring events never
+	 * The first guard keeps the cost off ordinary sites: a site with no recurring events never
 	 * reaches the occurrence context at all, so every RSVP read and write runs
 	 * exactly the SQL it ran before this class existed.
 	 *
@@ -120,7 +115,7 @@ final class Rsvp_Occurrence {
 	 * occurrence page onto the requested date.
 	 *
 	 * The request arm keeps its widened-series membership check, and that
-	 * admission is deliberate: once REQ-18's forward split moves an occurrence
+	 * admission is deliberate: once the forward split moves an occurrence
 	 * onto a sibling post, the context legitimately holds a row whose
 	 * `series_post_id` is not the post the request named. The identity
 	 * comparison stays ahead of `resolve_post_ids()`, so a one-post series — the
@@ -202,7 +197,7 @@ final class Rsvp_Occurrence {
 	 * Build the interactivity block context one rendered row publishes to the client.
 	 *
 	 * The single source of truth for that payload, and the reason it exists is
-	 * PRD C-1: occurrence identity is `(post_id, recurrence_id)`, and until this
+	 * that occurrence identity is `(post_id, recurrence_id)`, and until this
 	 * method every block emitted `postId` alone. On an archive or Query Loop the
 	 * whole point is that one post appears many times, so a client store keyed
 	 * on the post ID collapsed every row of a series into one entry -- an RSVP
@@ -219,7 +214,7 @@ final class Rsvp_Occurrence {
 	 * Resolution goes through `current_recurrence_id()` rather than through
 	 * `Context::cache_key()` so the identity the client is handed is the same
 	 * one the server scoped this row's RSVP reads by, widened-series admission
-	 * included. REQ-16 rides along on that call's first guard: on a site with no
+	 * included. The cost guard rides along on that call's first guard: on a site with no
 	 * recurring events it returns before touching the occurrence table.
 	 *
 	 * @since 0.36.0
@@ -271,14 +266,14 @@ final class Rsvp_Occurrence {
 	 * from the REST route and from `comment_post`) and is then *sent*, so a
 	 * link to the wrong date cannot be corrected afterwards.
 	 *
-	 * Both halves of PRD C-1's composite come off the term slug rather than
+	 * Both halves of the composite identity come off the term slug rather than
 	 * from the comment's `comment_post_ID`: `assign()` keys the slug on the
-	 * **occurrence's own** `series_post_id`, which REQ-18's forward split makes
+	 * **occurrence's own** `series_post_id`, which the forward split makes
 	 * legitimately different from the post the responder RSVPd on. Composing a
 	 * URL from `comment_post_ID` would name a post the occurrence no longer
 	 * lives on, and `Rewrite::parse_request()` matches on the exact pair.
 	 *
-	 * REQ-16 is the first guard: on a site with no recurring events this
+	 * The recurring-events check is the first guard: on a site with no recurring events this
 	 * returns without reading a term relationship at all, so the email path
 	 * runs byte-identical SQL there.
 	 *
@@ -371,12 +366,7 @@ final class Rsvp_Occurrence {
 	/**
 	 * Attach an RSVP comment to an occurrence.
 	 *
-	 * All three parameters are unread: this is a frozen signature whose body,
-	 * the term assignment onto the comment, lands on a later branch.
-	 *
 	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $comment_id    RSVP comment ID.
 	 * @param int    $post_id       Series post ID.
@@ -407,12 +397,7 @@ final class Rsvp_Occurrence {
 	 * Passed through the existing `Rsvp\Query::get_rsvps()` path, so there is no
 	 * new SQL, no new filter, and no table.
 	 *
-	 * Both identifiers are unread: this is a frozen signature whose body, the
-	 * clause built from the occurrence's term slug, lands on a later branch.
-	 *
 	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -427,67 +412,5 @@ final class Rsvp_Occurrence {
 				'terms'    => array( self::term_slug( $post_id, $recurrence_id ) ),
 			),
 		);
-	}
-
-	/**
-	 * Move occurrence terms from one series post to another.
-	 *
-	 * The forward-split seam, frozen here as a stub returning 0. Its callers
-	 * land with the forward split itself.
-	 *
-	 * All three parameters are unread: this is a frozen signature whose body,
-	 * the term rename they drive, lands with that forward split.
-	 *
-	 * Renaming rather than re-tagging is what makes a split cheap: every row in
-	 * `term_relationships` keys on `term_taxonomy_id`, which `wp_update_term()`
-	 * leaves alone, so no RSVP is touched however many of them the occurrence
-	 * carries.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
-	 *
-	 * @param int      $from_post_id   Series post ID the occurrences currently belong to.
-	 * @param int      $to_post_id     Series post ID they move to.
-	 * @param string[] $recurrence_ids Occurrence identifiers to move.
-	 *
-	 * @return int Terms renamed.
-	 */
-	public function rename_series( int $from_post_id, int $to_post_id, array $recurrence_ids ): int {
-		$renamed = 0;
-
-		foreach ( $recurrence_ids as $recurrence_id ) {
-			$term = get_term_by(
-				'slug',
-				self::term_slug( $from_post_id, (string) $recurrence_id ),
-				self::TAXONOMY
-			);
-
-			// An occurrence nobody has RSVPd to has no term to move.
-			if ( ! $term instanceof WP_Term ) {
-				continue;
-			}
-
-			$slug    = self::term_slug( $to_post_id, (string) $recurrence_id );
-			$updated = wp_update_term(
-				$term->term_id,
-				self::TAXONOMY,
-				array(
-					'name' => $slug,
-					'slug' => $slug,
-				)
-			);
-
-			// The destination slug can already exist when a split runs twice;
-			// leave the original term alone rather than merging two
-			// occurrences' RSVPs into one.
-			if ( is_wp_error( $updated ) ) {
-				continue;
-			}
-
-			++$renamed;
-		}
-
-		return $renamed;
 	}
 }

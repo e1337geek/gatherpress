@@ -582,7 +582,7 @@ final class Form {
 	 *
 	 * On a site with no recurring events no field is rendered and the resolver
 	 * short-circuits before touching occurrence storage, so this returns null
-	 * and the submission runs the SQL it always ran (REQ-16).
+	 * and the submission runs the SQL it always ran.
 	 *
 	 * @since 0.36.0
 	 *
@@ -634,10 +634,10 @@ final class Form {
 	 *
 	 * A no-op outside occurrence context, and on every site with no recurring
 	 * events, since `current_occurrence()` short-circuits on the autoloaded
-	 * `gatherpress_has_recurring_events` option (REQ-16).
+	 * `gatherpress_has_recurring_events` option.
 	 *
 	 * The term is keyed on the occurrence's own `series_post_id`, not on the
-	 * post the request named — PRD C-2, see `Rsvp_Occurrence::current_occurrence()`.
+	 * post the request named — see `Rsvp_Occurrence::current_occurrence()`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -665,12 +665,12 @@ final class Form {
 	 *
 	 * Returns null outside occurrence context — and on every site with no
 	 * recurring events at all, since `current_occurrence()` short-circuits
-	 * on the `gatherpress_has_recurring_events` option (REQ-16). The query
+	 * on the `gatherpress_has_recurring_events` option. The query
 	 * string is then byte-identical to the one this method's caller has always
 	 * built.
 	 *
 	 * The slug is keyed on the occurrence's own `series_post_id` so the check
-	 * matches the term `assign_occurrence()` writes (PRD C-2).
+	 * matches the term `assign_occurrence()` writes.
 	 *
 	 * The occurrence link is the `_gatherpress_occurrence` term on the comment,
 	 * so the narrowing is a term-relationship subquery rather than a new

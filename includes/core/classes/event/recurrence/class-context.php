@@ -248,7 +248,7 @@ final class Context {
 	 * has to reject an unknown or malformed identifier before any callback
 	 * runs rather than silently falling back to the series.
 	 *
-	 * REQ-16 is the first guard: on a site with no recurring events this
+	 * The recurring-events guard comes first: on a site with no recurring events this
 	 * returns without touching the occurrence table, so a request carrying a
 	 * fabricated `recurrence_id` costs nothing there.
 	 *

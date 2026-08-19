@@ -2128,7 +2128,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * REQ-16: a site with no recurring events resolves nothing and queries nothing.
+	 * A site with no recurring events resolves nothing and queries nothing.
 	 *
 	 * @covers ::resolve_in_series
 	 *

@@ -319,7 +319,7 @@ class Test_Occurrence_Identity extends Base {
 	/**
 	 * The same identifier on two different series is two different identities.
 	 *
-	 * PRD C-1: the composite is the identity. Comparing recurrence identifiers
+	 * The composite is the identity. Comparing recurrence identifiers
 	 * alone would let a credential for one series act on another that happens to
 	 * meet at the same moment.
 	 *
@@ -352,7 +352,7 @@ class Test_Occurrence_Identity extends Base {
 	/**
 	 * On a site with no recurring events nothing resolves and nothing is queried.
 	 *
-	 * REQ-16: the seam is reached from the RSVP write paths, so it has to be
+	 * The seam is reached from the RSVP write paths, so it has to be
 	 * free where recurrence is not in use.
 	 *
 	 * @covers ::resolve

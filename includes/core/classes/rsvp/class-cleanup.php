@@ -74,7 +74,7 @@ final class Cleanup {
 	 * flag, so it trashes rather than deletes and never reaches this.
 	 *
 	 * The occurrence taxonomy is only named on a site that actually has
-	 * recurring events (REQ-16): elsewhere there is nothing to clean up and the
+	 * recurring events: elsewhere there is nothing to clean up and the
 	 * lookup would be pure cost.
 	 *
 	 * @since 0.36.0

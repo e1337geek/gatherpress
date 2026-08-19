@@ -203,7 +203,7 @@ final class Rsvp_Form {
 	 *
 	 * Outside occurrence context, and on every site with no recurring events,
 	 * this returns an empty string and the emitted form is byte-identical to
-	 * the one this block has always rendered (REQ-16).
+	 * the one this block has always rendered.
 	 *
 	 * @since 0.36.0
 	 *

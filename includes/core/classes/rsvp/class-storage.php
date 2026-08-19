@@ -182,7 +182,7 @@ final class Storage {
 		// series rather than one that follows them across all of them. The term
 		// is keyed on the occurrence's own series post, not on the post the
 		// request named, so an occurrence a forward split has moved onto a
-		// sibling post is stamped with the slug its readers scope by (PRD C-2).
+		// sibling post is stamped with the slug its readers scope by.
 		$occurrence = Rsvp_Occurrence::current_occurrence( $this->post_id );
 
 		if ( null !== $occurrence ) {
@@ -253,7 +253,7 @@ final class Storage {
 	 * This mirrors `update_object_term_cache()` rather than calling it, because
 	 * that function primes every taxonomy registered on comments. Naming the
 	 * two taxonomies hydration actually reads keeps the occurrence taxonomy out
-	 * of the SQL a site with no recurring events runs (REQ-16), and skips work
+	 * of the SQL a site with no recurring events runs, and skips work
 	 * for a term nothing here goes on to read.
 	 *
 	 * @since 0.36.0
@@ -335,7 +335,7 @@ final class Storage {
 	 * The scoping rides the `tax_query` var `Rsvp\Query::taxonomy_query()`
 	 * already splices into the comment clauses, so no new SQL, filter, or table
 	 * is involved. Outside occurrence context — and on every site with no
-	 * recurring events at all — the args are returned untouched (REQ-16).
+	 * recurring events at all — the args are returned untouched.
 	 *
 	 * No `cache_domain` is set here. `WP_Comment_Query::get_comments()` builds
 	 * its cache key from its declared query vars only, and `tax_query` is not
@@ -349,7 +349,7 @@ final class Storage {
 	 *
 	 * The `tax_query` is built from the occurrence's own `series_post_id` rather
 	 * than from `$this->post_id`, so a read on any post of a series finds the
-	 * RSVPs written under the post the occurrence actually lives on (PRD C-2).
+	 * RSVPs written under the post the occurrence actually lives on.
 	 *
 	 * @since 0.36.0
 	 *

@@ -135,7 +135,7 @@ export function withRecurrenceId( recurrenceId ) {
  * Build the key one block instance's slice of `state.posts` lives under.
  *
  * Occurrence identity is `(post_id, recurrence_id)` everywhere else in this
- * subsystem (PRD C-1), and the client store is no exception. Keying on the post
+ * subsystem, and the client store is no exception. Keying on the post
  * ID alone is the defect this exists to close: the entire point of the feature
  * is that one post appears many times on a page, so a post-only key collapses
  * every row of a series into one entry and an RSVP on one date visibly applies

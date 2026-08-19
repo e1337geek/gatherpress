@@ -2,7 +2,7 @@
 /**
  * The one authoritative identity of a single occurrence.
  *
- * PRD C-1 states that an occurrence is identified by the composite
+ * An occurrence is identified by the composite
  * `(owner_post_id, recurrence_id)`, never by the recurrence identifier alone
  * and never by the post a request happened to name. Before this class the
  * composite existed in five partial forms — the occurrence table's primary
@@ -40,7 +40,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
  * **The ownership invariant.** `owner_post_id` is always the `series_post_id`
  * of the occurrence row itself, which is also the prefix the occurrence term
  * slug carries. It is never the post a request named, because a forward split
- * (REQ-18) legitimately moves an occurrence onto a sibling post of the same
+ * legitimately moves an occurrence onto a sibling post of the same
  * series while callers keep naming the post they first saw.
  *
  * An RSVP comment scoped to an occurrence must satisfy
@@ -56,7 +56,7 @@ final class Occurrence_Identity {
 	/**
 	 * The canonical shape of a recurrence identifier.
 	 *
-	 * `Ymd\THis`, per PRD C-1, and nothing else. Matching this proves only that
+	 * `Ymd\THis`, and nothing else. Matching this proves only that
 	 * the string is well formed; it says nothing about whether the occurrence
 	 * exists, which is deliberate. Syntax is all a REST argument validator may
 	 * check, because validation runs before the permission callback and a check
@@ -103,7 +103,7 @@ final class Occurrence_Identity {
 	 * Resolve a candidate identifier to the occurrence that owns it.
 	 *
 	 * Step 1 of resolve-authorize-use, and the only step that reads storage.
-	 * Resolution is across the whole series (PRD C-2) rather than pinned to the
+	 * Resolution is across the whole series rather than pinned to the
 	 * post the caller named, so an occurrence a forward split has moved still
 	 * resolves; the identity that comes back names the post it moved *to*.
 	 *
@@ -163,8 +163,7 @@ final class Occurrence_Identity {
 	 *
 	 * The ambient counterpart to `resolve()`, for the write paths that run
 	 * after authorization has already fixed the identity. On a site with no
-	 * recurring events this returns null without touching occurrence storage
-	 * (REQ-16).
+	 * recurring events this returns null without touching occurrence storage.
 	 *
 	 * @since 0.36.0
 	 *

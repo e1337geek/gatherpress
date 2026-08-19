@@ -135,8 +135,7 @@ function renderPage( count ) {
 /**
  * Reads the RSVP status a row is currently showing the visitor.
  *
- * This is the thing a human sees, and the thing the hand-test that found this
- * defect was looking at.
+ * This is the thing a human sees, and what the defect shows up in.
  *
  * @param {HTMLElement} row A rendered RSVP block row.
  *
@@ -182,8 +181,8 @@ function renderAllRows( renderRsvpBlock, rows, contexts ) {
  * rows share one entry in `state.posts` and collapse to a single status the
  * moment anything writes to it.
  *
- * Every assertion here is on the whole per-row vector rather than on one row
- * (rule 3a anti-pattern #8): "row 2 shows attending" passes just as well when
+ * Every assertion here is on the whole per-row vector rather than on one row:
+ * "row 2 shows attending" passes just as well when
  * all three rows show attending, which is the defect. The right answer and the
  * collapsed answer only differ across the vector.
  */

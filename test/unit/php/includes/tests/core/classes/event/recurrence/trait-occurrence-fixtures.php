@@ -112,7 +112,7 @@ trait Occurrence_Fixtures {
 	 *
 	 * Pinning a fixture date and comparing it against the wall clock is a date
 	 * bomb: it passes until real time crosses the anchor and then fails for a
-	 * reader with no context (rule 3a #7). The fixed-anchor
+	 * reader with no context. The fixed-anchor
 	 * `$reference_anchor_start` above is correct for the expander and
 	 * persistence suites, which assert a *stated* occurrence set where the exact
 	 * calendar dates are the specification and WKST week buckets depend on

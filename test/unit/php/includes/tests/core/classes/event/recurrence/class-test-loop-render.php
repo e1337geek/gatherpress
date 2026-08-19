@@ -497,17 +497,17 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for PRD C-3 inside a loop: an occurrence's time of day is read
+	 * Inside a loop, an occurrence's time of day is read
 	 * from the occurrence record, never computed by applying the anchor's time
 	 * to the occurrence's date.
 	 *
 	 * The discriminating fixture is a direct row update, and it has to be:
-	 * under preamble rule 8 the expander holds the wall-clock time constant
+	 * the expander holds the wall-clock time constant
 	 * across every occurrence, including across a DST transition, so for a
 	 * rule-generated series "the record's time" and "the anchor's time applied
 	 * to the record's date" are the *same* local time and no assertion on the
 	 * rendered wall clock can separate them. Rewriting one row's own datetime
-	 * columns is what makes the two answers differ (preamble rule 3a #8), and
+	 * columns is what makes the two answers differ, and
 	 * it is the same technique
 	 * `Test_Context::test_occurrence_time_of_day_comes_from_the_record_not_the_anchor`
 	 * uses on the singular path -- this is its loop counterpart.
@@ -565,18 +565,18 @@ class Test_Loop_Render extends Base {
 		$this->assertStringContainsString(
 			$start->format( 'Y-m-d H:i' ),
 			$moved_row,
-			'Failed to assert the moved occurrence rendered its own record\'s time of day (PRD C-3).'
+			'Failed to assert the moved occurrence rendered its own record\'s time of day.'
 		);
 		$this->assertStringNotContainsString(
 			$anchor->modify( '+2 days' )->format( 'Y-m-d H:i' ),
 			$moved_row,
 			'Failed to assert the anchor\'s time of day was not applied to the occurrence\'s date -- that is'
-				. ' precisely the C-3 violation, and it renders a plausible-looking wrong time.'
+				. ' precisely the violation, and it renders a plausible-looking wrong time.'
 		);
 	}
 
 	/**
-	 * Coverage for CF-8's second half: the permalink of a loop row is the
+	 * The permalink of a loop row is the
 	 * occurrence URL, not the bare series URL.
 	 *
 	 * Asserted through the block's own `isLink` markup rather than by calling
@@ -1141,11 +1141,11 @@ class Test_Loop_Render extends Base {
 	 * The datetime collapsed with it, so the page showed one date four times.
 	 *
 	 * The request context is established by `go_to()` rather than by hand, so
-	 * the `wp` action that binds it in production is the thing under test
-	 * (rule 3a #3). The requested occurrence is the series anchor, which is in
+	 * the `wp` action that binds it in production is the thing under test.
+	 * The requested occurrence is the series anchor, which is in
 	 * the past and therefore *not* among the loop's upcoming rows -- so the
 	 * right answer and the collapsed answer differ on every row rather than on
-	 * three of four (rule 3a #8).
+	 * three of four.
 	 *
 	 * @covers ::resolve
 	 * @covers ::loop_occurrence
@@ -1348,9 +1348,9 @@ class Test_Loop_Render extends Base {
 	 * suite gives the series and its occurrences the same timezone, so the
 	 * right answer and the fallback answer coincide and nothing discriminates
 	 * between them -- mutating `stamp_occurrence()` to stamp `null` for this one
-	 * column left the whole recurrence suite green.
+	 * column leaves the whole recurrence suite green.
 	 *
-	 * This fixture makes the two differ (preamble rule 3a #8): the occurrence
+	 * This fixture makes the two differ: the occurrence
 	 * rows are projected in `America/New_York`, then the *series'* own timezone
 	 * meta is poisoned to `Asia/Tokyo` afterwards. Inside a loop iteration the
 	 * read must produce the occurrence record's zone; outside it, the series'.
@@ -1540,15 +1540,15 @@ class Test_Loop_Render extends Base {
 	/**
 	 * Coverage for per-occurrence RSVP state inside a loop.
 	 *
-	 * The archive and Query Loop are the surfaces where this broke in the
-	 * hand-test that found it: `Rsvp_Occurrence::current_occurrence()` read
-	 * only `Context::current()`, which is the *request's* occurrence. A loop
-	 * has no request occurrence, so it answered null on every row and every
-	 * row read the same series-wide RSVP state -- an attendee on the first
-	 * date appeared to be attending all fourteen.
+	 * The archive and Query Loop are the surfaces where this breaks: reading
+	 * only `Context::current()` in `Rsvp_Occurrence::current_occurrence()`
+	 * yields the *request's* occurrence. A loop
+	 * has no request occurrence, so it answers null on every row and every
+	 * row reads the same series-wide RSVP state -- an attendee on the first
+	 * date appears to be attending all fourteen.
 	 *
-	 * The fixture makes the right answer and the wrong answer differ (rule 3a
-	 * anti-pattern #8): exactly one occurrence carries an RSVP, so a
+	 * The fixture makes the right answer and the wrong answer differ:
+	 * exactly one occurrence carries an RSVP, so a
 	 * series-wide read shows attending on every row while a correctly scoped
 	 * read shows it on one. Asserting the whole per-row vector rather than a
 	 * single row is what makes that distinction visible.
@@ -1625,7 +1625,7 @@ class Test_Loop_Render extends Base {
 	 * applies to every row of the series.
 	 *
 	 * The assertion is on the whole per-row vector of emitted identities rather
-	 * than on one row (rule 3a anti-pattern #8): a single-row assertion passes
+	 * than on one row: a single-row assertion passes
 	 * just as well when every row emits the same thing, which is precisely the
 	 * defect. The expected vector is the series' own occurrence identifiers, in
 	 * loop order, so the only mechanism that can produce it is the real one.
@@ -1774,11 +1774,11 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 on the block-context entry point this adds.
+	 * Coverage for the no-recurring-events guard on the block-context entry point this adds.
 	 *
-	 * Named after the loop it drives rather than after the resolver, because
-	 * both REQ-16 defects this build shipped had a passing "performs no writes"
-	 * test that drove the body of the work and never the entry point.
+	 * Named after the loop it drives rather than after the resolver, because a
+	 * "performs no writes" test that drives the body of the work and never the
+	 * entry point passes while the guard is missing at the entry point.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
 	 *
@@ -1800,7 +1800,7 @@ class Test_Loop_Render extends Base {
 		// Warm the RSVP response transient the count block has always written,
 		// so the capture below sees only what this render newly writes. Without
 		// it the assertion would be measuring a pre-existing cache fill rather
-		// than anything REQ-16 is about.
+		// than anything this test is about.
 		$this->loop_block_contexts( $this->run_upcoming_query() );
 
 		$wpdb->queries      = array();
