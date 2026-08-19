@@ -1177,6 +1177,281 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Split a relative daily series so the origin keeps only past dates.
+	 *
+	 * Occurrences land at -16/-9/-2/+5/+12 days, and the split falls on the
+	 * fourth. Every row the origin keeps is therefore behind now and every row
+	 * the forward post takes is ahead of it, which is what makes the assertions
+	 * about "the series' next upcoming row" unable to be satisfied by a row the
+	 * origin still owns.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array{0: int, 1: int, 2: string} Origin ID, forward ID, and the first forward identifier.
+	 */
+	protected function split_into_a_lapsed_origin(): array {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( -16, 7, 5 );
+
+		$split_at = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
+		$result   = Splitter::get_instance()->split_forward( $post_id, $split_at );
+		$forward  = (int) $result['forward_post_id'];
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+
+		$now = current_time( 'mysql', true );
+
+		foreach ( Occurrences::get_instance()->select_for_series( array( $post_id ) ) as $row ) {
+			$this->assertLessThan(
+				$now,
+				$row['datetime_start_gmt'],
+				'Fixture setup: every row the origin keeps must be in the past, or the redirect could be'
+					. ' satisfied by the origin\'s own next occurrence.'
+			);
+		}
+
+		return array( $post_id, $forward, $split_at );
+	}
+
+	/**
+	 * W7 acceptance 5: a lapsed fragment's bare URL follows the logical series.
+	 *
+	 * The origin's own dates have all passed while the same logical series has
+	 * upcoming dates on the post a forward split created. Rendering the origin's
+	 * stale anchor is the defect; the request is answered with a `301` to the
+	 * occurrence URL of the series' earliest upcoming row instead, so the
+	 * occurrence keeps exactly one canonical address and it sits under the post
+	 * that owns the row.
+	 *
+	 * @covers ::maybe_resolve_bare_series
+	 * @covers ::maybe_follow_series
+	 * @covers ::next_upcoming_in_series
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_lapsed_fragments_bare_url_redirects_to_the_series_next_row(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		$expected = Rewrite::get_occurrence_url( $forward, $split_at );
+
+		$this->assertNotEmpty( $expected, 'Fixture setup: the forward occurrence must have a URL.' );
+
+		$this->assert_redirect_to(
+			$expected,
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			},
+			301
+		);
+	}
+
+	/**
+	 * A fragment with upcoming dates of its own is never forwarded.
+	 *
+	 * The control for the test above: a `parse_request()` that forwarded to the
+	 * series' earliest row unconditionally would pass that one and break every
+	 * ordinary bare URL, because the origin's own next date is rarely the
+	 * series' earliest.
+	 *
+	 * @covers ::maybe_resolve_bare_series
+	 * @covers ::maybe_follow_series
+	 *
+	 * @return void
+	 */
+	public function test_a_fragment_with_its_own_upcoming_date_is_not_forwarded(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( -2, 7, 5 );
+
+		// Rows at -2/+5/+12/+19/+26 days, split at the fourth: the origin keeps
+		// one past and two upcoming dates, so it answers for itself.
+		$split_at = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
+		$expected = Occurrences::recurrence_id( $anchor_start->modify( '+7 days' ) );
+
+		Splitter::get_instance()->split_forward( $post_id, $split_at );
+
+		$this->assert_not_redirect(
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			}
+		);
+
+		$this->assertSame(
+			$expected,
+			(string) get_query_var( Context::QUERY_VAR ),
+			'A fragment with an upcoming date of its own must resolve it in place, under its own slug.'
+		);
+	}
+
+	/**
+	 * W7 acceptance 6: a private sibling is never revealed by a bare URL.
+	 *
+	 * A visitor who may not read the forward post must not be sent to it, and
+	 * must not be able to tell from the response that it exists. The request
+	 * answers exactly as a fully lapsed series does.
+	 *
+	 * @covers ::maybe_follow_series
+	 * @covers ::next_upcoming_in_series
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_bare_url_does_not_follow_to_a_private_sibling(): void {
+		list( $post_id, $forward ) = $this->split_into_a_lapsed_origin();
+
+		wp_update_post(
+			array(
+				'ID'          => $forward,
+				'post_status' => 'private',
+			)
+		);
+		wp_set_current_user( 0 );
+
+		$this->assert_not_redirect(
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			}
+		);
+
+		$this->assertSame(
+			'',
+			(string) get_query_var( Context::QUERY_VAR ),
+			'A private sibling must leave the origin rendering as a lapsed series, with no occurrence context.'
+		);
+	}
+
+	/**
+	 * An editor who may read the private sibling is forwarded to it.
+	 *
+	 * Without this the test above passes against a `maybe_follow_series()` that
+	 * never forwards at all.
+	 *
+	 * @covers ::maybe_follow_series
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_bare_url_follows_to_a_private_sibling_for_a_reader_of_it(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		wp_update_post(
+			array(
+				'ID'          => $forward,
+				'post_status' => 'private',
+			)
+		);
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$expected = Rewrite::get_occurrence_url( $forward, $split_at );
+
+		$this->assert_redirect_to(
+			$expected,
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			},
+			301
+		);
+
+		wp_set_current_user( 0 );
+	}
+
+	/**
+	 * W7 acceptance 6: a password-protected sibling is followed, not bypassed.
+	 *
+	 * The password gate belongs to the destination's own rendering and still
+	 * runs there. Refusing the redirect would instead hide a date the series
+	 * genuinely has from a visitor who may well hold the password, and the
+	 * destination's permalink is public knowledge either way.
+	 *
+	 * @covers ::maybe_follow_series
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_bare_url_follows_to_a_password_protected_sibling(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		wp_update_post(
+			array(
+				'ID'            => $forward,
+				'post_password' => 'correct-horse',
+			)
+		);
+
+		$expected = Rewrite::get_occurrence_url( $forward, $split_at );
+
+		$this->assert_redirect_to(
+			$expected,
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			},
+			301
+		);
+
+		$this->assertTrue(
+			post_password_required( $forward ),
+			'The destination must still be behind its password form after the redirect.'
+		);
+	}
+
+	/**
+	 * A series of one post has nowhere to follow to.
+	 *
+	 * Invoked directly because xdebug does not trace a protected helper called
+	 * from a short delegation in the same class -- the body runs, the coverage
+	 * report says otherwise (see the "Extracted same-class helpers" rule in
+	 * `AGENTS.md`). The guard is what keeps every unsplit series -- which is
+	 * every series on a site that has never split anything -- from paying a
+	 * second occurrence query on a bare URL.
+	 *
+	 * @covers ::next_upcoming_in_series
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_in_series_is_null_for_a_single_post_series(): void {
+		list( $post_id, ) = $this->create_relative_daily_series( -30, 7, 5 );
+
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				Rewrite::get_instance(),
+				'next_upcoming_in_series',
+				array( $post_id )
+			),
+			'A post whose series is itself has no sibling row to follow.'
+		);
+	}
+
+	/**
+	 * A post that no longer exists is readable by nobody.
+	 *
+	 * The arm a live fixture cannot reach: an occurrence row whose owner has
+	 * been deleted out from under it. Refusing it is what keeps a redirect from
+	 * being built against a post with no permalink.
+	 *
+	 * @covers ::is_publicly_readable
+	 *
+	 * @return void
+	 */
+	public function test_a_missing_post_is_not_publicly_readable(): void {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$this->assertTrue(
+			Rewrite::is_publicly_readable( $post_id ),
+			'A published event is readable by the public.'
+		);
+
+		wp_delete_post( $post_id, true );
+
+		$this->assertFalse(
+			Rewrite::is_publicly_readable( $post_id ),
+			'A post that no longer exists must never be treated as readable.'
+		);
+	}
+
+	/**
 	 * Coverage for `maybe_resolve_bare_series` on a non-recurring event: no
 	 * occurrence rows exist at all, so `select_for_series()` returns an
 	 * empty array and the query var stays unset.

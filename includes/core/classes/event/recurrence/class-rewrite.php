@@ -345,21 +345,38 @@ final class Rewrite {
 	 * makes a series span several posts, and the scoping is what decides the
 	 * behavior then:
 	 *
-	 * - **Fragment semantics (what this class implements).** `/{slug-of-piece-A}/`
-	 *   resolves to A's own next upcoming occurrence. Once A's occurrences are
-	 *   all in the past, A's bare URL resolves to nothing and renders the post
-	 *   at its anchor, even though the logical series continues in piece B.
-	 * - **Logical-series semantics (not implemented here).** `/{slug-of-piece-A}/`
-	 *   would resolve to the next upcoming occurrence of the *series*, wherever
-	 *   it lives, and therefore emit a canonical URL under a different post's
-	 *   slug than the one requested.
+	 * - **Fragment semantics (resolution).** `/{slug-of-piece-A}/` resolves to
+	 *   A's own next upcoming occurrence, in place, under A's slug.
+	 * - **Logical-series semantics (redirect).** Once A has nothing upcoming of
+	 *   its own, the request is answered by a `301` to the occurrence URL of the
+	 *   series' earliest upcoming row, wherever in the series it lives.
 	 *
-	 * Fragment semantics is the correct choice today and is not a
-	 * placeholder: nothing in the plugin can produce a second fragment yet, so
-	 * the two are indistinguishable at runtime, and the narrower rule is the
-	 * one that cannot silently redirect a request to a post the visitor did not
-	 * ask for. Two invariants this class does guarantee, which any future
-	 * split implementation must preserve:
+	 * **Both, in that order, and the second is a redirect rather than a
+	 * resolution.** The narrowing comparison in `next_upcoming_recurrence_id()`
+	 * still decides what may be rendered under the requested slug, so invariant
+	 * 2 below holds exactly as written: a bare request never *resolves* into
+	 * another post's occurrence. When A has nothing left, the alternative to
+	 * moving is rendering A's stale anchor while the same logical series has an
+	 * upcoming date -- which is the defect -- so the request moves instead.
+	 *
+	 * Resolving B's row in place under A's slug was the alternative, and it is
+	 * worse in three ways. It would make one occurrence answer at two addresses,
+	 * splitting link equity and giving `rel="canonical"` a choice with no good
+	 * arm: point at A's URL and every fragment's canonical collides on the
+	 * origin, or point at B's and the page contradicts the URL it was served
+	 * from. It would render B's title, content and RSVP form under A's slug and
+	 * A's authorization, which is precisely the shape of the sibling-authorization
+	 * defect W6 was dispatched to fix. And it would leave the visitor's address
+	 * bar naming a fragment whose dates have all passed, so sharing it starts
+	 * the same detour again.
+	 *
+	 * **What `rel="canonical"` reports.** The `301` lands on B's occurrence URL,
+	 * a real request that WordPress resolves to post B with occurrence context,
+	 * so the canonical link is B's occurrence URL -- the address the row is
+	 * served from. A's bare URL never emits a canonical of its own for that row,
+	 * because A never renders it.
+	 *
+	 * Two invariants inherited from PR 2, both preserved:
 	 *
 	 * 1. A pre-split occurrence URL keeps resolving to the same occurrence
 	 *    after the split, whichever fragment ends up owning that row.
@@ -367,17 +384,13 @@ final class Rewrite {
 	 *    so the canonical URL a bare request produces always sits under the
 	 *    requested post's slug.
 	 *
-	 * **Completing the contract belongs to the split feature itself**, since
-	 * the answers depend on how a split is orchestrated. That work has to
-	 * decide and cover: whether a lapsed
-	 * fragment's bare URL forwards to the live fragment or stays put; if it forwards, whether that
-	 * is a resolution or a `301` and what `rel="canonical"` then says; and
-	 * which post a logical series' "the series' URL" means for calendar
-	 * subscriptions and revisions once more than one post can answer to it. The
-	 * post IDs `next_upcoming_recurrence_id()` hands `select_for_series()` are
-	 * the single place those decisions land: `Series::resolve_post_ids()` is
-	 * what widens them, and a widened read cannot keep the row limit that
-	 * bounds the scoped one.
+	 * Authorization travels with the redirect rather than being assumed by it.
+	 * The target is filtered through `can_follow_to()` first, so a private
+	 * sibling the visitor may not read is skipped exactly as though it had no
+	 * upcoming rows, and the request falls back to rendering the post it named.
+	 * A password-protected sibling *is* followed: the password gate lives on the
+	 * rendering of that post and still runs, so the redirect reveals nothing the
+	 * post's own public permalink does not already.
 	 *
 	 * The no-recurring-events guard wraps this method's call inside
 	 * `parse_request()`, so the `get_page_by_path()` lookup below is never
@@ -406,7 +419,149 @@ final class Rewrite {
 
 		if ( null !== $recurrence_id ) {
 			$wp->query_vars[ Context::QUERY_VAR ] = $recurrence_id;
+
+			return;
 		}
+
+		$this->maybe_follow_series( $post_id );
+	}
+
+	/**
+	 * Send a lapsed fragment's bare URL on to the live one.
+	 *
+	 * Reached only when the requested post has no upcoming scheduled occurrence
+	 * of its own, so an unsplit series -- every series on a site that has never
+	 * split anything -- returns from the first guard having read one already-run
+	 * query result and nothing else.
+	 *
+	 * The destination is an `Occurrence_Identity`, resolved by W6's seam rather
+	 * than read off the query row, so the post the visitor is sent to is the one
+	 * the identity seam names as the owner.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id The requested post.
+	 *
+	 * @return void
+	 */
+	protected function maybe_follow_series( int $post_id ): void {
+		$identity = $this->next_upcoming_in_series( $post_id );
+
+		if ( null === $identity ) {
+			return;
+		}
+
+		wp_safe_redirect(
+			self::get_occurrence_url( $identity->owner_post_id, $identity->recurrence_id ),
+			301
+		);
+		// The PMC test harness intercepts wp_safe_redirect before this line runs.
+		// phpcs:ignore Squiz.Commenting.InlineComment.InvalidEndChar -- PHPUnit annotation.
+		// @codeCoverageIgnoreStart
+		exit;
+		// @codeCoverageIgnoreEnd
+	}
+
+	/**
+	 * The earliest upcoming scheduled occurrence anywhere in a post's series.
+	 *
+	 * Unlike `next_upcoming_recurrence_id()` this does not narrow to the
+	 * requested post -- it answers the logical-series question, and its caller
+	 * turns the answer into a redirect rather than into rendered context.
+	 *
+	 * Rows whose owner the visitor may not read are skipped rather than
+	 * refused: a series continuing on a draft or private sibling is, to that
+	 * visitor, a series with nothing upcoming, and any other answer would make
+	 * the bare URL an existence oracle for unpublished posts.
+	 *
+	 * A single-post series returns before any of that, and so does a request on
+	 * a post whose own rows are the ones that are upcoming -- the caller only
+	 * reaches here once the narrowing read has come back empty.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id The requested post.
+	 *
+	 * @return Occurrence_Identity|null The occurrence to forward to, or null when there is none.
+	 */
+	protected function next_upcoming_in_series( int $post_id ): ?Occurrence_Identity {
+		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+
+		if ( array( $post_id ) === $post_ids ) {
+			return null;
+		}
+
+		$rows = Occurrences::get_instance()->select_for_series(
+			$post_ids,
+			array( 'status' => Occurrences::STATUS_SCHEDULED )
+		);
+		$now  = current_time( 'mysql', true );
+
+		foreach ( $rows as $row ) {
+			if ( $row['datetime_start_gmt'] < $now ) {
+				continue;
+			}
+
+			$identity = Occurrence_Identity::resolve( $post_id, (string) $row['recurrence_id'] );
+
+			// Invariant (b) restated as a condition: the request only moves to
+			// a post other than the one it named, and only to one the visitor
+			// may read.
+			if ( null !== $identity
+				&& $identity->owner_post_id !== $post_id
+				&& $this->can_follow_to( $identity->owner_post_id )
+			) {
+				return $identity;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Whether a bare request may be forwarded to a sibling post.
+	 *
+	 * Password protection is deliberately not tested here: the password form is
+	 * the destination's own rendering, and it still runs. What must not happen
+	 * is forwarding to a post whose very existence is private to editors.
+	 *
+	 * The status test comes first and is not redundant. `current_user_can(
+	 * 'read_post' )` maps a published post to the plain `read` capability, which
+	 * a logged-out visitor does not hold on any site -- so the permission check
+	 * alone would refuse to forward anybody who is not logged in, which is most
+	 * subscribers. A publicly-queryable status is what makes a post readable by
+	 * the public; the capability check is what admits the non-public ones an
+	 * editor may see.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Candidate destination post.
+	 *
+	 * @return bool True when the visitor may be sent there.
+	 */
+	protected function can_follow_to( int $post_id ): bool {
+		return self::is_publicly_readable( $post_id ) || current_user_can( 'read_post', $post_id );
+	}
+
+	/**
+	 * Whether a post's status makes it readable by anyone.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post to test.
+	 *
+	 * @return bool True when the post exists and carries a public status.
+	 */
+	public static function is_publicly_readable( int $post_id ): bool {
+		$post = get_post( $post_id );
+
+		if ( ! $post instanceof WP_Post ) {
+			return false;
+		}
+
+		$status = get_post_status_object( (string) $post->post_status );
+
+		return null !== $status && (bool) $status->public;
 	}
 
 	/**

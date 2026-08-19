@@ -1915,11 +1915,42 @@ class Test_Calendar_Recurrence extends Base {
 
 		$this->enable_pretty_permalinks();
 
+		// Scoped to the requested post's own component. The export now carries
+		// one component per post of the series, and the sibling's component
+		// excludes the same date on its own account -- reading the whole body
+		// would count that second, correct line as a duplicate.
 		$this->assertSame(
 			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),
-			$this->lines_for( $this->body_for( $this->series_ical_url( $post_id ) ), 'EXDATE' ),
-			'A date canceled on a sibling post of the same series must still be excluded from the feed.'
+			$this->matching_lines(
+				$this->component_for( $this->body_for( $this->series_ical_url( $post_id ) ), $post_id ),
+				'EXDATE'
+			),
+			'A date cancelled on a sibling post of the same series must still be excluded from the feed.'
 		);
+	}
+
+	/**
+	 * Extract one post's `VEVENT` out of a payload.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $body    The iCal payload.
+	 * @param int    $post_id The post whose component to return.
+	 *
+	 * @return string The component text, or '' when the body carries no such component.
+	 */
+	protected function component_for( string $body, int $post_id ): string {
+		$matches = array();
+
+		preg_match_all( '/BEGIN:VEVENT\r\n(.*?)END:VEVENT/s', $body, $matches );
+
+		foreach ( $matches[1] as $component ) {
+			if ( str_contains( $component, sprintf( "UID:gatherpress_%d\r\n", $post_id ) ) ) {
+				return $component;
+			}
+		}
+
+		return '';
 	}
 
 	/**
