@@ -2,13 +2,14 @@
 /**
  * Class handles unit tests for GatherPress\Core\Event\Recurrence\Splitter.
  *
- * REQ-13 and REQ-18. The fixture is deliberately chosen so retroactive and
+ * The fixture is deliberately chosen so retroactive and
  * forward produce **different** answers: a six-occurrence bi-weekly series split
  * at its third occurrence leaves two rows behind and moves four, where a
  * retroactive edit would leave all six on one post. A test split at the first or
  * the last occurrence would not tell the two apart.
  *
- * The anchor is pinned rather than relative on purpose (preamble rule 3a #7).
+ * The anchor is pinned rather than relative on purpose: every assertion here
+ * compares against a fixed expected value rather than against the clock.
  * Every assertion here is rule + anchor -> occurrence set and row ownership --
  * a stated specification, compared against nothing that moves. Nothing in this
  * file reads `current_time()`, so advancing the clock cannot change an expected
@@ -344,13 +345,13 @@ class Test_Splitter extends Base {
 	 * Occurrence rows are moved, not deleted and regenerated.
 	 *
 	 * Two things a regeneration could not preserve are asserted together: a
-	 * cancelled occurrence stays cancelled (PRD C-5), and the RSVP term that
+	 * canceled occurrence stays canceled, and the RSVP term that
 	 * names it keeps its `term_taxonomy_id` -- the column every
 	 * `term_relationships` row keys on -- so no RSVP relationship was rewritten.
 	 *
 	 * @covers ::split_owned_series
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::move_to_post
-	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::rename_series
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::migrate_owner
 	 *
 	 * @return void
 	 */
@@ -376,7 +377,7 @@ class Test_Splitter extends Base {
 		$this->assertSame(
 			Occurrences::STATUS_CANCELLED,
 			(string) $moved['status'],
-			'Failed to assert a cancelled occurrence stayed cancelled across the split.'
+			'Failed to assert a canceled occurrence stayed canceled across the split.'
 		);
 		$this->assertSame(
 			'2026-09-29 18:00:00',
@@ -649,11 +650,11 @@ class Test_Splitter extends Base {
 	}
 
 	/**
-	 * A cancelled single occurrence is not demoted, because cancellation is occurrence state.
+	 * A canceled single occurrence is not demoted, because cancellation is occurrence state.
 	 *
-	 * PRD C-5 has no place to record cancellation on a plain event, so the side
-	 * keeps a one-occurrence rule instead. Demoting would silently un-cancel a
-	 * date the organizer cancelled.
+	 * A plain event has no place to record cancellation, so the side keeps a
+	 * one-occurrence rule instead. Demoting would silently un-cancel a date the
+	 * organizer canceled.
 	 *
 	 * @covers ::demote_to_plain_event
 	 *
@@ -668,7 +669,7 @@ class Test_Splitter extends Base {
 
 		$this->assertTrue(
 			$result['origin_recurring'],
-			'Failed to assert a cancelled single occurrence is not demoted.'
+			'Failed to assert a canceled single occurrence is not demoted.'
 		);
 		$this->assertSame(
 			1,
@@ -716,7 +717,7 @@ class Test_Splitter extends Base {
 	 * A second recurring series is created first, and it is load-bearing rather
 	 * than scenery: removing the only rule on the site flips the
 	 * has-recurring-events flag, and every occurrence lookup short-circuits on
-	 * that flag (REQ-16). Without a second series the refusal would come from
+	 * that flag. Without a second series the refusal would come from
 	 * the flag, not from the guard this test is about.
 	 *
 	 * @covers ::split_forward
@@ -811,8 +812,8 @@ class Test_Splitter extends Base {
 	/**
 	 * The forward post inherits the origin's venue and its other meta.
 	 *
-	 * REQ-15 across a split: the venue appears on every occurrence, including the
-	 * ones that moved to a second post.
+	 * The venue appears on every occurrence across a split, including the ones
+	 * that moved to a second post.
 	 *
 	 * @covers ::copy_terms
 	 * @covers ::copy_meta
@@ -858,8 +859,8 @@ class Test_Splitter extends Base {
 	/**
 	 * The RSVP impact report names the stranded dates and counts their RSVPs.
 	 *
-	 * REQ-13's last criterion: the organizer is shown how many RSVPs a rule
-	 * change would strand, and nothing is migrated.
+	 * The organizer is shown how many approved RSVPs a rule change would
+	 * strand, and nothing is migrated.
 	 *
 	 * @covers ::rsvp_impact
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::preview_recurrence_ids
@@ -1043,9 +1044,9 @@ class Test_Splitter extends Base {
 	/**
 	 * The site-wide calendar feed carries both sides of a split series.
 	 *
-	 * REQ-18's last criterion, and what it does and does not get for free is
-	 * worth stating exactly. The **aggregate** feeds (site-wide, archive, venue,
-	 * taxonomy) enumerate through `Event\Query::get_events_list()`, which matches
+	 * What that does and does not get for free is worth stating exactly. The
+	 * **aggregate** feeds (site-wide, archive, venue, taxonomy) enumerate
+	 * through `Event\Query::get_events_list()`, which matches
 	 * both posts of a split series because both are ordinary published events --
 	 * so no fragment is lost, and no change in the calendar layer is needed for
 	 * that. What they do **not** do is enumerate occurrences: that query asks for
@@ -1185,7 +1186,7 @@ class Test_Splitter extends Base {
 	 * An open-ended series keeps its open end on both sides of a split.
 	 *
 	 * The `COUNT` fixtures elsewhere in this file cannot tell an unadjusted end
-	 * bound from an adjusted one, and they cannot reach the judgement that a
+	 * bound from an adjusted one, and they cannot reach the judgment that a
 	 * single projected row is **not** grounds for demoting a `never` rule: an
 	 * open-ended series always has more dates coming, however few the projection
 	 * horizon happened to produce.
@@ -1298,7 +1299,7 @@ class Test_Splitter extends Base {
 	 * A split driven from one post at an occurrence a sibling post owns splits
 	 * the sibling, not the post the request named.
 	 *
-	 * REQ-18's multi-post case, and the reason `split_forward()` reads
+	 * The multi-post case, and the reason `split_forward()` reads
 	 * `$row['series_post_id']` rather than reusing `$post_id`. It is reachable
 	 * from the editor without any contrivance: `Rest_Api::get_occurrences()`
 	 * resolves through `Series::resolve_post_ids()`, so the "Split from"

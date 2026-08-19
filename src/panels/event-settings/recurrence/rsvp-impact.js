@@ -13,12 +13,12 @@ import { EVENT_REST_API } from '../../../helpers/namespace';
 /**
  * Tell the organizer how many RSVPs a rule change would strand.
  *
- * REQ-13's last acceptance criterion, and brief §6 Q12's reasoning for it: when
- * a rule change would move or remove occurrences carrying RSVPs, the organizer
- * is shown how many are affected and the RSVPs are **not** migrated. Migrating
- * them risks re-enrolling attendees in a date they never agreed to, so the
- * product answer is to surface the number rather than to quietly do something
- * with it.
+ * When a rule change would move or remove occurrences carrying RSVPs, the
+ * organizer is shown how many approved RSVPs sit on the dates the candidate
+ * rule would remove, before committing, and the RSVPs are **not** migrated.
+ * Migrating them risks re-enrolling attendees in a date they never agreed to,
+ * so the product answer is to surface the number rather than to quietly do
+ * something with it.
  *
  * The count comes from the read-only `recurrence-impact` route, which compares
  * the candidate rule against the occurrences already projected. Nothing is

@@ -671,7 +671,7 @@ final class Rsvp_Occurrence {
 	/**
 	 * Drop the occurrence terms naming a post's occurrences.
 	 *
-	 * Used when REQ-13 demotes a side of a split to a plain non-recurring event.
+	 * Used when a side of a split is demoted to a plain non-recurring event.
 	 * Deleting the term removes its `term_relationships` rows, which is exactly
 	 * what is wanted: the RSVPs stay on the same comments, on the same post, for
 	 * the same date, and become readable series-wide again — which on a
@@ -707,10 +707,10 @@ final class Rsvp_Occurrence {
 	/**
 	 * Count the RSVPs attached to a set of a post's occurrences.
 	 *
-	 * REQ-13's last acceptance criterion (brief §6 Q12): when a rule change would
-	 * move or remove occurrences carrying RSVPs, the organizer is **shown how
-	 * many RSVPs are affected**, and the RSVPs are not silently migrated. This is
-	 * the number that gets shown.
+	 * When a rule change would move or remove occurrences carrying RSVPs, the
+	 * organizer is **shown how many RSVPs are affected** before committing, and
+	 * the RSVPs are not silently migrated. This is the number that gets shown:
+	 * the approved RSVPs on the dates the candidate rule would remove.
 	 *
 	 * Counts comments rather than `term_taxonomy.count`, because that column
 	 * counts relationship rows and would include RSVPs whose comment has since

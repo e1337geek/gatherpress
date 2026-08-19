@@ -430,7 +430,7 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * REQ-16: the split route touches nothing on a site with no recurring events.
+	 * The split route touches nothing on a site with no recurring events.
 	 *
 	 * @covers ::split_series
 	 *
@@ -541,7 +541,7 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * REQ-16: the impact route queries nothing on a site with no recurring events.
+	 * The impact route queries nothing on a site with no recurring events.
 	 *
 	 * @covers ::get_recurrence_impact
 	 *

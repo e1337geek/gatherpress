@@ -125,12 +125,13 @@ final class Rest_Api {
 	/**
 	 * Get the forward-split route definition.
 	 *
-	 * REQ-13's "apply going forward". The permission callback authorizes the post
-	 * the request names, which is necessary and not sufficient: the split resolves
-	 * the occurrence across the whole series, so the post it caps, moves rows off
-	 * and rewrites can be a sibling the caller was never checked against. The
-	 * callback therefore resolves the occurrence identity first and authorizes
-	 * that exact owner before anything is written.
+	 * Backs the "apply going forward" workflow. The permission callback
+	 * authorizes the post the request names, which is necessary and not
+	 * sufficient: the split resolves the occurrence across the whole series,
+	 * so the post it caps, moves rows off and rewrites can be a sibling the
+	 * caller was never checked against. The callback therefore resolves the
+	 * occurrence identity first and authorizes that exact owner before anything
+	 * is written.
 	 *
 	 * @since 0.36.0
 	 *
@@ -165,10 +166,10 @@ final class Rest_Api {
 	/**
 	 * Get the rule-impact route definition.
 	 *
-	 * REQ-13's last acceptance criterion is a product requirement, not an
-	 * implementation detail: an organizer whose rule change would strand RSVPs is
-	 * told how many **before** they commit, and the RSVPs are not migrated. This
-	 * route answers that question without writing anything.
+	 * Telling an organizer what a rule change would cost is a product
+	 * requirement, not an implementation detail: an organizer whose rule change
+	 * would strand RSVPs is told how many **before** they commit, and the RSVPs
+	 * are not migrated. This route answers that question without writing anything.
 	 *
 	 * @since 0.36.0
 	 *
@@ -455,7 +456,7 @@ final class Rest_Api {
 	/**
 	 * Split a series forward at one occurrence.
 	 *
-	 * Guarded by `Query::site_has_recurring_events()` (REQ-16) ahead of the
+	 * Guarded by `Query::site_has_recurring_events()` ahead of the
 	 * splitter's own occurrence lookup, so a request against a site that has
 	 * never authored a recurring event is refused without querying the
 	 * occurrence table.

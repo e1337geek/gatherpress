@@ -655,7 +655,7 @@ final class Calendar {
 	 * @return int The origin post ID, or 0 when this post belongs to no series term.
 	 */
 	private function series_origin_post_id( int $post_id ): int {
-		// REQ-16: a site that has never authored a recurring event reads neither
+		// A site that has never authored a recurring event reads neither
 		// the taxonomy nor the term cache on a calendar request.
 		if ( ! Recurrence_Query::site_has_recurring_events() ) {
 			return 0;

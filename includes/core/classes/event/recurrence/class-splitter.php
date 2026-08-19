@@ -1,6 +1,6 @@
 <?php
 /**
- * Forward splits — REQ-13's "apply going forward".
+ * Forward splits — the "apply going forward" workflow.
  *
  * An organizer editing a series from occurrence 3 of 6 chooses whether the edit
  * rewrites the whole series (retroactive, the default) or applies only from that
@@ -11,8 +11,8 @@
  * Three properties of this class are the point of the whole design, not
  * implementation details:
  *
- * - **Occurrence rows are moved, never deleted and regenerated.** PRD C-1 makes
- *   identity `(series_post_id, recurrence_id)` with `recurrence_id` derived from
+ * - **Occurrence rows are moved, never deleted and regenerated.** Identity is
+ *   `(series_post_id, recurrence_id)` with `recurrence_id` derived from
  *   the occurrence's own local start, so moving a row changes which post owns it
  *   and nothing else. Permalinks, cancellation state and RSVP mappings survive
  *   because none of them was recreated.
@@ -45,7 +45,7 @@ use WP_Post;
 /**
  * Class Splitter.
  *
- * Singleton owning REQ-13's forward split and REQ-13's RSVP-impact reporting.
+ * Singleton owning the forward split and the RSVP-impact reporting.
  *
  * @since 0.36.0
  */
@@ -875,7 +875,7 @@ final class Splitter {
 	 * on `wp_after_insert_post`, and a forward post that arrived already
 	 * recurring would have its own rows generated before the origin's rows could
 	 * be moved onto it. The moved rows would then collide with freshly generated
-	 * ones on the composite primary key, and the recycling REQ-13 requires would
+	 * ones on the composite primary key, and the required row recycling would
 	 * turn into a delete-and-regenerate after all. The rule is written afterwards,
 	 * once the rows are already there for the upsert to find.
 	 *
@@ -978,8 +978,8 @@ final class Splitter {
 	/**
 	 * Copy the origin's taxonomy terms onto the forward post.
 	 *
-	 * The venue association and any topics come across, so REQ-15's "the venue
-	 * appears on every occurrence" holds across a split. The series taxonomy is
+	 * The venue association and any topics come across, so the venue appears on
+	 * every occurrence of the series across a split. The series taxonomy is
 	 * excluded: `Series::join()` owns it, and copying it here would put the
 	 * forward post in the series before the origin had a term of its own.
 	 *
@@ -1031,8 +1031,8 @@ final class Splitter {
 		$values['count']    = $index;
 		$values['until']    = '';
 
-		// One occurrence left behind is not a series: REQ-13 says that side is a
-		// plain non-recurring event.
+		// One occurrence left behind is not a series: that side becomes a plain
+		// non-recurring event.
 		if ( 1 === $index ) {
 			return ! $this->demote_to_plain_event( $post_id, $first_row, $values );
 		}
@@ -1112,9 +1112,9 @@ final class Splitter {
 	 * read series-wide again — which, on a single-date event, *is* that date. No
 	 * RSVP is moved, deleted or re-attached.
 	 *
-	 * **A cancelled occurrence is never demoted.** PRD C-5 makes cancellation
-	 * occurrence state, and a plain event has nowhere to record it: demoting
-	 * would silently un-cancel a date the organizer cancelled. That side keeps a
+	 * **A canceled occurrence is never demoted.** Cancellation is occurrence
+	 * state, and a plain event has nowhere to record it: demoting
+	 * would silently un-cancel a date the organizer canceled. That side keeps a
 	 * one-occurrence rule instead, which is the lesser of the two wrongs and the
 	 * only one that loses no information.
 	 *
@@ -1122,7 +1122,7 @@ final class Splitter {
 	 *
 	 * @param int   $post_id Post to demote.
 	 * @param array $row     Its single remaining occurrence row.
-	 * @param array $values  Rule values to fall back to when the occurrence is cancelled.
+	 * @param array $values  Rule values to fall back to when the occurrence is canceled.
 	 *
 	 * @return bool True when the post was demoted.
 	 */
@@ -1151,10 +1151,10 @@ final class Splitter {
 	/**
 	 * Report which occurrences a candidate rule would strand, and how many RSVPs ride on them.
 	 *
-	 * REQ-13's last acceptance criterion, and brief §6 Q12's reasoning for it:
-	 * migrating an RSVP to a date the attendee never agreed to is worse than
+	 * Migrating an RSVP to a date the attendee never agreed to is worse than
 	 * leaving it where it is, so GatherPress leaves it — and tells the organizer
-	 * how many are affected before they commit the change.
+	 * how many are affected before they commit the change. The count is of the
+	 * approved RSVPs on the dates the candidate rule would remove.
 	 *
 	 * @since 0.36.0
 	 *

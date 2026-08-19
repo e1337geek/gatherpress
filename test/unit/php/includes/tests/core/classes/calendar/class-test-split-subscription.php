@@ -429,7 +429,7 @@ class Test_Split_Subscription extends Base {
 		$this->assertNotContains(
 			$this->identifiers[3],
 			$this->instants_in( $after_cancel ),
-			'The cancelled date must leave the subscription the origin URL serves.'
+			'The canceled date must leave the subscription the origin URL serves.'
 		);
 
 		$namespace = Calendar_Cache::get_instance()->get_versioned_key(

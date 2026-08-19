@@ -844,12 +844,12 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * REQ-13: a permalink minted before a forward split still reaches its
-	 * occurrence afterwards, by 301 to the sibling post that now owns the row.
+	 * A permalink minted before a forward split still reaches its occurrence
+	 * afterwards, by 301 to the sibling post that now owns the row.
 	 *
 	 * This is the whole point of recycling occurrence records rather than
-	 * regenerating them -- REQ-13 names permalinks first in the list of things
-	 * that must survive a split. The row still exists under the same
+	 * regenerating them -- permalinks come first in the list of things that
+	 * must survive a split. The row still exists under the same
 	 * `recurrence_id`; only the post that owns it changed. Resolving through
 	 * `find_in_series()` over `Series::resolve_post_ids()` is precisely what
 	 * distinguishes that from a stale or hand-typed identifier, which must still

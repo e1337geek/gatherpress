@@ -1558,9 +1558,9 @@ class Test_Split_Continuity extends Base {
 	/**
 	 * Splitting a series that is already split joins the term it already has.
 	 *
-	 * The second split must not create a second series term: REQ-18's "not a
-	 * chain requiring traversal" is what makes a thrice-split series one read,
-	 * and it only holds while every fragment carries the same term.
+	 * The second split must not create a second series term: keeping the series
+	 * out of a chain requiring traversal is what makes a thrice-split series one
+	 * read, and it only holds while every fragment carries the same term.
 	 *
 	 * @covers ::join_series
 	 *

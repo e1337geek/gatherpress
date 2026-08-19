@@ -1925,7 +1925,7 @@ class Test_Calendar_Recurrence extends Base {
 				$this->component_for( $this->body_for( $this->series_ical_url( $post_id ) ), $post_id ),
 				'EXDATE'
 			),
-			'A date cancelled on a sibling post of the same series must still be excluded from the feed.'
+			'A date canceled on a sibling post of the same series must still be excluded from the feed.'
 		);
 	}
 

@@ -15,13 +15,13 @@ import { addQueryArgs } from '@wordpress/url';
 import { EVENT_REST_API } from '../../../helpers/namespace';
 
 /**
- * The chooser REQ-13 describes, with retroactive as the default.
+ * The apply-scope chooser, with retroactive as the default.
  *
- * PRD D-2 replaced ECP's three-scope model (all / this-and-following / single)
- * with two options and made retroactive the default, because most edits are
+ * ECP's three-scope model (all / this-and-following / single) is reduced to
+ * two options with retroactive as the default, because most edits are
  * corrections rather than schedule changes and every forward edit costs a second
  * event post. "This occurrence only" is not a top-level scope here; it is a
- * per-occurrence operation and is Post-MVP (REQ-13a).
+ * per-occurrence operation and is Post-MVP.
  *
  * Retroactive needs no action at all — it is what an ordinary save already does
  * — so this component only ever calls the server for the forward choice, and a
@@ -31,8 +31,8 @@ import { EVENT_REST_API } from '../../../helpers/namespace';
  * not a nicety. A split moves the forward occurrences onto a *second* post; an
  * edit still sitting in the editor belongs to the origin, so pressing Update
  * after the split writes it to the occurrences that stayed behind — the past.
- * That is the exact inverse of REQ-13's story, "moving the venue in October
- * does not rewrite where we met in March". Carrying an in-flight edit through a
+ * That is the exact inverse of what a forward edit promises: moving the venue
+ * in October does not rewrite where we met in March. Carrying an in-flight edit through a
  * split would need the pre-edit state captured before the split runs, which is
  * fragile; refusing to split until the editor is clean costs the organizer one
  * save and cannot strand a change on the wrong side.
@@ -109,8 +109,8 @@ const ApplyScope = ( { postId } ) => {
 
 	/**
 	 * Describe what a completed split did, including the two automatic
-	 * degradations REQ-13 requires the organizer to be told about rather than
-	 * left to discover.
+	 * degradations the organizer must be told about rather than left to
+	 * discover.
 	 *
 	 * @param {Object} result Split result from the `split-series` REST route.
 	 *

@@ -772,8 +772,8 @@ final class Setup {
 	 * second post, and there is no protocol by which the subscriber discovers
 	 * that post's address -- so an export of the queried post alone silently
 	 * drops every future occurrence from a calendar that keeps polling happily.
-	 * The body therefore carries one component per fragment (PRD C-2, resolved
-	 * through `Series::resolve_post_ids()`), which together expand to exactly
+	 * The body therefore carries one component per fragment (resolved through
+	 * `Series::resolve_post_ids()`), which together expand to exactly
 	 * the instants the pre-split subscription expanded to: the origin's rule is
 	 * capped where the split fell, and the fragment's rule takes it from there.
 	 *
@@ -822,7 +822,7 @@ final class Setup {
 
 		// An occurrence override describes one instance of the post that owns
 		// it; a site with no recurring events has no siblings to resolve and
-		// must not pay the taxonomy read to learn that (REQ-16).
+		// must not pay the taxonomy read to learn that.
 		if ( 0 === $post_id
 			|| null !== Context::get_instance()->current()
 			|| ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' )

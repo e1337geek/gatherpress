@@ -74,7 +74,7 @@ class Test_Series extends Base {
 	 * Unregister the series taxonomy so no test inherits another's registration.
 	 *
 	 * Taxonomy registration is process-global and WordPress's test case does not
-	 * roll it back, so without this the REQ-16 test would find the taxonomy
+	 * roll it back, so without this the guard test would find the taxonomy
 	 * already registered by whichever test ran before it -- and would pass or
 	 * fail on execution order rather than on the guard it is about.
 	 *
@@ -178,8 +178,9 @@ class Test_Series extends Base {
 	/**
 	 * A series split twice resolves all three posts in one read, with one term.
 	 *
-	 * This is REQ-18's anti-traversal criterion, and the fixture is chosen so a
-	 * parent-pointer implementation gives a different answer: with A -> B -> C
+	 * The series must not be a chain requiring traversal, and the fixture is
+	 * chosen so a parent-pointer implementation gives a different answer: with
+	 * A -> B -> C
 	 * pointers, resolving A finds B and stops, because A has no pointer at C.
 	 * Asserting that all three share a single term is the same claim stated
 	 * structurally.
@@ -289,7 +290,7 @@ class Test_Series extends Base {
 	}
 
 	/**
-	 * The taxonomy is not registered on a site with no recurring events (REQ-16).
+	 * The taxonomy is not registered on a site with no recurring events.
 	 *
 	 * `WP_Query` primes term caches with one query naming every taxonomy
 	 * registered for the post type, so registering this one unconditionally would
@@ -354,7 +355,7 @@ class Test_Series extends Base {
 			$unguarded,
 			$guarded,
 			'Failed to assert registering the taxonomy changes the SQL an event archive runs -- if it did not,'
-				. ' this test could never fail and the REQ-16 guard would be unfalsifiable.'
+				. ' this test could never fail and the registration guard would be unfalsifiable.'
 		);
 		$this->assertSame(
 			array(),
@@ -369,7 +370,7 @@ class Test_Series extends Base {
 			'Failed to assert no query on a flag-off site names the series taxonomy.'
 		);
 
-		// The other half of REQ-16: no extra writes. Asserted over the whole
+		// The other half of the guarantee: no extra writes. Asserted over the whole
 		// capture rather than over the taxonomy tables alone, so a write this
 		// diff did not anticipate still fails here.
 		$this->assertSame(

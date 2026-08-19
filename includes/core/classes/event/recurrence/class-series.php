@@ -7,12 +7,13 @@
  * the set of post IDs that make up its series, so every occurrence query emits
  * `series_post_id IN (…)`.
  *
- * REQ-18's durable relationship between the event posts a split produces is the
- * `_gatherpress_series` taxonomy on the **event posts**. It is not a
- * term on each instance, which presupposes instances that are posts and is
- * excluded by #80's R1; not a Series post type, which is ECP's answer and which
- * ECP needs only because it allows multiple rules per event, something PRD D-5
- * rules out.
+ * The durable relationship between the event posts a split produces is the
+ * `_gatherpress_series` taxonomy on the **event posts**: a shared private
+ * taxonomy term resolves every sibling in one lookup. Not a term on each
+ * instance, which presupposes instances that are posts and is excluded by
+ * #80's R1; not a Series post type, which is ECP's answer and which ECP needs
+ * only because it allows multiple rules per event, which this subsystem does
+ * not.
  *
  * Two properties of that choice are load-bearing and are asserted by tests
  * rather than left to the reader:
@@ -20,12 +21,11 @@
  * - **No parent pointer.** Every post of a series carries the *same* term, so a
  *   series split twice resolves all three posts in one read. A
  *   `_gatherpress_series_parent` meta pointer would answer the same question by
- *   walking, and REQ-18's "not a chain requiring traversal" criterion exists to
- *   forbid exactly that.
+ *   walking, and the series must not be a chain requiring traversal.
  * - **Nothing is written until the first split.** A recurring event that has
- *   never been split has no term, no term relationship and no meta. REQ-16
- *   protects the save path, and creating a term for every recurring event on the
- *   chance it might later split would be a per-event write on it.
+ *   never been split has no term, no term relationship and no meta. The save
+ *   path stays free of series writes, and creating a term for every recurring
+ *   event on the chance it might later split would be a per-event write on it.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -100,13 +100,14 @@ final class Series {
 	/**
 	 * Register the series taxonomy on a post type, when the site has recurring events.
 	 *
-	 * REQ-16 lives on the second guard, and it is not a micro-optimization:
-	 * `WP_Query` primes term caches through `update_object_term_cache()`, which
-	 * reads `get_object_taxonomies()` and issues **one** query naming every
-	 * taxonomy registered for the post type. Registering this taxonomy
-	 * unconditionally would therefore change the SQL text of a query that runs on
-	 * every event listing, on a site that has never authored a recurring event —
-	 * a byte-for-byte difference where REQ-16 promises none.
+	 * The has-recurring-events check lives on the second guard, and it is not a
+	 * micro-optimization: `WP_Query` primes term caches through
+	 * `update_object_term_cache()`, which reads `get_object_taxonomies()` and
+	 * issues **one** query naming every taxonomy registered for the post type.
+	 * Registering this taxonomy unconditionally would therefore change the SQL
+	 * text of a query that runs on every event listing, on a site that has never
+	 * authored a recurring event — a byte-for-byte difference where such a site
+	 * is promised none.
 	 *
 	 * @since 0.36.0
 	 *
@@ -181,8 +182,8 @@ final class Series {
 	public function resolve_post_ids( int $post_id ): array {
 		$post_ids = array( $post_id );
 
-		// REQ-16: with no recurring events on the site the taxonomy is never
-		// registered, so no term relationship can exist and none is read.
+		// With no recurring events on the site the taxonomy is never registered,
+		// so no term relationship can exist and none is read.
 		if ( Query::site_has_recurring_events() && taxonomy_exists( self::TAXONOMY ) ) {
 			$post_ids = $this->resolve_from_taxonomy( $post_id );
 		}

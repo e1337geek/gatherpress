@@ -605,8 +605,8 @@ final class Meta {
 	/**
 	 * Remove a post's recurrence rule, synchronously.
 	 *
-	 * REQ-13's "a side left holding exactly one occurrence is a plain
-	 * non-recurring event": the blob goes, the ten mirrors go, and the
+	 * A side of a split left holding exactly one occurrence is a plain
+	 * non-recurring event: the blob goes, the ten mirrors go, and the
 	 * has-recurring-events flag is recomputed — all inside the caller's request
 	 * rather than on `shutdown`, because the caller (`Splitter`) has to return
 	 * the resulting state to the organizer in the same response.

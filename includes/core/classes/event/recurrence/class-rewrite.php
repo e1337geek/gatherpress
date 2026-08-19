@@ -242,13 +242,13 @@ final class Rewrite {
 	 * A well-formed occurrence segment that does not resolve to a real row
 	 * anywhere in the series 404s. A stale or hand-typed link must not
 	 * silently render the series at its anchor date. A canceled occurrence
-	 * resolves rather than 404s: `find_in_series()` does not filter
-	 * by status, so a canceled row is returned like any other and this
-	 * method never inspects `status` itself.
+	 * resolves rather than 404s: `find_in_series()` does not filter by status,
+	 * so a canceled row is returned like any other and this method never
+	 * inspects `status` itself.
 	 *
 	 * The lookup goes through `Occurrences::find_in_series()` over
-	 * `Series::resolve_post_ids()` (PRD C-2) rather than the single-post
-	 * `Occurrences::get()`, and that is what makes REQ-13's promise true.
+	 * `Series::resolve_post_ids()` rather than the single-post
+	 * `Occurrences::get()`, and that is what keeps occurrence links stable.
 	 * Recycling occurrence records across a forward split exists so that
 	 * anything keyed to an occurrence's identity survives, permalinks and RSVP
 	 * mappings among them. A single-post read misses every row the split
