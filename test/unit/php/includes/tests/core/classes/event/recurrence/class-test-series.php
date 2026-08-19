@@ -17,7 +17,6 @@ use GatherPress\Core\Event\Recurrence\Rest_Api;
 use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Event\Recurrence\Series;
 use GatherPress\Core\Event\Recurrence\Splitter;
-use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use ReflectionClass;
@@ -46,14 +45,15 @@ class Test_Series extends Base {
 	);
 
 	/**
-	 * Ensure the occurrence table exists and no membership memo leaks between tests.
+	 * Start every test from an empty occurrence table, with no membership memo
+	 * left over from another test.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Series::get_instance()->flush_memo();
 		$this->forget_series_taxonomy();
 	}

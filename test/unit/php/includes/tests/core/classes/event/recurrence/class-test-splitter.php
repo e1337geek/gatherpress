@@ -33,7 +33,6 @@ use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Event\Recurrence\Series;
 use GatherPress\Core\Event\Recurrence\Splitter;
 use GatherPress\Core\Rsvp\Rsvp;
-use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use ReflectionClass;
@@ -86,14 +85,15 @@ class Test_Splitter extends Base {
 	);
 
 	/**
-	 * Ensure the occurrence table exists and no context leaks in from another test.
+	 * Start every test from an empty occurrence table, with no context left
+	 * over from another test.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Context::get_instance()->clear();
 		Context::flush_resolved();
 		Series::get_instance()->flush_memo();
