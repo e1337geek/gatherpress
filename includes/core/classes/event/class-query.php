@@ -130,8 +130,8 @@ final class Query {
 		// has to be stated explicitly: `adjust_event_sql()` reads it off the
 		// query, and an unset `orderby` reaches it as `''`, which falls through
 		// its switch and leaves WordPress's default `wp_posts.post_date` in
-		// place -- ordering the list by authoring time rather than by when the
-		// events happen, which is not what either direction above means.
+		// place, which orders the list by authoring time rather than by when the
+		// events happen, and that is not what either direction above means.
 		$order = ( 'past' === $event_list_type ) ? 'DESC' : 'ASC';
 
 		$args = array(

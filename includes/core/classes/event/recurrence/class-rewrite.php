@@ -15,7 +15,7 @@
  *
  * A spike proved `add_rewrite_endpoint( ..., EP_PERMALINK )` produces a rule
  * that is tried *after* the event post type's own generated
- * `event/[^/]+/([^/]+)/?$` attachment-slug catch-all — which greedily
+ * `event/[^/]+/([^/]+)/?$` attachment-slug catch-all. That catch-all greedily
  * matches an occurrence segment as an attachment slug and 404s before this
  * class ever sees the request. `add_rewrite_rule()` with the `'top'`
  * position (the same pattern `Calendar\Endpoint` already uses for the
@@ -77,7 +77,7 @@ final class Rewrite {
 	 * The rewrite rule is registered on `wp_loaded` rather than `init` so it
 	 * is appended to `$wp_rewrite->extra_rules_top` strictly after
 	 * `Calendar\Setup::register_endpoints()`, which registers GatherPress's
-	 * feed/ical endpoints at `PHP_INT_MAX` on `init` -- `wp_loaded` fires
+	 * feed/ical endpoints at `PHP_INT_MAX` on `init`. `wp_loaded` fires
 	 * after every `init` callback has run, at any priority, so the append
 	 * order (and therefore the match order among `'top'` rules) is
 	 * deterministic regardless of subsystem instantiation order. The event
@@ -112,9 +112,8 @@ final class Rewrite {
 	 *
 	 * Reads the post type's registered rewrite slug and query var at call
 	 * time rather than assuming `gatherpress_event` / `/event/`, so a
-	 * non-default or localized `events_url` setting -- and a companion
-	 * plugin's own event-supporting post type -- both get a working
-	 * occurrence URL.
+	 * non-default or localized `events_url` setting gets a working occurrence
+	 * URL, and so does a companion plugin's own event-supporting post type.
 	 *
 	 * @since 0.36.0
 	 *
@@ -133,8 +132,8 @@ final class Rewrite {
 		}
 
 		// A truthy `rewrite` is always normalized to an array with a 'slug' key by
-		// WP_Post_Type -- `rewrite === true` resolves 'slug' to the post type name,
-		// so there is no reachable case where the key is absent here.
+		// WP_Post_Type, and `rewrite === true` resolves 'slug' to the post type
+		// name, so there is no reachable case where the key is absent here.
 		$slug = (string) $type_object->rewrite['slug'];
 
 		$reg_ex = sprintf(
@@ -160,14 +159,14 @@ final class Rewrite {
 	 * contain this exact pattern/target pair.
 	 *
 	 * `add_rewrite_rule()` only ever mutates `$wp_rewrite->extra_rules_top`
-	 * in memory -- `WP_Rewrite::wp_rewrite_rules()` returns the persisted
+	 * in memory. `WP_Rewrite::wp_rewrite_rules()` returns the persisted
 	 * `rewrite_rules` option verbatim whenever it is non-empty, so on every
 	 * request after the *first* one this rule is registered for, the option
 	 * already exists (built at plugin activation, or by any other rewrite
 	 * consumer) without this rule in it, and it never gets added on an
 	 * upgrading site until *something* deletes the option and forces a
-	 * regeneration. Mirrors `Calendar\Endpoint::maybe_flush_rewrite_rules()`
-	 * -- the same in-place compare-and-delete pattern GatherPress already
+	 * regeneration. This mirrors `Calendar\Endpoint::maybe_flush_rewrite_rules()`,
+	 * the same in-place compare-and-delete pattern GatherPress already
 	 * uses for its other custom endpoints, since `Setup::schedule_rewrite_flush()`
 	 * is private and out of this class's reach. Once the option is
 	 * regenerated with this pattern's exact target, the comparison is true
@@ -209,7 +208,7 @@ final class Rewrite {
 	 * next upcoming occurrence.
 	 *
 	 * A well-formed occurrence segment that does not resolve to a real row
-	 * through `Occurrences::get()` 404s -- a stale or hand-typed link must
+	 * through `Occurrences::get()` 404s. A stale or hand-typed link must
 	 * not silently render the series at its anchor date. A canceled
 	 * occurrence resolves rather than 404s, so an attendee holding the link is
 	 * told it was canceled: `Occurrences::get()` does not filter by status, so
@@ -218,9 +217,9 @@ final class Rewrite {
 	 *
 	 * The "a site with no recurring events pays nothing" guarantee is enforced
 	 * here, at the single entry point, rather than inside each branch. Both
-	 * branches reach the occurrence table -- the bare-series
+	 * branches reach the occurrence table: the bare-series
 	 * one through `next_upcoming_recurrence_id()`, the occurrence-segment one
-	 * through `Occurrences::get()` -- and `Occurrences::get()` is a raw,
+	 * through `Occurrences::get()`. `Occurrences::get()` is a raw,
 	 * uncached `$wpdb->get_row()`. A guard placed per branch is one a later
 	 * branch can be added without, leaving that branch to query the table on a
 	 * site with no recurring events. Guarding the method instead of the path
@@ -258,7 +257,7 @@ final class Rewrite {
 			// redirect_canonical() otherwise finds the series post by its
 			// `name` query var, decides the request is "close enough" to a
 			// real permalink, and 301s to the bare series URL instead of
-			// letting the 404 stand -- silently turning a stale/hand-typed
+			// letting the 404 stand. That silently turns a stale or hand-typed
 			// occurrence link into "renders the series at its anchor date",
 			// exactly what a miss must not do.
 			add_filter( 'redirect_canonical', '__return_false' );
@@ -271,8 +270,8 @@ final class Rewrite {
 	 * Visiting a recurring series at its own permalink, with no
 	 * occurrence segment, resolves to the next upcoming occurrence rather
 	 * than the series anchor. A post with no scheduled upcoming occurrence
-	 * rows -- a non-recurring event, or a series that has run out -- is left
-	 * untouched so it renders exactly as it does today.
+	 * rows is left untouched so it renders exactly as it does today. That
+	 * covers a non-recurring event and a series that has run out.
 	 *
 	 * ## Bare-URL contract: fragment semantics, not logical-series semantics
 	 *
@@ -282,8 +281,8 @@ final class Rewrite {
 	 * the logical series.**
 	 *
 	 * Concretely: `next_upcoming_recurrence_id()` widens through
-	 * `Series::resolve_post_ids()` -- so the *query* already spans every post
-	 * of a multi-post series -- and then narrows the result back to rows whose
+	 * `Series::resolve_post_ids()`, so the *query* already spans every post
+	 * of a multi-post series, and then narrows the result back to rows whose
 	 * `series_post_id` is the requested post. Today those two steps cancel out,
 	 * because `resolve_post_ids()` returns `array( $post_id )` and one post is
 	 * the whole series. They stop canceling the moment the forward split
@@ -386,7 +385,7 @@ final class Rewrite {
 	 *
 	 * Reads across every post of the series and then answers only with a row
 	 * belonging to the requested post. That narrowing is the bare-URL contract
-	 * documented on `maybe_resolve_bare_series()` -- fragment semantics -- and
+	 * documented on `maybe_resolve_bare_series()` under fragment semantics, and
 	 * it is the line to revisit once a series can span more than one post.
 	 *
 	 * @since 0.36.0
@@ -421,7 +420,7 @@ final class Rewrite {
 	 * `Occurrences::recurrence_id()` and never re-derived here.
 	 *
 	 * There is deliberately no filter over the segment. One shipped in an
-	 * earlier revision of this class -- `gatherpress_recurrence_id_format` --
+	 * earlier revision of this class as `gatherpress_recurrence_id_format`,
 	 * and it was one-way: the emitted segment was filterable, but
 	 * `add_rewrite_rule_for_post_type()` registers a single fixed
 	 * `RECURRENCE_ID_REGEX` and `parse_request()` matches the raw segment
@@ -430,11 +429,11 @@ final class Rewrite {
 	 * breaks the feature it customizes is worse than no hook.
 	 *
 	 * Making it bidirectional was considered and rejected for now. It is not
-	 * one filter but a coupled set -- a filtered regex consumed at rule
+	 * one filter but a coupled set: a filtered regex consumed at rule
 	 * registration on `wp_loaded`, a filtered parser consumed in
 	 * `parse_request()`, and rewrite-option invalidation keyed off the filtered
-	 * regex so a changed pattern reaches the persisted `rewrite_rules` -- and
-	 * every one of them has to agree or the site 404s its own links. Against
+	 * regex so a changed pattern reaches the persisted `rewrite_rules`. Every
+	 * one of them has to agree or the site 404s its own links. Against
 	 * that, the segment *is* the composite identity: an invertible transform is
 	 * a re-encoding with no product behind it, and a
 	 * non-invertible one is the defect above. The filter is unreleased, has no

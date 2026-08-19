@@ -382,7 +382,7 @@ final class Calendar {
 		// Read the *series* permalink rather than the filtered one. The
 		// endpoint URL is a path segment appended to the post's permalink, and
 		// `Context::permalink()` answers with the occurrence's URL whenever one
-		// is in play -- during a loop iteration, and on an occurrence's own
+		// is in play, both during a loop iteration and on an occurrence's own
 		// page. Appending `ical/` to that produces
 		// `/event/my-series/20260903T180000/ical/`, which matches no rewrite
 		// rule and 404s (measured). The endpoint serves the series today;

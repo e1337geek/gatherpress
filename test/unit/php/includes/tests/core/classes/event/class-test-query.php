@@ -59,8 +59,8 @@ class Test_Query extends Base {
 	 * The list is documented as soonest-first for upcoming and
 	 * most-recent-first for past, but `adjust_event_sql()` reads `orderby` off
 	 * the query and falls through its switch on an empty one, leaving
-	 * WordPress's default `wp_posts.post_date` in place — ordering the iCal
-	 * feed by authoring time instead. The assertion is on the emitted ORDER BY
+	 * WordPress's default `wp_posts.post_date` in place, so the iCal feed is
+	 * ordered by authoring time instead. The assertion is on the emitted ORDER BY
 	 * rather than on a result order, because only the stated `orderby` can
 	 * produce that clause, while a result order coincides with the
 	 * `post_date` fallback whenever the fixture happens to be authored in

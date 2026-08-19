@@ -596,7 +596,7 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
 		// No `null` guard: `get_results()` with `ARRAY_A` returns an array on
-		// every path that runs a query, including a failed one -- the only
+		// every path that runs a query, including a failed one. The only
 		// `null` it can produce is for an empty query string. A guard here
 		// would be a branch claiming to handle a failure it cannot observe.
 		$refs = array_map( array( $this, 'row_to_ref' ), $rows );
@@ -1757,8 +1757,8 @@ final class Occurrences {
 			// single-character `LIKE` wildcard, so an unescaped pattern is
 			// satisfied by any lookalike table. The probe would memoize `true`,
 			// the occurrence join would run against a table that does not
-			// exist, and ordinary published events would disappear -- the exact
-			// degradation this method exists to prevent. Escaping alone is not
+			// exist, and ordinary published events would disappear. That is the
+			// exact degradation this method exists to prevent. Escaping alone is not
 			// enough on principle: `SHOW TABLES` returns the matched *name*, so
 			// the answer is only trustworthy once that name is compared with
 			// the one asked about.

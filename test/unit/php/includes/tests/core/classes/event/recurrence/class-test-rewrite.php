@@ -51,7 +51,7 @@ class Test_Rewrite extends Base {
 		$wp_rewrite->set_permalink_structure( '/%postname%/' );
 
 		// The event post type's own permastruct was built at bootstrap, while
-		// permalinks were still plain -- WP only builds a post type's pretty
+		// permalinks were still plain. WP only builds a post type's pretty
 		// permalink structure when `permalink_structure` is non-empty at
 		// registration time, so it must be re-registered now that pretty
 		// permalinks are active, or get_permalink() keeps returning the
@@ -198,7 +198,7 @@ class Test_Rewrite extends Base {
 	/**
 	 * Coverage for `get_occurrence_url`: it composes onto the *configured*
 	 * rewrite slug rather than a hardcoded `/event/`. This only exercises
-	 * URL composition (`get_occurrence_url()` -> `get_permalink()`) -- it
+	 * URL composition (`get_occurrence_url()` -> `get_permalink()`). It
 	 * does NOT exercise routing, since `add_rewrite_rule_for_post_type()`'s
 	 * own runtime slug read is a different code path entirely. See
 	 * `test_occurrence_url_routes_under_a_non_default_rewrite_slug()` below
@@ -236,7 +236,7 @@ class Test_Rewrite extends Base {
 
 	/**
 	 * Coverage for the actual correctness claim: an occurrence URL
-	 * under a *non-default* `events_url` slug actually ROUTES -- drives a
+	 * under a *non-default* `events_url` slug actually ROUTES. It drives a
 	 * real request through `add_rewrite_rule_for_post_type()`'s runtime
 	 * slug read at `class-rewrite.php:138`, the line that matters, rather
 	 * than through `get_occurrence_url()`'s independent composition path.
@@ -289,7 +289,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for a *localized* `events_url` slug -- `Settings::get('events_url')`
+	 * Coverage for a *localized* `events_url` slug. `Settings::get('events_url')`
 	 * falls back to `Event\Setup::get_localized_post_type_slug()` when the
 	 * option is unset, and that is a live, reachable configuration on any
 	 * non-English site that has not explicitly overridden the events slug.
@@ -310,10 +310,10 @@ class Test_Rewrite extends Base {
 		add_filter( 'post_type_labels_gatherpress_event', $filter_localized_label );
 
 		// Settings::get_defaults_map() caches the resolved default for the
-		// remainder of the request the first time anything reads a setting
-		// -- almost certainly already true by this point in the suite --
-		// so the localized-slug default must be forced to recompute or the
-		// filter above has no effect on events_url's default.
+		// remainder of the request the first time anything reads a setting,
+		// which is almost certainly already true by this point in the suite.
+		// The localized-slug default must therefore be forced to recompute, or
+		// the filter above has no effect on events_url's default.
 		$settings = Settings::get_instance();
 		Utility::set_and_get_hidden_property( $settings, 'defaults_cache', null );
 
@@ -462,12 +462,12 @@ class Test_Rewrite extends Base {
 	/**
 	 * Coverage for the upgrade path: `WP_Rewrite::wp_rewrite_rules()` reads
 	 * the persisted `rewrite_rules` option verbatim on every request when it
-	 * is non-empty -- `add_rewrite_rule()` alone only ever mutates
+	 * is non-empty. `add_rewrite_rule()` alone only ever mutates
 	 * `$wp_rewrite->extra_rules_top` in memory, so on a site that already
 	 * has a populated `rewrite_rules` option (every existing GatherPress
 	 * site, the moment this code deploys), the occurrence rule would never
-	 * reach the persisted option -- and therefore never match a real
-	 * request -- without `maybe_flush_rewrite_rules()` correcting it.
+	 * reach the persisted option, and therefore never match a real request,
+	 * without `maybe_flush_rewrite_rules()` correcting it.
 	 *
 	 * @covers ::add_rewrite_rule_for_post_type
 	 * @covers ::maybe_flush_rewrite_rules
@@ -496,7 +496,7 @@ class Test_Rewrite extends Base {
 		update_option( 'rewrite_rules', $stale );
 
 		// Before: WP_Rewrite::wp_rewrite_rules() reads the stale option
-		// verbatim -- add_rewrite_rules() has not run again yet, matching a
+		// verbatim. add_rewrite_rules() has not run again yet, matching a
 		// request that lands between deploy and the next full request
 		// bootstrap.
 		$this->go_to( $url );
@@ -510,7 +510,7 @@ class Test_Rewrite extends Base {
 
 		// After: the mismatch triggered delete_option(), so the next read
 		// via wp_rewrite_rules() regenerates the option from the rules
-		// still held in extra_rules_top -- including this one.
+		// still held in extra_rules_top, this one included.
 		$this->go_to( $url );
 		$this->assertFalse(
 			is_404(),
@@ -525,7 +525,7 @@ class Test_Rewrite extends Base {
 
 	/**
 	 * Coverage for `maybe_flush_rewrite_rules` when the persisted option
-	 * already matches -- the comparison must be a no-op, or this would
+	 * already matches. The comparison must be a no-op, or this would
 	 * flush on every single request.
 	 *
 	 * @covers ::maybe_flush_rewrite_rules
@@ -569,7 +569,7 @@ class Test_Rewrite extends Base {
 
 		// parse_request() must have neutralized redirect_canonical() on this
 		// 404, or WP would 301 the miss back to the bare series URL instead
-		// of letting the 404 stand -- go_to() itself never fires
+		// of letting the 404 stand. go_to() itself never fires
 		// template_redirect, so this has to be asserted directly.
 		$this->assertNull(
 			redirect_canonical( $url, false ),
@@ -588,12 +588,12 @@ class Test_Rewrite extends Base {
 	 * @return void
 	 */
 	public function test_bare_series_url_resolves_next_upcoming_occurrence(): void {
-		// Occurrences at -15, -8, -1, +6, +13 days -- the first three are
+		// Occurrences at -15, -8, -1, +6, +13 days. The first three are
 		// already past by the time the request is made, so "+6 days" is the
 		// next upcoming one.
 		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( -15, 7, 5 );
 		// Occurrences land at anchor_start + 0/7/14/21/28 days, i.e. -15/-8/-1/+6/+13
-		// days relative to "now" -- the "+21" entry is the first upcoming one.
+		// days relative to "now", and the "+21" entry is the first upcoming one.
 		$expected_recurrence_id = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
 
 		$this->go_to( get_permalink( $post_id ) );
@@ -654,7 +654,7 @@ class Test_Rewrite extends Base {
 
 	/**
 	 * Coverage for `maybe_resolve_bare_series` when the series has no
-	 * upcoming occurrence left -- the query var must stay unset so the post
+	 * upcoming occurrence left. The query var must stay unset so the post
 	 * renders exactly as a non-recurring event would.
 	 *
 	 * @covers ::maybe_resolve_bare_series
@@ -708,8 +708,8 @@ class Test_Rewrite extends Base {
 	 * recurring events at all must never query the occurrence table.
 	 * `Query::site_has_recurring_events()` is the authoritative, cheap
 	 * (single autoloaded option read) guard `maybe_resolve_bare_series()`
-	 * checks *before* `resolve_post_id_from_query_vars()` -- which itself
-	 * costs a `get_page_by_path()` lookup -- runs at all, on every request
+	 * checks *before* `resolve_post_id_from_query_vars()` runs at all, on
+	 * every request
 	 * that has no occurrence segment (i.e. every ordinary event permalink on
 	 * the entire site).
 	 *
@@ -762,7 +762,7 @@ class Test_Rewrite extends Base {
 	 * The sibling of the bare-series test above. That one probes the branch
 	 * taken when a URL carries no occurrence segment; this one drives a real
 	 * occurrence URL, which takes the other branch and reaches
-	 * `Occurrences::get()` -- a raw, uncached `$wpdb->get_row()`. Probing only
+	 * `Occurrences::get()`, a raw and uncached `$wpdb->get_row()`. Probing only
 	 * one branch leaves the other free to lose its guard, so both are pinned
 	 * here.
 	 *
@@ -860,7 +860,7 @@ class Test_Rewrite extends Base {
 		$this->assertFalse( is_404(), 'The sitewide feed URL must not 404.' );
 
 		// GatherPress registers a custom `feed/(ical)` endpoint per taxonomy
-		// term rather than relying on WP's generic taxonomy feed rule -- this
+		// term rather than relying on WP's generic taxonomy feed rule. This
 		// is the actual feed surface `Calendar\Setup` wires up for
 		// `gatherpress_topic`, so it is what this regression test protects.
 		$term = self::factory()->term->create_and_get( array( 'taxonomy' => 'gatherpress_topic' ) );
@@ -969,7 +969,7 @@ class Test_Rewrite extends Base {
 	/**
 	 * Coverage for `resolve_post_id_from_query_vars` when a post type
 	 * declares `gatherpress-event-date` support without ever being
-	 * registered -- `get_post_type_object()` returns null and the loop must
+	 * registered. `get_post_type_object()` returns null and the loop must
 	 * skip past it rather than fatal.
 	 *
 	 * @covers ::resolve_post_id_from_query_vars
@@ -1017,8 +1017,8 @@ class Test_Rewrite extends Base {
 
 	/**
 	 * Coverage for `parse_request` when the occurrence query var is present
-	 * but set to an empty string -- the falsy-but-isset short circuit of
-	 * the `||` guard. Not reachable through the registered rewrite rule
+	 * but set to an empty string, which is the falsy-but-isset short circuit
+	 * of the `||` guard. Not reachable through the registered rewrite rule
 	 * (whose capture group cannot match an empty string), so it is driven
 	 * directly against a real `WP` object per the class's own contract.
 	 *
@@ -1058,7 +1058,7 @@ class Test_Rewrite extends Base {
 		// The site must genuinely have a recurring event, or the
 		// no-recurring-events guard on
 		// `parse_request()` returns before the post-resolution branch this test
-		// exists to reach -- the assertion below would then hold for a reason
+		// exists to reach. The assertion below would then hold for a reason
 		// that has nothing to do with post resolution.
 		$this->create_relative_daily_series( 5, 7, 3 );
 
@@ -1078,7 +1078,7 @@ class Test_Rewrite extends Base {
 	 * Coverage for `maybe_resolve_bare_series` when the request is not for
 	 * a series post at all (no occurrence segment, and nothing in the query
 	 * vars identifies an event-supporting post type). This is the ordinary
-	 * shape of every non-event request on the site -- driven through a real
+	 * shape of every non-event request on the site, driven through a real
 	 * request to the home page.
 	 *
 	 * @covers ::parse_request
@@ -1089,7 +1089,7 @@ class Test_Rewrite extends Base {
 	public function test_bare_series_resolution_is_a_no_op_for_non_event_requests(): void {
 		// The site DOES have a recurring event elsewhere, so
 		// maybe_resolve_bare_series() clears Query::site_has_recurring_events()'s
-		// guard and reaches resolve_post_id_from_query_vars() -- which must
+		// guard and reaches resolve_post_id_from_query_vars(), which must
 		// still find nothing to resolve for a request that identifies no
 		// post at all.
 		$this->create_relative_daily_series( 5, 7, 3 );

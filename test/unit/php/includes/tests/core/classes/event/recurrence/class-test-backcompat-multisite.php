@@ -12,13 +12,13 @@
  * existing network upgrading in place, a subsite does not get the occurrence
  * table until someone visits its wp-admin (or a network activation /
  * new-site event runs). A blog without the table must therefore show exactly
- * what it would show with no recurrence code present at all -- not fatal, and
- * equally not an empty list. "Does not fatal" is the weaker property and is
+ * what it would show with no recurrence code present at all. It must not
+ * fatal, and equally must not show an empty list. "Does not fatal" is the weaker property and is
  * not sufficient on its own; see
  * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` below.
  *
  * Per AGENTS.md: never remove `@group multisite` from this class, and never
- * add `@codeCoverageIgnore` to a multisite-only branch -- CI runs this suite
+ * add `@codeCoverageIgnore` to a multisite-only branch. CI runs this suite
  * and merges its coverage into the gate. `phpunit.xml.dist` excludes the
  * `multisite` group, so this file is silent in `npm run test:unit:php`; run
  * it explicitly with `npm run test:unit:php:multisite`, which invokes
@@ -162,7 +162,7 @@ class Test_Backcompat_Multisite extends Base {
 	 *
 	 * The stated contract is graceful degradation, and "does not fatal" is not
 	 * the same thing. `$wpdb` swallows the missing-table error and never
-	 * throws, so nothing is reported anywhere -- but the missing table is named
+	 * throws, so nothing is reported anywhere. But the missing table is named
 	 * in both the outer `LEFT JOIN` and the `NOT EXISTS` subquery, so without
 	 * the guard the whole statement fails and the upcoming-events list comes
 	 * back EMPTY. An ordinary, non-recurring, published event then vanishes
@@ -171,7 +171,7 @@ class Test_Backcompat_Multisite extends Base {
 	 *
 	 * Note also that `get_results()` returns `array()` rather than `null` on a
 	 * failed query, so `select_for_series()`'s `null === $rows` arm is
-	 * unreachable for this failure mode -- it must not be left in place as a
+	 * unreachable for this failure mode. It must not be left in place as a
 	 * branch claiming to handle something it cannot.
 	 *
 	 * @group multisite
@@ -196,10 +196,10 @@ class Test_Backcompat_Multisite extends Base {
 		$post_id = $this->create_event();
 
 		// The hazard is specific to a blog whose HAS_RECURRING_OPTION is
-		// true but whose own table is missing -- e.g. carried over from a
-		// site-meta sync, or a recurring post saved before the table
-		// existed. On an ordinary subsite the no-recurring-events guard means
-		// this whole code path is never reached at all, which is the safe case.
+		// true but whose own table is missing, for example after a site-meta
+		// sync, or from a recurring post saved before the table existed. On an
+		// ordinary subsite the no-recurring-events guard means this whole code
+		// path is never reached at all, which is the safe case.
 		update_option( Query::HAS_RECURRING_OPTION, '1', true );
 
 		$exception = null;
@@ -278,7 +278,7 @@ class Test_Backcompat_Multisite extends Base {
 			$baseline_posts,
 			$query_posts,
 			'Failed to assert a subsite missing the occurrence table shows exactly what it would show with no'
-				. ' recurrence code present -- an empty list here is the regression: an ordinary published event'
+				. ' recurrence code present. An empty list here is the regression: an ordinary published event'
 				. ' silently vanishing with no error surfaced anywhere.'
 		);
 		$this->assertSame(
@@ -378,7 +378,7 @@ class Test_Backcompat_Multisite extends Base {
 		$this->assertSame(
 			array(),
 			Occurrences::get_instance()->select_for_series( array( $series_b ) ),
-			'Failed to assert site A cannot see site B\'s series by its post ID -- proves the query hit site A\'s'
+			'Failed to assert site A cannot see site B\'s series by its post ID. This proves the query hit site A\'s'
 				. ' own table, not a shared or stale one.'
 		);
 

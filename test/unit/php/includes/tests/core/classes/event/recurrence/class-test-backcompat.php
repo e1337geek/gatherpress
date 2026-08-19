@@ -217,10 +217,10 @@ class Test_Backcompat extends Base {
 	 *
 	 * The baseline is produced by removing `Query::expand_event_clauses()` from
 	 * `posts_clauses` and `Query::attach_occurrences()` from `the_posts` for the
-	 * duration of one query, then re-adding them -- the "hooks not registered
-	 * at all" side of the comparison, rather than removing every recurrence
-	 * hook process-wide, which would also tear down hooks this file's other
-	 * tests depend on.
+	 * duration of one query, then re-adding them. That is the "hooks not
+	 * registered at all" side of the comparison, rather than removing every
+	 * recurrence hook process-wide, which would also tear down hooks this
+	 * file's other tests depend on.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::attach_occurrences
@@ -240,7 +240,7 @@ class Test_Backcompat extends Base {
 		// A persistent-shaped object cache serves the second identical
 		// WP_Query from its split-query cache with no SQL at all, which
 		// would make the comparison trivially pass by starving it of any
-		// query to compare -- flushing before each capture keeps both runs
+		// query to compare. Flushing before each capture keeps both runs
 		// cold, so the comparison is between two real SQL query lists.
 		wp_cache_flush();
 
@@ -348,12 +348,12 @@ class Test_Backcompat extends Base {
 	 * request carrying a well-formed occurrence segment for a plain,
 	 * non-recurring event.
 	 *
-	 * KNOWN DEFECT (flagged, not fixed -- this is a test-only task): unlike the
+	 * KNOWN DEFECT (flagged, not fixed, since this is a test-only task): unlike the
 	 * bare-URL branch above, `Rewrite::parse_request()`'s occurrence-segment
 	 * branch carries no `Query::site_has_recurring_events()` guard at all. It
 	 * unconditionally calls `Occurrences::get()`, which queries the occurrence
 	 * table directly, the moment `resolve_post_id_from_query_vars()` resolves a
-	 * post -- which it does for *any* post of a `gatherpress-event-date`
+	 * post. It does resolve one for *any* post of a `gatherpress-event-date`
 	 * post type, recurring or not, because the occurrence rewrite rule itself
 	 * is registered unconditionally in `Rewrite::add_rewrite_rules()`. On a
 	 * site with zero recurring events, a single crafted or stale
@@ -421,7 +421,7 @@ class Test_Backcompat extends Base {
 	 *
 	 * Invoked directly with a fabricated ref carrying a non-null
 	 * `recurrence_id`, since a genuinely non-recurring site's own reads never
-	 * produce one -- this isolates the guard itself rather than depending on
+	 * produce one. This isolates the guard itself rather than depending on
 	 * it being reachable end-to-end, matching how `select_by_horizon()` always
 	 * calls this method regardless of what its own read returned.
 	 *
@@ -513,7 +513,7 @@ class Test_Backcompat extends Base {
 		$this->assertSame(
 			$before,
 			$after,
-			'Failed to assert no option value changed either -- not merely that the key set is unchanged'
+			'Failed to assert no option value changed either, not merely that the key set is unchanged'
 				. ' (the "cron" option, for one, already exists on every site, so a spurious scheduled sweep'
 				. ' would only ever change its value, never add a new key).'
 		);

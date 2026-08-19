@@ -2,9 +2,9 @@
 /**
  * Class handles unit tests for occurrence-aware permalinks.
  *
- * Two separate defects share one symptom — a link to an occurrence resolving
- * to a different date — and they share this file because they share the
- * fixture that can tell them apart.
+ * Two separate defects share one symptom, a link to an occurrence resolving to
+ * a different date. They share this file because they share the fixture that
+ * can tell them apart.
  *
  * The first is `Context::permalink()` declining to answer for the request's
  * own occurrence, so `get_permalink()` on `/event/my-series/20260903T180000/`
@@ -12,9 +12,9 @@
  * the iCal `URL:` field, `rel="canonical"`, share links.
  *
  * The second is the RSVP confirmation email, composed from `Rsvp\Token` while
- * the comment is being inserted — on paths that never reach `wp`, so there is
- * no request context to read and the comment's own `_gatherpress_occurrence`
- * term is the authoritative source.
+ * the comment is being inserted, on paths that never reach `wp`. There is no
+ * request context to read, so the comment's own `_gatherpress_occurrence` term
+ * is the authoritative source.
  *
  * **Every assertion here names an exact URL**, and every fixture puts the
  * occurrence under test somewhere other than first. A bare series URL resolves
@@ -280,8 +280,8 @@ class Test_Permalink extends Base {
 	 * The permalink of a singular occurrence page is the occurrence's own URL.
 	 *
 	 * The requested occurrence is the series' **second**, so the bare-series
-	 * fallback — which resolves to the next upcoming occurrence, the
-	 * first — produces a different answer. Both are asserted: the exact URL the
+	 * fallback produces a different answer, since it resolves to the next
+	 * upcoming occurrence, the first. Both are asserted: the exact URL the
 	 * requirement specifies, and the explicit absence of the fallback's answer,
 	 * so the test cannot pass with `permalink()` dead.
 	 *
@@ -304,7 +304,7 @@ class Test_Permalink extends Base {
 		$this->assertSame(
 			$second,
 			Context::get_instance()->current()['recurrence_id'],
-			'Failed to assert the request established the second occurrence as the page\'s own — without that'
+			'Failed to assert the request established the second occurrence as the page\'s own. Without that'
 				. ' the fixture proves nothing.'
 		);
 		$this->assertSame(
@@ -330,7 +330,7 @@ class Test_Permalink extends Base {
 	 * `Calendar::get_ical_event_string()` composes it from
 	 * `get_permalink( $this->event->event->ID )`, so adding an occurrence to a
 	 * calendar used to yield an entry linking to a different date. Nothing in
-	 * the calendar subsystem changes for this — the field is right once the
+	 * the calendar subsystem changes for this. The field is right once the
 	 * permalink is.
 	 *
 	 * @covers ::permalink
@@ -371,7 +371,7 @@ class Test_Permalink extends Base {
 	 * `Calendar::get_endpoint_url()` appends a path segment to the post's
 	 * permalink. Once `Context::permalink()` answers with an occurrence's URL,
 	 * a naive read produces `/event/my-series/20260903T180000/ical/`, which
-	 * matches no rewrite rule and 404s — so the "Download iCal" button on an
+	 * matches no rewrite rule and 404s. The "Download iCal" button on an
 	 * occurrence page would break. This was already true inside a Query Loop
 	 * before the singular-page arm existed, since the loop arm rewrote the same
 	 * read; both are fixed by the same series-permalink read.

@@ -5,7 +5,8 @@
  * The claim under test is that an occurrence's datetime reaches every existing
  * block without a single block file changing. A test that calls the filter callback
  * directly cannot prove that, so the block tests here go through `go_to()` and
- * `do_blocks()` -- the real request, the real block, the real wiring.
+ * `do_blocks()`, which means the real request, the real block and the real
+ * wiring.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -118,8 +119,8 @@ class Test_Context extends Base {
 		Context::get_instance()->clear();
 
 		// Pretty permalinks and the occurrence rewrite rule, so every `go_to()`
-		// below travels the production URL -- `/{event-slug}/{postname}/{Ymd\THis}/`
-		// resolved by the real rewrite rules -- rather than a query-arg stand-in
+		// below travels the production URL, `/{event-slug}/{postname}/{Ymd\THis}/`
+		// resolved by the real rewrite rules, rather than a query-arg stand-in
 		// that no visitor ever sends. Mirrors `Test_Rewrite::setUp()`, including
 		// the post type re-registration: WP only builds a post type's pretty
 		// permastruct when `permalink_structure` is non-empty at registration
@@ -172,7 +173,7 @@ class Test_Context extends Base {
 	 *
 	 * The reference fixture's anchor is a fixed 2026 date, which is fine for
 	 * assertions about a *named* occurrence but a date bomb for anything about
-	 * the *next upcoming* one — once real time passes the last occurrence, the
+	 * the *next upcoming* one. Once real time passes the last occurrence, the
 	 * series has lapsed and the bare-series resolution finds nothing.
 	 *
 	 * The anchor is placed in the past and the interval chosen so exactly one
@@ -283,7 +284,7 @@ class Test_Context extends Base {
 		$this->assert_hooks( $hooks, $instance );
 
 		// `add_metadata()` never calls `get_metadata_raw()`, so a note taken
-		// there is never consumed by the write that took it -- it is consumed
+		// there is never consumed by the write that took it. It is consumed
 		// by the next ordinary read instead, which then returns the series'
 		// value on an occurrence page.
 		$this->assertFalse(
@@ -644,7 +645,7 @@ class Test_Context extends Base {
 	 * `get_datetime()` is the explicit accessor the recurrence subsystem calls;
 	 * the `get_post_metadata` filter is the compatibility path for unmodified
 	 * blocks. With the filter unhooked, delegating to `Event::get_datetime()`
-	 * would return the series anchor — so this is what separates the two.
+	 * would return the series anchor. That is what separates the two.
 	 *
 	 * @covers ::get_datetime
 	 * @covers ::occurrence_value
@@ -801,8 +802,8 @@ class Test_Context extends Base {
 	 * It asserts the *specific* occurrence rather than merely a non-null
 	 * context. The fixture straddles "now", so the next upcoming occurrence is
 	 * neither the anchor nor the first row: an implementation that resolved to
-	 * either — or one that carried a stale identifier forward — produces a
-	 * different value and fails here.
+	 * either produces a different value and fails here, as does one that carried
+	 * a stale identifier forward.
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
@@ -861,9 +862,9 @@ class Test_Context extends Base {
 	 * A request naming no occurrence queries no occurrence.
 	 *
 	 * Both guards in `maybe_set_from_request()` exist for this. Neither changes
-	 * the resulting context — `Occurrences::get()` would return null for an
-	 * empty recurrence identifier or a post ID of zero anyway — so the only
-	 * thing that can tell a missing guard apart is the query it did not make.
+	 * the resulting context, because `Occurrences::get()` would return null for
+	 * an empty recurrence identifier or a post ID of zero anyway. The only thing
+	 * that can tell a missing guard apart is the query it did not make.
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
@@ -889,7 +890,7 @@ class Test_Context extends Base {
 		);
 
 		// A request that identifies no post at all cannot name an occurrence,
-		// whatever the query string claims -- this pins the post ID guard. It
+		// whatever the query string claims, and this pins the post ID guard. It
 		// remains a hard zero even with bare-series resolution, which has no
 		// post to resolve either.
 		$this->go_to( add_query_arg( Context::QUERY_VAR, self::SECOND_ID, home_url( '/' ) ) );
@@ -901,7 +902,7 @@ class Test_Context extends Base {
 		);
 
 		// A post that is not an event resolves to an ID but never to an
-		// occurrence -- this pins the empty-identifier guard, which the home
+		// occurrence, and this pins the empty-identifier guard, which the home
 		// page case above cannot reach because it bails on the post ID first.
 		$plain_post = $this->factory->post->create( array( 'post_type' => 'post' ) );
 
@@ -961,19 +962,19 @@ class Test_Context extends Base {
 	 * Coverage for an inner loop over a sibling series sharing the recurrence identifier.
 	 *
 	 * `recurrence_id` is `Ymd\THis`, so two series projected from the same rule
-	 * share it — for weekly rules that is the common case, not an exotic one.
+	 * share it. For weekly rules that is the common case, not an exotic one.
 	 * The sibling is therefore genuinely projected, and the assertion first
 	 * proves the colliding row exists: a fixture whose sibling has no occurrence
 	 * row makes `Occurrences::get()` return null whatever the scoping logic
 	 * does, so the test would pass against a leak.
 	 *
-	 * What is asserted is the requirement — each post reads its own datetime —
+	 * What is asserted is the requirement that each post reads its own datetime,
 	 * not the mechanism. Asserting that context is blanked mid-loop would forbid
 	 * binding context to the requested post, which is the correct design.
 	 *
 	 * Driven through a real secondary `WP_Query` rather than a bare
 	 * `do_action()`, because the whole point is that the loop's own wiring
-	 * behaves — a hand-fired action proves nothing about `WP_Query::the_post()`.
+	 * behaves. A hand-fired action proves nothing about `WP_Query::the_post()`.
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
@@ -1126,7 +1127,7 @@ class Test_Context extends Base {
 		$sibling_event = new Event( $sibling );
 
 		// Context belongs to the first series, so the sibling must read its own
-		// series value -- and must not cache it under the shared identifier.
+		// series value, and must not cache it under the shared identifier.
 		Context::get_instance()->set( $post_id, self::SECOND_ID );
 
 		$this->assertSame(
@@ -1232,8 +1233,9 @@ class Test_Context extends Base {
 	 * Coverage for a meta write whose new value equals the occurrence's value.
 	 *
 	 * `update_metadata()` short-circuits when the stored value already equals
-	 * the new one, and it discovers the stored value through `get_metadata_raw()`
-	 * — this same filter. Without a guard the comparison sees the occurrence's
+	 * the new one, and it discovers the stored value through
+	 * `get_metadata_raw()`, which is this same filter. Without a guard the
+	 * comparison sees the occurrence's
 	 * value, and the write to the series is silently dropped.
 	 *
 	 * @covers ::metadata
@@ -1261,7 +1263,7 @@ class Test_Context extends Base {
 	 * Coverage for a meta write that falls through to `add_metadata()`.
 	 *
 	 * `update_metadata()` reaches `add_metadata()` whenever the key has no row
-	 * yet, and `add_metadata()` never calls `get_metadata_raw()` -- its
+	 * yet, and `add_metadata()` never calls `get_metadata_raw()`, because its
 	 * `$unique` check is a direct `$wpdb->get_var()`. Hooking
 	 * `add_post_metadata` therefore armed a note nothing consumed, and the next
 	 * occurrence-scoped read of that key consumed it instead and returned the
@@ -1375,9 +1377,9 @@ class Test_Context extends Base {
 	 * `Rewrite::parse_request()` lets a canceled occurrence's URL resolve
 	 * instead of 404ing; this is what tells the visitor once it does. The
 	 * notice must appear on the canceled occurrence's own content and on
-	 * nothing else -- not outside occurrence context, not for a scheduled
-	 * occurrence, and not for another post rendering full content on the same
-	 * response.
+	 * nothing else. It must not appear outside occurrence context, for a
+	 * scheduled occurrence, or for another post rendering full content on the
+	 * same response.
 	 *
 	 * @covers ::maybe_prepend_cancelled_notice
 	 *
@@ -1462,8 +1464,8 @@ class Test_Context extends Base {
 	 * The end-to-end shape of `resolve()`'s precedence: a real request to one
 	 * occurrence's URL, and a secondary loop over the *same post* rendered
 	 * inside that response. Each row is a different occurrence of the requested
-	 * series, and each must render its own date and its own link -- not the
-	 * outer request's.
+	 * series, and each must render its own date and its own link rather than
+	 * the outer request's.
 	 *
 	 * The requested occurrence is the series' past one, which the upcoming loop
 	 * cannot contain, so no row can pass by coinciding with the request. The
@@ -1726,7 +1728,7 @@ class Test_Context extends Base {
 		);
 
 		// Leaving for a URL that names no event at all must drop context
-		// outright -- there is nothing to re-derive.
+		// outright, because there is nothing to re-derive.
 		$this->go_to( home_url( '/' ) );
 
 		$this->assertNull(
@@ -1740,7 +1742,7 @@ class Test_Context extends Base {
 	 *
 	 * The row's time of day is moved away from the anchor's, which the current
 	 * rule set cannot produce. The test exists so the read path can never
-	 * hard-code "apply the anchor's time to the occurrence's date" -- doing so
+	 * hard-code "apply the anchor's time to the occurrence's date". Doing so
 	 * would foreclose multiple-times-per-day rules later.
 	 *
 	 * @covers ::metadata

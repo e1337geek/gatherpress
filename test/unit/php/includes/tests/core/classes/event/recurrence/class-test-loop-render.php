@@ -6,7 +6,7 @@
  * whether a block renders the right date from those rows. That gap is exactly
  * the shape of the regression this file covers: the query layer expands a
  * series correctly, `attach_occurrences()` stamps identity onto every result
- * object, and nothing in the render path reads the stamp -- so every row of a
+ * object, and nothing in the render path reads the stamp, so every row of a
  * series shows the anchor's date and the bare series permalink.
  *
  * Every test here drives a real `WP_Query` loop through `the_post()` and
@@ -139,7 +139,7 @@ class Test_Loop_Render extends Base {
 	 *
 	 * Fixtures are arranged in production order: the datetime blob and its
 	 * derived row land first, then the recurrence blob, then the mirrors, then
-	 * the projection -- exactly the sequence a real save produces.
+	 * the projection. That is exactly the sequence a real save produces.
 	 *
 	 * @since 0.36.0
 	 *
@@ -291,7 +291,7 @@ class Test_Loop_Render extends Base {
 		$this->assertCount(
 			4,
 			array_unique( $html ),
-			'Failed to assert each occurrence row rendered a distinct date -- every row showing the same'
+			'Failed to assert each occurrence row rendered a distinct date. Every row showing the same'
 				. ' string means the query expanded and the render path read the anchor.'
 		);
 
@@ -341,7 +341,7 @@ class Test_Loop_Render extends Base {
 		$this->assertCount(
 			4,
 			array_unique( $hrefs ),
-			'Failed to assert each occurrence row linked to its own occurrence URL -- four identical bare'
+			'Failed to assert each occurrence row linked to its own occurrence URL. Four identical bare'
 				. ' series permalinks is what a visitor sees when the render path reads the series.'
 		);
 
@@ -497,8 +497,8 @@ class Test_Loop_Render extends Base {
 	 * Coverage for the no-recurring-events guarantee on every entry point this
 	 * read path adds.
 	 *
-	 * Drives the real entry points -- a full `WP_Query` loop plus a block
-	 * render plus a `get_permalink()` call -- on a site whose
+	 * Drives the real entry points, meaning a full `WP_Query` loop plus a block
+	 * render plus a `get_permalink()` call, on a site whose
 	 * `gatherpress_has_recurring_events` option is `'0'`, and asserts no query
 	 * touches the occurrence table and no option is written. Naming the test
 	 * after the loop rather than after the callbacks is deliberate: a "performs
@@ -697,8 +697,8 @@ class Test_Loop_Render extends Base {
 	 * request's occurrence applies where there is no stamp. Both are asserted
 	 * here on purpose. The precedence the other way round gives every
 	 * same-series Query Loop row the outer page's occurrence; the
-	 * obvious correction -- "the stamp is authoritative, drop the request arm"
-	 * -- breaks every singular occurrence page instead, because a singular
+	 * obvious correction, "the stamp is authoritative, drop the request arm",
+	 * breaks every singular occurrence page instead, because a singular
 	 * request's own post carries a null stamp. Only a test that pins both
 	 * directions rejects both defects.
 	 *
@@ -749,7 +749,7 @@ class Test_Loop_Render extends Base {
 		$this->assertSame(
 			$requested,
 			$unstamped['recurrence_id'],
-			'Failed to assert an unstamped read still resolves to the request\'s occurrence -- this is what'
+			'Failed to assert an unstamped read still resolves to the request\'s occurrence. This is what'
 				. ' every singular occurrence page depends on.'
 		);
 	}
@@ -929,7 +929,7 @@ class Test_Loop_Render extends Base {
 	 * the very lists this guard was added to keep working.
 	 *
 	 * The blog prefix is moved to one whose real occurrence table is absent,
-	 * because that is the only state in which the question can be asked -- on
+	 * because that is the only state in which the question can be asked. On
 	 * the fixture site the real table exists and would answer `true` honestly.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::table_exists
@@ -950,7 +950,7 @@ class Test_Loop_Render extends Base {
 		$this->assertNotSame( $real, $lookalike, 'Fixture is inert: the lookalike name must differ.' );
 
 		// The suite rewrites every `CREATE TABLE` into `CREATE TEMPORARY TABLE`,
-		// and a temporary table is invisible to `SHOW TABLES` -- which would
+		// and a temporary table is invisible to `SHOW TABLES`. That would
 		// make this fixture inert, passing against the unescaped probe it
 		// exists to reject. The two rewriting filters are stood down for the
 		// duration so the lookalike is a real table, and restored in `finally`

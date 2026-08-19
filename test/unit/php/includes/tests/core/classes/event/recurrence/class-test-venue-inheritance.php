@@ -4,15 +4,15 @@
  * series' venue, and occurrence-aware event queries stay filterable by venue.
  *
  * `Recurrence\Context` (see `class-context.php`) is an unwired skeleton in
- * this baseline -- `set()`, `clear()`, `current()`, `metadata()`, and
+ * this baseline. `set()`, `clear()`, `current()`, `metadata()`, and
  * `occurrence_url()` are all unwired no-op stubs, so there is no frozen
  * `Context` read API to test venue resolution against. Venue rendering is
  * exercised through actual page requests instead: `Rewrite::parse_request()`
  * resolves every occurrence URL of a series to the same series post
  * (`Series::resolve_post_ids()` is `array( $post_id )` in this POC), so the
- * venue association -- stored as a `_gatherpress_venue` taxonomy term on that
- * one post -- is read identically regardless of which occurrence URL a
- * visitor lands on.
+ * venue association is read identically regardless of which occurrence URL a
+ * visitor lands on. It is stored as a `_gatherpress_venue` taxonomy term on
+ * that one post.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0

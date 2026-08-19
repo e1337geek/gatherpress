@@ -58,15 +58,15 @@ class Test_Archive extends Base {
 	 * Start from an empty occurrence table before every test.
 	 *
 	 * The archive requests below travel the plain-permalink form of the post
-	 * type archive URL — `?post_type=gatherpress_event&paged=2` — because the
-	 * pretty form does not exist in this harness. Measured, rather than
+	 * type archive URL, `?post_type=gatherpress_event&paged=2`. The pretty form
+	 * does not exist in this harness. Measured, rather than
 	 * assumed: with `/%postname%/` set and rules flushed,
 	 * `$wp_rewrite->wp_rewrite_rules()` returns 85 rules and not one of them
 	 * maps to `post_type=gatherpress_event`, so `/event/page/2/` resolves to
 	 * `name=event&paged=2` and never reaches an archive at all. On a real site
-	 * the rules are present and correctly ordered — `event/page/([0-9]{1,})/?$`
-	 * at index 12 of 154, well ahead of the single-event rule at index 50 — and
-	 * pretty pagination works end to end.
+	 * the rules are present and correctly ordered, and pretty pagination works
+	 * end to end: `event/page/([0-9]{1,})/?$` sits at index 12 of 154, well ahead
+	 * of the single-event rule at index 50.
 	 *
 	 * The deviation is safe because the rewrite layer is not implicated in this
 	 * defect, which lives entirely in what `WP::handle_404()` decides before
@@ -198,9 +198,9 @@ class Test_Archive extends Base {
 	 * page nor the last.
 	 *
 	 * The anchors are staggered by one hour and the earlier standalone event
-	 * sits *between* the first two series anchors, so the required answer —
-	 * ascending by occurrence datetime — interleaves all three series with a
-	 * plain event on the very first page. The answer the archive produced
+	 * sits *between* the first two series anchors. The required ordering is
+	 * ascending by occurrence datetime, and it interleaves all three series with
+	 * a plain event on the very first page. The answer the archive produced
 	 * before this fixture existed, `wp_posts.post_date DESC`, orders strictly
 	 * by creation: it groups each series together and puts the *last*-created
 	 * post first. The two orderings share no prefix, which is the point.
@@ -470,7 +470,7 @@ class Test_Archive extends Base {
 	/**
 	 * Coverage for the other side of the boundary: an empty archive is not a 404.
 	 *
-	 * Core does not 404 an unpaged post type archive with no rows — it renders
+	 * Core does not 404 an unpaged post type archive with no rows. It renders
 	 * an empty archive at `200`, because `get_queried_object()` resolves to the
 	 * post type. Deferring core's decision means reproducing that rule, not
 	 * inventing a stricter one: an events site whose events have all happened
@@ -508,9 +508,9 @@ class Test_Archive extends Base {
 	/**
 	 * Coverage for the past archive: it reads most-recent-first.
 	 *
-	 * The other direction of `substitute_archive_query()`'s order ternary, and
-	 * the requirement it encodes — a past archive whose newest entry is not
-	 * first is a list nobody reads top-down.
+	 * This covers the other direction of `substitute_archive_query()`'s order
+	 * ternary. The requirement it encodes is that a past archive whose newest
+	 * entry is not first is a list nobody reads top-down.
 	 *
 	 * @covers ::handle_event_archive_redirect
 	 * @covers ::fall_back_to_archive_mode
@@ -559,7 +559,7 @@ class Test_Archive extends Base {
 	 *
 	 * The request-driven tests above are what prove the wiring, but xdebug does
 	 * not reliably trace a `protected` helper reached through a short
-	 * same-class delegation — it reports the body as `count=0` even though the
+	 * same-class delegation. It reports the body as `count=0` even though the
 	 * mutations that break it turn those tests red. Per the project's
 	 * "Extracted same-class helpers and xdebug coverage tracing" rule, each
 	 * return path also gets a direct invoke.
@@ -893,10 +893,10 @@ class Test_Archive extends Base {
 	 * be: a plain event archive with more posts than fit on a page paginates
 	 * through the same code path.
 	 *
-	 * The twelve events are created earliest-first, so the required ordering —
-	 * ascending by event datetime — is the exact reverse of the
-	 * `wp_posts.post_date DESC` the archive produced before, and no page of
-	 * the required answer can coincide with a page of the old one.
+	 * The twelve events are created earliest-first. The required ordering is
+	 * ascending by event datetime, the exact reverse of the
+	 * `wp_posts.post_date DESC` the archive produced before, so no page of the
+	 * required answer can coincide with a page of the old one.
 	 *
 	 * @covers ::handle_event_archive_redirect
 	 *
@@ -940,9 +940,9 @@ class Test_Archive extends Base {
 	 * runs on a site whose `gatherpress_has_recurring_events` option is `'0'`,
 	 * once with the recurrence clause and result filters registered and once
 	 * with them removed, and asserts the two captures are byte-identical. A
-	 * `posts_clauses` callback capture cannot prove this — it only observes
-	 * the queries that reach that one filter — so the capture is taken from
-	 * `$wpdb->queries` across the whole request.
+	 * `posts_clauses` callback capture cannot prove this, because it only
+	 * observes the queries that reach that one filter. The capture is therefore
+	 * taken from `$wpdb->queries` across the whole request.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::attach_occurrences
@@ -996,13 +996,13 @@ class Test_Archive extends Base {
 	 * Two details make the capture comparable rather than merely repeatable.
 	 * The pair of requests is run once and thrown away before the capture
 	 * starts, because the first run of any request primes the object cache and
-	 * the second therefore issues fewer statements — comparing a cold capture
+	 * the second therefore issues fewer statements. Comparing a cold capture
 	 * against a warm one measures the cache, not the filters. And the current
 	 * GMT timestamp `Event\Query::adjust_event_sql()` interpolates is
 	 * normalized away, because two captures taken microseconds apart can still
 	 * straddle a second boundary. Nothing else is touched, so a structural
-	 * difference — an added join, an added column, an extra statement — still
-	 * fails the comparison.
+	 * difference still fails the comparison, whether that is an added join, an
+	 * added column, or an extra statement.
 	 *
 	 * @since 0.36.0
 	 *

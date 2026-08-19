@@ -101,7 +101,7 @@ final class Context {
 	 * read the write itself performs.
 	 *
 	 * The note is only ever taken when core is *certainly* about to make that
-	 * read, because a note nothing consumes is not inert -- it silently
+	 * read, because a note nothing consumes is not inert. It silently
 	 * disables occurrence substitution for the next read of the same key, which
 	 * is a wrong date with nothing anywhere to explain it. `note_meta_write()`
 	 * documents the three conditions; `add_metadata()` is deliberately not
@@ -231,7 +231,7 @@ final class Context {
 	 *
 	 * Hooked to `wp`. Clears first so a previous request in the same process
 	 * cannot leak, then derives context from the post the request actually
-	 * named — never from whatever post a loop later reaches.
+	 * named. A post a loop later reaches never establishes it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -251,8 +251,9 @@ final class Context {
 	 * rather than at `setup_hooks()` so a mid-request flip of the option is
 	 * honored. Without it, any crawler or referrer-spam bot appending the
 	 * occurrence query string to an ordinary
-	 * event permalink would reach `Occurrences::get()` — a raw, uncached
-	 * `$wpdb->get_row()` — on a site that has never authored a recurring event.
+	 * event permalink would reach `Occurrences::get()` on a site that has never
+	 * authored a recurring event, and that method is a raw, uncached
+	 * `$wpdb->get_row()`.
 	 *
 	 * The remaining two arms never change the resulting context, since
 	 * `Occurrences::get()` matches nothing for an empty identifier or a post ID
@@ -280,7 +281,7 @@ final class Context {
 	 * Filters `get_post_metadata`. Outside occurrence context it returns the
 	 * value untouched, so the meta read falls through to core. This is the
 	 * compatibility path that lets unmodified blocks render an occurrence's
-	 * date -- the event date block, the add-to-calendar links, the "has this
+	 * date. The event date block, the add-to-calendar links, the "has this
 	 * event passed" gate the RSVP blocks read, the block bindings and
 	 * structured data `Event\Setup` emits, and the feed all reach it through
 	 * `Event::get_datetime()`, which reads these five keys. Code inside the
@@ -336,7 +337,7 @@ final class Context {
 	 * disturb core's canonical-redirect machinery. In
 	 * `wp-includes/canonical.php`, on a resolved singular request
 	 * `redirect_canonical()` reaches `get_permalink()` only through branches
-	 * this request cannot be in — `is_singular() && $wp_query->post_count < 1`,
+	 * this request cannot be in: `is_singular() && $wp_query->post_count < 1`,
 	 * the `is_404()` recovery, the query-string `?name=`/`?p=` forms, and the
 	 * paginated `get_query_var( 'page' )` arm, none of which a matched
 	 * occurrence rewrite rule produces. It ends at
@@ -344,10 +345,10 @@ final class Context {
 	 * with `$redirect_url` still `false`.
 	 *
 	 * Withholding that arm, meanwhile, is a live defect rather than a neutral
-	 * choice: every link emitted from an occurrence page — the iCal `URL:`
-	 * field, `rel="canonical"`, share links, the RSVP confirmation email —
-	 * would point at the bare series URL, which resolves to the *next
-	 * upcoming* occurrence rather than the one being viewed.
+	 * choice: every link emitted from an occurrence page would point at the bare
+	 * series URL, which resolves to the *next upcoming* occurrence rather than
+	 * the one being viewed. That covers the iCal `URL:` field, `rel="canonical"`,
+	 * share links, and the RSVP confirmation email.
 	 *
 	 * The `$post` core hands this filter is `get_post()`'s cached object, not
 	 * the stamped clone, which is exactly why identity is resolved by ID
@@ -384,7 +385,7 @@ final class Context {
 	 * `Rewrite::get_occurrence_url()` composes the occurrence URL *on top of*
 	 * the series permalink, so a filtered read would append an occurrence
 	 * segment to a URL that already has one. That is not merely a recursion
-	 * hazard -- any caller building an occurrence URL while a loop row is set
+	 * hazard. Any caller building an occurrence URL while a loop row is set
 	 * up would get a doubled URL, whether or not this filter is what called it.
 	 *
 	 * The previous value is saved and restored rather than cleared, so a
@@ -457,8 +458,8 @@ final class Context {
 	 *
 	 * `Query::attach_occurrences()` stamps identity *and* the occurrence's own
 	 * datetime columns onto a clone of every result row, so this is pure
-	 * property access -- no query, and nothing keyed by list position or by
-	 * index. Identity is the composite `(series_post_id, recurrence_id)`. The
+	 * property access. There is no query, and nothing keyed by list position
+	 * or by index. Identity is the composite `(series_post_id, recurrence_id)`. The
 	 * values are the occurrence record's own columns rather than the anchor's
 	 * time applied to the occurrence's date.
 	 *
@@ -467,8 +468,8 @@ final class Context {
 	 * post's meta or permalink mid-iteration gets nothing from here. That is
 	 * the same scoping `maybe_prepend_cancelled_notice()` already applies.
 	 *
-	 * Only scheduled occurrences reach a loop -- the join in
-	 * `Query::expand_event_clauses()` filters on `status` -- so the row this
+	 * Only scheduled occurrences reach a loop, because the join in
+	 * `Query::expand_event_clauses()` filters on `status`, so the row this
 	 * rebuilds says so.
 	 *
 	 * @since 0.36.0
@@ -550,8 +551,8 @@ final class Context {
 	/**
 	 * Note the post and key a meta write is about to compare against.
 	 *
-	 * Filters `update_post_metadata` at `PHP_INT_MAX`. The value passes through
-	 * untouched — this is a notification, not a short-circuit.
+	 * Filters `update_post_metadata` at `PHP_INT_MAX`. This is a notification,
+	 * not a short-circuit, so the value passes through untouched.
 	 *
 	 * The note is taken only when `update_metadata()` will certainly reach the
 	 * `get_metadata_raw()` call that consumes it, which is exactly the three
@@ -568,7 +569,7 @@ final class Context {
 	 *
 	 * `add_post_metadata` is not hooked, and hooking it is the defect this
 	 * guard set replaced. `add_metadata()` does not call `get_metadata_raw()`
-	 * at all -- its `$unique` check is a direct `$wpdb->get_var()` -- so the
+	 * at all, since its `$unique` check is a direct `$wpdb->get_var()`, so the
 	 * note it took was never consumed. `update_metadata()` falling through to
 	 * `add_metadata()` for an absent key therefore armed a sentinel that
 	 * corrupted the next occurrence-scoped read of that key. Adds make no
@@ -630,8 +631,8 @@ final class Context {
 	 *
 	 * The `finally` is load-bearing. Any third-party `get_post_metadata` filter
 	 * that throws would otherwise leave the flag raised for the rest of the
-	 * request, silently disabling occurrence substitution everywhere below —
-	 * a wrong date with no error anywhere to explain it.
+	 * request, silently disabling occurrence substitution everywhere below. The
+	 * symptom is a wrong date with no error anywhere to explain it.
 	 *
 	 * @since 0.36.0
 	 *

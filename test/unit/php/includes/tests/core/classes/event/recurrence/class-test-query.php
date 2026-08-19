@@ -114,7 +114,7 @@ class Test_Query extends Base {
 	 *
 	 * Fixtures are arranged in production order: the datetime blob and its
 	 * derived row land first, then the recurrence blob, then the mirrors, then
-	 * the projection -- exactly the sequence a real save produces.
+	 * the projection. That is exactly the sequence a real save produces.
 	 *
 	 * @since 0.36.0
 	 *
@@ -249,7 +249,7 @@ class Test_Query extends Base {
 	 * Captures the clause array a real event query produces with the filter
 	 * registered and with it removed, and asserts the two are identical. The
 	 * early return in `expand_event_clauses()` is the only thing that can make
-	 * this pass -- delete it and every clause grows a join.
+	 * this pass, and deleting it makes every clause grow a join.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -814,9 +814,9 @@ class Test_Query extends Base {
 		$series = $this->create_series_at( $anchor, $now->modify( '+7 hours' ) );
 
 		// Clear the projected rows while the rule and its mirrors stay in
-		// place -- the state between a rule being saved and its occurrences
-		// being projected, and the state a rule that yields nothing leaves
-		// behind permanently.
+		// place. That is the state between a rule being saved and its
+		// occurrences being projected, and the state a rule that yields nothing
+		// leaves behind permanently.
 		Occurrences::get_instance()->delete_for_post( $series );
 
 		$this->assertSame(
@@ -990,7 +990,7 @@ class Test_Query extends Base {
 	 * Coverage for the other arm: an unordered query stays unordered.
 	 *
 	 * `'orderby' => 'none'` asks for no sort at all, and appending a tiebreaker
-	 * to an empty clause would hand it an `ORDER BY` it never had -- and a
+	 * to an empty clause would hand it an `ORDER BY` it never had, and a
 	 * filesort with it.
 	 *
 	 * @covers ::expand_event_clauses
@@ -1040,8 +1040,8 @@ class Test_Query extends Base {
 	 * Coverage for the measured query plan.
 	 *
 	 * The `COALESCE` ordering is not sargable, so a filesort is expected and
-	 * accepted. `Using temporary` is deliberately not asserted against -- a
-	 * `tax_query` produces one, and collapsing that away would collapse
+	 * accepted. `Using temporary` is deliberately not asserted against, since a
+	 * `tax_query` produces one and collapsing that away would collapse
 	 * occurrences too. The discriminating assertion is the one below it: the
 	 * occurrence join must stay index-served, which a row-count budget does not
 	 * detect at fixture scale.

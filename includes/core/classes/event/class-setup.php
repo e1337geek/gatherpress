@@ -536,7 +536,8 @@ final class Setup {
 	 *
 	 * `WP::handle_404()` runs inside `WP::main()`, several hooks before
 	 * `template_redirect`, and it judges the query WordPress parsed from the
-	 * URL — one row per event *post*. `handle_event_archive_redirect()` then
+	 * URL, which has one row per event *post*. `handle_event_archive_redirect()`
+	 * then
 	 * replaces that query with the occurrence-aware one, which has one row per
 	 * *occurrence* and therefore many more pages. On any page beyond the first,
 	 * the pre-substitution query has already run out of posts, so core 404s;
@@ -549,7 +550,7 @@ final class Setup {
 	 * `pre_handle_404` exists for exactly this: deferring the judgment to
 	 * something that knows more about the request than core does. Every branch
 	 * `handle_event_archive_redirect()` can take then makes the judgment once
-	 * its real query has run — `substitute_archive_query()` for the two archive
+	 * its real query has run: `substitute_archive_query()` for the two archive
 	 * rewrites, `maybe_404_paged_page()` for the page-as-regular-page branch.
 	 *
 	 * Neither the parameter nor the return value is typed as `bool`, and

@@ -17,9 +17,9 @@
  *
  * - A `'fields' => 'ids'` query is never expanded. `WP_Query` returns before
  *   `the_posts` for that shape, so identity cannot ride along, and the one
- *   production consumer — `Calendar\Setup::get_ical_list()` via
- *   `Event\Query::get_events_list()` — emits one VEVENT per entry from the
- *   anchor datetime. Expanding it produced duplicate VEVENTs sharing a UID.
+ *   production consumer emits one VEVENT per entry from the anchor datetime.
+ *   That consumer is `Calendar\Setup::get_ical_list()`, reached through
+ *   `Event\Query::get_events_list()`. Expanding it produced duplicate VEVENTs sharing a UID.
  *   Occurrence-aware reads go through `Occurrences::select_upcoming()`.
  * - Only queries carrying an upcoming/past bucket are expanded, because only
  *   those have the events-table join `COALESCE()` falls back to. A plain Query
@@ -301,7 +301,7 @@ final class Query {
 	 * The join is a `LEFT JOIN` with `status` in the join condition, never an
 	 * `INNER JOIN` and never `status` in the `WHERE`: either shape deletes
 	 * every non-recurring event from every list. That alone is not sufficient
-	 * though -- a series whose occurrences are all canceled matches no join
+	 * though. A series whose occurrences are all canceled matches no join
 	 * row, falls through with `NULL` occurrence columns, and would reappear at
 	 * its anchor date as an ordinary event. The `NOT EXISTS` guard scopes that
 	 * `NULL` fallback to posts with **no occurrence rows at all**, so a series
@@ -312,8 +312,8 @@ final class Query {
 	 * `Occurrences::select_by_horizon()`, and deliberately not the rule
 	 * mirror. Keying on the mirror instead asks "does this post have a rule",
 	 * which is `true` for a post whose rule has not projected any rows yet, or
-	 * whose rule legitimately produces none -- an `until` that precedes the
-	 * anchor, reachable by editing either end of that pair. Such a post would
+	 * whose rule legitimately produces none, such as an `until` that precedes
+	 * the anchor, reachable by editing either end of that pair. Such a post would
 	 * match no join row *and* be denied the `NULL` fallback, disappearing from
 	 * every list, the archive, and the admin screen while still being a
 	 * published event. Hiding a real event is strictly worse than showing it
@@ -347,8 +347,8 @@ final class Query {
 		// cannot disambiguate. `Calendar\Setup::get_ical_list()` is the live
 		// consumer of `Event\Query::get_events_list()`: it emits one VEVENT per
 		// entry, read from the post's *anchor* datetime, so expanding that
-		// query yields duplicate VEVENTs sharing one UID -- which RFC 5545
-		// forbids -- and burns the `posts_per_page` budget on them. The
+		// query yields duplicate VEVENTs sharing one UID, which RFC 5545
+		// forbids, and burns the `posts_per_page` budget on them. The
 		// occurrence-aware read API for GatherPress's own lists is the
 		// additive `Occurrences::select_upcoming()`, which returns
 		// `Occurrence_Ref[]` and carries identity on the object.
@@ -357,8 +357,8 @@ final class Query {
 		// up: `edit.php` is a post-management screen. Its rows carry
 		// Edit/Trash/View actions and bulk-action checkboxes keyed by post ID,
 		// and `Event\Admin_List` renders its columns from the post. Expanding
-		// it would emit one indistinguishable row per occurrence -- roughly
-		// fifty for a weekly series projected to the twelve-month horizon --
+		// it would emit one indistinguishable row per occurrence, roughly
+		// fifty for a weekly series projected to the twelve-month horizon,
 		// pushing every other event off the screen and making a bulk action on
 		// "a row" act on the whole series. Per-occurrence management belongs to
 		// a dedicated series screen, not to the generic post list.
@@ -367,7 +367,7 @@ final class Query {
 		// travel with the row.
 		//
 		// Arm 4 scopes the filter to queries `Event\Query` has already joined
-		// the events table onto -- the only case with an anchor column for
+		// the events table onto, the only case with an anchor column for
 		// `COALESCE()` to fall back to. A plain Query Loop over an event post
 		// type sets no upcoming/past bucket, so it gets no events join and is
 		// not expanded: it shows one entry per series, at the series anchor
@@ -380,8 +380,8 @@ final class Query {
 		// missing table is named in both the `LEFT JOIN` and the `NOT EXISTS`
 		// subquery, so the whole statement fails and an ordinary,
 		// non-recurring published event silently disappears from the list with
-		// nothing reported anywhere -- worse than a crash, because a crash gets
-		// reported. Not expanding at all is what makes the stated contract
+		// nothing reported anywhere. That is worse than a crash, because a crash
+		// gets reported. Not expanding at all is what makes the stated contract
 		// true: a blog without the table shows exactly what it would show with
 		// no recurrence code present. It is deliberately the last arm, so a
 		// site with no recurring events never pays for the check and its
@@ -413,14 +413,14 @@ final class Query {
 		$pieces['orderby'] = $this->coalesce_event_columns( (string) $pieces['orderby'], $events_table );
 
 		// Expansion turns a list of posts into a list of occurrences, and two
-		// occurrences of different series routinely share a start datetime --
+		// occurrences of different series routinely share a start datetime,
 		// which the ordering column alone cannot separate. MySQL's sort is not
 		// stable, so a tied pair can be ordered one way for `LIMIT 0, 10` and
 		// the other way for `LIMIT 10, 10`, putting one entry on two pages and
 		// the other on none. The canonical list key breaks the tie
 		// deterministically. Guarded on a non-empty clause for the same reason
 		// the `groupby` below is: an `orderby` of `none` must stay unordered
-		// rather than acquire an ORDER BY -- and a filesort -- it never had.
+		// rather than acquire an ORDER BY, and a filesort, it never had.
 		if ( '' !== (string) $pieces['orderby'] ) {
 			$pieces['orderby'] .= $wpdb->prepare(
 				', %i.ID ASC, %i.recurrence_id ASC',
@@ -443,8 +443,8 @@ final class Query {
 		// WordPress groups on the post ID whenever a tax_query or meta_query
 		// can duplicate rows. Collapsing on the post ID alone would collapse
 		// every occurrence of a series into one entry, so the group widens to
-		// the canonical list key -- the `(post_id, recurrence_id)` tuple --
-		// which de-duplicates in SQL, before LIMIT and before FOUND_ROWS.
+		// the canonical list key, the `(post_id, recurrence_id)` tuple, which
+		// de-duplicates in SQL, before LIMIT and before FOUND_ROWS.
 		if ( '' !== (string) $pieces['groupby'] ) {
 			$pieces['groupby'] .= $wpdb->prepare( ', %i.recurrence_id', $alias );
 		}
@@ -454,7 +454,7 @@ final class Query {
 		// The occurrence's own datetime columns travel with the row so the
 		// render path can read them off the result object rather than
 		// re-querying once per loop iteration. Selecting them costs nothing
-		// beyond the bytes -- the row is already joined and already read.
+		// beyond the bytes, since the row is already joined and already read.
 		foreach ( Context::META_KEY_COLUMNS as $column ) {
 			$pieces['fields'] .= $wpdb->prepare(
 				', %i.%i AS %i',
@@ -504,8 +504,9 @@ final class Query {
 	 * Stamp occurrence identity onto a query's results.
 	 *
 	 * Filters `the_posts` at priority 10. Every result set reaching this filter
-	 * is a list of `WP_Post` objects -- `WP_Query` returns before `the_posts`
-	 * for both the `'ids'` and the `'id=>parent'` field shapes -- so the
+	 * is a list of `WP_Post` objects, because `WP_Query` returns before
+	 * `the_posts` for both the `'ids'` and the `'id=>parent'` field shapes, so
+	 * the
 	 * plugin's own `Event\Query::get_events_list()` contract is untouched, and
 	 * `Occurrences::select_upcoming()` remains the occurrence-aware read API
 	 * for GatherPress's own lists.
@@ -551,7 +552,7 @@ final class Query {
 	 * to overlook. `WP_Query` calls `update_post_caches()` only when
 	 * `$is_unfiltered_query` holds *and* `$unfiltered_posts === $this->posts`.
 	 * On an expanded query the appended `fields` column already falsifies the
-	 * first half -- but `attach_occurrences()` also runs on event queries where
+	 * first half. But `attach_occurrences()` also runs on event queries where
 	 * `expand_event_clauses()` bailed (a plain Query Loop, which gets no events
 	 * join), and there `fields` is untouched and `$is_unfiltered_query` is
 	 * `true`. Stamping in place would keep the identity comparison true and
