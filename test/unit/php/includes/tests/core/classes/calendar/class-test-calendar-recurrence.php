@@ -28,7 +28,6 @@ use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
 use GatherPress\Core\Event\Recurrence\Timezone_Guard;
-use GatherPress\Core\Setup;
 use GatherPress\Core\Topic;
 use GatherPress\Core\Venue\Venue;
 use GatherPress\Tests\Base;
@@ -82,14 +81,15 @@ class Test_Calendar_Recurrence extends Base {
 	protected string $anchor_offset = '-10 days';
 
 	/**
-	 * Ensure the occurrence table exists, and snapshot the rewrite state.
+	 * Start every test from an empty occurrence table, and snapshot the
+	 * rewrite state.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Context::flush_resolved();
 		Context::get_instance()->clear();
 
