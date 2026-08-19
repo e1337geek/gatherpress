@@ -116,7 +116,7 @@ final class Context {
 	 * Request-scoped memo of `resolve_in_series()` results.
 	 *
 	 * Keyed `{post_id}:{recurrence_id}`. Values are the resolved row or null,
-	 * so a miss is remembered as cheaply as a hit — a fabricated identifier
+	 * so a miss is remembered as cheaply as a hit. A fabricated identifier
 	 * costs one query per request rather than one per lookup.
 	 *
 	 * @since 0.36.0
@@ -221,12 +221,12 @@ final class Context {
 	/**
 	 * Enter the context of one occurrence named by a request parameter.
 	 *
-	 * The counterpart to `set()` for requests that never reach `wp` — REST
-	 * being the whole of them, since core's `rest_api_loaded()` runs on
-	 * `parse_request` and ends in `die()`, so `sync()` is never called for a
-	 * REST request. Resolution goes through `Series::resolve_post_ids()` (PRD
-	 * C-2) rather than pinning the one post the caller named, so an occurrence
-	 * a forward split has moved onto a sibling post still resolves.
+	 * The counterpart to `set()` for requests that never reach `wp`, which is
+	 * the whole of REST: core's `rest_api_loaded()` runs on `parse_request` and
+	 * ends in `die()`, so `sync()` is never called for a REST request.
+	 * Resolution goes through `Series::resolve_post_ids()` rather than pinning
+	 * the one post the caller named, so an occurrence a forward split has moved
+	 * onto a sibling post still resolves.
 	 *
 	 * @since 0.36.0
 	 *
@@ -253,8 +253,8 @@ final class Context {
 	 * fabricated `recurrence_id` costs nothing there.
 	 *
 	 * The result is memoized per `(post_id, recurrence_id)` for the life of the
-	 * request. A REST dispatch resolves the same pair twice — once in the
-	 * validate callback and once on entry — and the two stay separate
+	 * request. A REST dispatch resolves the same pair twice, once in the
+	 * validate callback and once on entry. The two stay separate
 	 * deliberately: WordPress runs validate callbacks inside
 	 * `has_valid_params()`, which is *before* `permission_callback`, so
 	 * resolving as a side effect of validation would enter context on requests
@@ -292,9 +292,10 @@ final class Context {
 	/**
 	 * Discard the request-scoped resolution memo.
 	 *
-	 * Production never needs this — the memo lives and dies with the request —
-	 * but a test process projects and re-projects occurrences inside one PHP
-	 * lifetime, so it needs a way to tell the memo that storage moved under it.
+	 * Production never needs this, since the memo lives and dies with the
+	 * request. A test process projects and re-projects occurrences inside one
+	 * PHP lifetime, so it needs a way to tell the memo that storage moved under
+	 * it.
 	 *
 	 * @since 0.36.0
 	 *

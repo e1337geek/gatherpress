@@ -6,7 +6,7 @@
  * existed and still reached nothing: the only code that entered occurrence
  * context was the test suite itself. `Context::sync()` is hooked on `wp`, and
  * core's `rest_api_loaded()` runs on `parse_request` and ends in `die()`, so
- * `WP::main()` never fires `wp` for a REST request — the two front-end write
+ * `WP::main()` never fires `wp` for a REST request. The two front-end write
  * paths and the block's read path all ran series-wide.
  *
  * Every test here therefore drives `rest_do_request()`, the entry point the
@@ -142,7 +142,7 @@ class Test_Rsvp_Rest extends Base {
 	 * reason the class does not use `Occurrence_Fixtures`' fixed 2026-09-03
 	 * anchor.** `Rest_Api::update_rsvp()` gates its write on
 	 * `! $event->has_event_past()`, and `Rsvp\Form::process_rsvp()` bails 400 on
-	 * the same check — both reading the *series* post meta, which occurrence
+	 * the same check. Both read the *series* post meta, which occurrence
 	 * context never substitutes. Against a pinned anchor the entire suite
 	 * silently stops writing anything the day real time crosses it, and six of
 	 * these tests would have started failing on 2026-09-04 while three others
@@ -308,8 +308,8 @@ class Test_Rsvp_Rest extends Base {
 	 *
 	 * The guard against a date bomb, kept as a first-class test rather than left
 	 * implicit in `relative_anchor()`. Every write in this file passes through
-	 * `! $event->has_event_past()`, which reads the **series** post meta —
-	 * occurrence context never substitutes it. When that gate closes, six tests
+	 * `! $event->has_event_past()`, which reads the **series** post meta.
+	 * Occurrence context never substitutes it. When that gate closes, six tests
 	 * here fail and three more keep passing with nothing written at all, and the
 	 * failures name RSVP scoping rather than the fixture date, so the cause is
 	 * expensive to find. If someone re-pins the anchor to a calendar date, this
@@ -642,9 +642,9 @@ class Test_Rsvp_Rest extends Base {
 	 * This is the non-recurring-parity half of the verdict, so it is written to
 	 * be able to fail for the reason it names. The bare term assertion could
 	 * not: `find()` returns null when no RSVP exists, `->comment->comment_ID`
-	 * casts that to `0`, and `wp_get_object_terms( 0, … )` returns `array()` —
-	 * identical to the expected value, so a refused write left it green (rule
-	 * 3a #8). The comment ID is asserted real first, and the RSVP is asserted
+	 * casts that to `0`, and `wp_get_object_terms( 0, … )` returns `array()`.
+	 * That is identical to the expected value, so a refused write left it green
+	 * (rule 3a #8). The comment ID is asserted real first, and the RSVP is asserted
 	 * readable series-wide, which is the behavior "series-wide RSVP" actually
 	 * names rather than merely the absence of a term.
 	 *
@@ -696,9 +696,9 @@ class Test_Rsvp_Rest extends Base {
 	 * The rsvp-status-html route renders only the named occurrence's roster.
 	 *
 	 * Both sides are asserted deliberately. A lone `0` on the sibling is
-	 * produced by two different mechanisms — "the roster is scoped to B" and
-	 * "no RSVP exists anywhere" — so on its own it stays green with the write
-	 * path completely dead, which is exactly how it behaves once the fixture
+	 * produced by two different mechanisms: "the roster is scoped to B" and
+	 * "no RSVP exists anywhere". On its own it therefore stays green with the
+	 * write path completely dead, which is exactly how it behaves once the fixture
 	 * anchor goes stale. The `1` on A is what excludes the
 	 * coincidence: it can only be produced by an RSVP that really was written
 	 * and really is scoped, and this is the only REST-level test of the block
@@ -951,9 +951,9 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * Every RSVP route the change touches stays free on a plain site.
 	 *
-	 * Driven through `rest_do_request()` — the entry point, not the callback —
+	 * Driven through `rest_do_request()` rather than through the callback,
 	 * because the argument definition, its validation and the context entry all
-	 * live between the two. Each of the four routes is dispatched with the
+	 * live between the entry point and the callback. Each of the four routes is dispatched with the
 	 * shape a real client sends, and the query log is checked for any mention
 	 * of the occurrence table or the occurrence taxonomy.
 	 *
@@ -1047,7 +1047,7 @@ class Test_Rsvp_Rest extends Base {
 	 * A fabricated `recurrence_id` costs a plain site nothing either.
 	 *
 	 * A crawler appending the argument to an ordinary event's RSVP request
-	 * must not reach the occurrence table — the validation short-circuits on
+	 * must not reach the occurrence table. The validation short-circuits on
 	 * the autoloaded option before any lookup.
 	 *
 	 * @covers ::validate_recurrence_id
@@ -1100,7 +1100,7 @@ class Test_Rsvp_Rest extends Base {
 	 * The request path resolves through the series, not the named post.
 	 *
 	 * Nothing else in the suite pins this. `Test_Occurrences` pins that
-	 * `find_in_series()` emits `IN (…)`, but that is one layer down — replacing
+	 * `find_in_series()` emits `IN (…)`, but that is one layer down. Replacing
 	 * `Series::resolve_post_ids( $post_id )` with `array( $post_id )` inside
 	 * `Context::resolve_in_series()` left the whole suite green, because with a
 	 * one-post series the two are indistinguishable. Installing the
@@ -1156,7 +1156,7 @@ class Test_Rsvp_Rest extends Base {
 	 * An RSVP named on a sibling post lands on the occurrence's owner.
 	 *
 	 * The failure this pins is the quiet one. `Context` deliberately resolves
-	 * across the series, so validation passes and context is entered — and
+	 * across the series, so validation passes and context is entered.
 	 * `Rsvp_Occurrence` then used to compare the context's `series_post_id`
 	 * against the post the request named and reject the mismatch. Every scoping
 	 * consumer returned null, so the RSVP was written **series-wide with no
@@ -1249,8 +1249,8 @@ class Test_Rsvp_Rest extends Base {
 	 * `enter_occurrence_context()` runs a second lookup of an identifier the
 	 * validate callback already resolved. Discarding its result meant that if
 	 * the row disappeared between the two queries the request continued
-	 * **series-wide under a 200** — the exact outcome the validate callback
-	 * exists to prevent, arrived at by a different door.
+	 * **series-wide under a 200**. That is the exact outcome the validate
+	 * callback exists to prevent, arrived at by a different door.
 	 *
 	 * The race is simulated deterministically: the row is deleted from a filter
 	 * that fires after validation and before the callback.
@@ -1324,7 +1324,7 @@ class Test_Rsvp_Rest extends Base {
 			$occurrence_id = $this->occurrence_a;
 
 			// `rest_request_before_callbacks` fires after validation and
-			// permission checks, and before the route callback — the exact
+			// permission checks, and before the route callback. That is the exact
 			// window the second lookup can lose the row in.
 			$vanish = static function ( $response ) use ( $wpdb, $table, $post_id, $occurrence_id ) {
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -1363,7 +1363,7 @@ class Test_Rsvp_Rest extends Base {
 	 * F-1: a nested dispatch does not tear down the outer request's context.
 	 *
 	 * `rest_request_after_callbacks` is global and fires for every dispatch,
-	 * including one a route makes internally while holding context —
+	 * including one a route makes internally while holding context.
 	 * `rsvp_status_html()` renders arbitrary blocks, any of which may call
 	 * `rest_do_request()`. A teardown that could not tell which request it was
 	 * leaving would clear the outer context mid-callback and unhook itself, so
@@ -1371,7 +1371,7 @@ class Test_Rsvp_Rest extends Base {
 	 * and never clear at all.
 	 *
 	 * The inner dispatch here deliberately names **no** occurrence, so it
-	 * registers no teardown of its own — which is what makes the outer one the
+	 * registers no teardown of its own. That is what makes the outer one the
 	 * only thing that could have cleared the context.
 	 *
 	 * @covers ::leave_occurrence_context
@@ -1383,7 +1383,7 @@ class Test_Rsvp_Rest extends Base {
 		$occurrence_id = $this->occurrence_a;
 		$observed      = null;
 
-		// `comments_clauses` fires while the outer route is reading its roster —
+		// `comments_clauses` fires while the outer route is reading its roster,
 		// inside the callback, with the context held. That is the position a
 		// block render occupies on the `rsvp-status-html` route, which is the
 		// real-world path that can dispatch internally.
@@ -1441,7 +1441,7 @@ class Test_Rsvp_Rest extends Base {
 	 *
 	 * The form route inserts its comment directly rather than through
 	 * `Rsvp\Storage::save()`, which is where every other write does its
-	 * invalidation — `Cache::delete` appeared nowhere in `Rsvp\Form` at all. So
+	 * invalidation. `Cache::delete` appeared nowhere in `Rsvp\Form` at all. So
 	 * an anonymous RSVP left the warm counts reading whatever they read before
 	 * it, for the length of `Cache::CACHE_EXPIRATION`, and under a persistent
 	 * object cache that stale total was shared by every visitor at once.
@@ -1504,8 +1504,9 @@ class Test_Rsvp_Rest extends Base {
 
 		// The response the form created really exists on this occurrence, so the
 		// invalidation above was invalidating something real. It is not yet
-		// *attending* — an open-form RSVP stays unapproved until its token is
-		// confirmed — so the assertion is on the stored comment, not the count.
+		// *attending*, because an open-form RSVP stays unapproved until its token
+		// is confirmed. The assertion is therefore on the stored comment, not the
+		// count.
 		$this->assertSame(
 			array( Rsvp_Occurrence::term_slug( $post_id, $this->occurrence_a ) ),
 			$this->term_slugs( (int) $response->get_data()['comment_id'], Rsvp_Occurrence::TAXONOMY ),
@@ -1517,9 +1518,9 @@ class Test_Rsvp_Rest extends Base {
 	 * Widen a series so `$member` resolves to both posts.
 	 *
 	 * Installs the `gatherpress_series_post_ids` filter the forward split will
-	 * populate for real, which is the only seam by which a multi-post series can exist —
-	 * `Series` is final with a protected constructor precisely so no test can
-	 * fake one any other way.
+	 * populate for real, which is the only seam by which a multi-post series can
+	 * exist. `Series` is final with a protected constructor precisely so no test
+	 * can fake one any other way.
 	 *
 	 * @since 0.36.0
 	 *
@@ -2101,7 +2102,7 @@ class Test_Rsvp_Rest extends Base {
 	 * The context assertions above are necessary but not sufficient: restoring
 	 * the row and then storing against the wrong one would satisfy them. This
 	 * drives the write itself, and it nests at the one moment that makes the
-	 * defect visible in stored data — inside `Rsvp\Storage::save()`, after the
+	 * defect visible in stored data: inside `Rsvp\Storage::save()`, after the
 	 * comment args are built and before the occurrence term is stamped. With a
 	 * teardown that cleared rather than restored, the stamp then read no context
 	 * and the response was written series-wide while the responder believed they

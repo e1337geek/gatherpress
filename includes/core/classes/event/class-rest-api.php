@@ -71,7 +71,7 @@ final class Rest_Api {
 	 * Each frame is `array( 'request' => WP_REST_Request, 'previous' => array|null )`:
 	 * the dispatch that entered a context, and whatever context was standing
 	 * when it did. A stack rather than a single slot because REST dispatch
-	 * nests — `rsvp_status_html()` renders arbitrary block content, any of which
+	 * nests. `rsvp_status_html()` renders arbitrary block content, any of which
 	 * may call `rest_do_request()` for a different occurrence of the same
 	 * series. With one slot the inner dispatch overwrote the outer request's
 	 * identity, and its teardown then cleared the context and unhooked the
@@ -405,10 +405,10 @@ final class Rest_Api {
 	/**
 	 * Build the shared optional `recurrence_id` argument definition.
 	 *
-	 * Optional everywhere. An absent argument means the series — the behavior
-	 * every one of these routes has always had — so an unmodified client is
-	 * unaffected and a site with no recurring events never reaches any of the
-	 * occurrence machinery at all.
+	 * Optional everywhere. An absent argument means the series, the behavior
+	 * every one of these routes has always had. An unmodified client is
+	 * therefore unaffected, and a site with no recurring events never reaches
+	 * any of the occurrence machinery at all.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1117,7 +1117,7 @@ final class Rest_Api {
 		// Step 3 of resolve-authorize-use: the mutation runs against the post
 		// that owns the authorized occurrence, not against whichever post the
 		// request named. The two are the same post until a forward split moves
-		// an occurrence onto a sibling, and after one they are not — writing to
+		// an occurrence onto a sibling, and after one they are not. Writing to
 		// the named post there would store the response under an owner no
 		// reader of that occurrence queries by.
 		$identity = $this->requested_occurrence( $request );

@@ -5,9 +5,9 @@
  * An occurrence is identified by the composite
  * `(owner_post_id, recurrence_id)`, never by the recurrence identifier alone
  * and never by the post a request happened to name. Before this class the
- * composite existed in five partial forms — the occurrence table's primary
+ * composite existed in five partial forms: the occurrence table's primary
  * key, `Context`'s resolved row, the `_gatherpress_occurrence` term slug, the
- * RSVP cache key, and a magic token's comment — and each consumer rebuilt it
+ * RSVP cache key, and a magic token's comment. Each consumer rebuilt it
  * from whichever half was nearest. That is what let a token issued for one
  * occurrence authorize a write to another: routing resolved one composite,
  * authorization compared a different one, and the mutation used a third.

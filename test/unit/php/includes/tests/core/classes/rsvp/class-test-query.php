@@ -1302,8 +1302,8 @@ class Test_Query extends Base {
 	 * A taxonomy-scoped read gets a cache key that varies with its scope.
 	 *
 	 * `tax_query` is not one of `WP_Comment_Query`'s declared query vars, so it
-	 * contributes nothing to the cache key that class builds — two reads
-	 * differing only by taxonomy scope hash to the same key and the second is
+	 * contributes nothing to the cache key that class builds. Two reads
+	 * differing only by taxonomy scope hash to the same key, and the second is
 	 * served the first's comment IDs. Deriving `cache_domain` in this funnel is
 	 * what stops a caller who forgets it from poisoning the entry rather than
 	 * merely missing it, and `taxonomy_query()` is a global `comments_clauses`

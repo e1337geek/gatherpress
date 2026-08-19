@@ -3,9 +3,9 @@
  * Scaling tests for GatherPress\Core\Rsvp\Storage.
  *
  * One RSVP write must cost a fixed number of queries however many RSVPs the
- * event already holds. It did not: `Rsvp::save()` reads the whole set twice --
+ * event already holds. It did not. `Rsvp::save()` reads the whole set twice,
  * once through `attending_limit_reached()` and once through
- * `check_waiting_list()` -- and `Storage::hydrate()` asked for each comment's
+ * `check_waiting_list()`, and `Storage::hydrate()` asked for each comment's
  * status and provider terms one comment at a time. Two queries per stored RSVP
  * per write makes filling an event quadratic.
  *
@@ -239,7 +239,7 @@ class Test_Storage_Scaling extends Base {
 	 * for: `get_value_from_object_terms()` distinguishes "not primed" (`false`)
 	 * from "primed empty" (`array()`) precisely so the empty case costs no
 	 * query, and only a query-count window can tell the two apart. Asserting
-	 * the cache contents alone leaves that branch verified by nothing —
+	 * the cache contents alone leaves that branch verified by nothing, since
 	 * relaxing the check to `empty( $terms )` passes it.
 	 *
 	 * @covers ::prime_term_cache

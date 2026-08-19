@@ -712,7 +712,7 @@ class Test_Backcompat extends Base {
 	 *
 	 * `select_by_horizon()` is the shared body behind both `select_upcoming()`
 	 * and `select_past()`, and this class's own docblocks name it as *the*
-	 * occurrence-aware read API for GatherPress's own lists -- so it is what a
+	 * occurrence-aware read API for GatherPress's own lists, so it is what a
 	 * third-party consumer calls, and it is a public entry point. On a site whose
 	 * `gatherpress_has_recurring_events` option is `'0'` it must not name the
 	 * occurrence table in any SQL it issues, and it must still return the

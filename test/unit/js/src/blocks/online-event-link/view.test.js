@@ -58,8 +58,8 @@ const OCCURRENCES = [ '20260823T180000', '20260829T180000' ];
  * The block reveals a private meeting URL once the visitor is attending, and it
  * reads that reveal out of the same `state.posts` slice the RSVP blocks write.
  * Keyed on the post ID alone, attending one date of a series revealed the link
- * on every other date's row too — the worst-consequence instance of this defect,
- * since the link is the thing the RSVP gate exists to protect.
+ * on every other date's row too. That is the worst-consequence instance of
+ * this defect, since the link is the thing the RSVP gate exists to protect.
  */
 describe( 'online-event-link view per-occurrence keying', () => {
 	let state;

@@ -73,7 +73,7 @@ const SERIES_POST_ID = 42;
 const OCCURRENCES = [ '20260823T180000', '20260829T180000', '20260830T180000' ];
 
 /**
- * Three ordinary, unrelated events — the non-recurring control group.
+ * Three ordinary, unrelated events, used as the non-recurring control group.
  */
 const PLAIN_POST_IDS = [ 11, 12, 13 ];
 
@@ -217,7 +217,7 @@ describe( 'RSVP state across many occurrence rows of one series', () => {
 			requestBodies.push( body );
 
 			// Echo the submitted guest count and anonymity back, as the real
-			// route does — the merge below writes the response, not the request,
+			// route does. The merge below writes the response, not the request,
 			// so a fixed payload would silently undo what the visitor sent.
 			return Promise.resolve( {
 				status: 200,
@@ -332,7 +332,7 @@ describe( 'RSVP state across many occurrence rows of one series', () => {
 		// The visitor is already attending the second occurrence, with three
 		// guests, anonymously. Only that row's slice carries those values, so a
 		// read keyed on the bare post ID finds nothing, `initPostContext` seeds
-		// a fresh slice, and the toggle silently zeroes both — the visitor is
+		// a fresh slice, and the toggle silently zeroes both. The visitor is
 		// removed from a date they never touched and their guests vanish.
 		state.posts = {};
 		state.posts[ `${ SERIES_POST_ID }:${ OCCURRENCES[ 1 ] }` ] = {
@@ -416,7 +416,7 @@ describe( 'RSVP state across many occurrence rows of one series', () => {
 		inputs[ 1 ].value = '3';
 
 		// Guests are only editable once attending, and `sendRsvpApiRequest`
-		// refuses to send a `no_status` change — so the fixture starts from the
+		// refuses to send a `no_status` change, so the fixture starts from the
 		// state the control is actually reachable in.
 		state.posts = {};
 		contexts.forEach( ( context ) => {

@@ -147,7 +147,7 @@ final class Query {
 	 * Give a taxonomy-scoped comment query a cache key that varies with its scope.
 	 *
 	 * `WP_Comment_Query::get_comments()` builds its cache key from its own
-	 * declared query vars, and `tax_query` is not one of them — it reaches the
+	 * declared query vars, and `tax_query` is not one of them. It reaches the
 	 * SQL only through `taxonomy_query()`, a `comments_clauses` filter. Two
 	 * queries differing solely by `tax_query` therefore hash to the same key,
 	 * and the second is served the first one's comment IDs. `cache_domain` is

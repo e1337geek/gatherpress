@@ -10,8 +10,8 @@
  * occurrence URL of a series to a post of that series
  * (`Series::resolve_post_ids()` returns `array( $post_id )` until a forward
  * split widens it). Driving the request is therefore the only way to prove the
- * property that matters -- that a visitor landing on any occurrence
- * page sees the series' venue -- rather than proving that a term lookup works.
+ * property that matters, that a visitor landing on any occurrence page sees
+ * the series' venue, rather than proving that a term lookup works.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -86,8 +86,8 @@ class Test_Venue_Inheritance extends Base {
 	 * that all five daily occurrences are upcoming:
 	 * `test_venue_filtered_query_returns_occurrences_of_matching_series()`
 	 * counts them out of an `upcoming` bucket, so a pinned anchor would shed
-	 * one occurrence per day once the date passed -- 5, 4, 3 -- and report a
-	 * venue-filtering regression rather than a stale fixture.
+	 * one occurrence per day once the date passed, counting 5, then 4, then 3,
+	 * and report a venue-filtering regression rather than a stale fixture.
 	 * `test_the_fixture_series_is_never_in_the_past()` fails by name if this is
 	 * ever re-pinned.
 	 *

@@ -57,8 +57,8 @@ const OCCURRENCES = [ '20260823T180000', '20260829T180000' ];
  * The count block seeds `state.posts[…].eventResponses` from a `data-counts`
  * attribute the server renders per row, then watches that slice. Keyed on the
  * post ID alone, the second row of a series overwrites the first's counts on
- * page load and every row then reports the same number — over correct server
- * markup, which is what makes it invisible to a PHP test.
+ * page load and every row then reports the same number. The server markup is
+ * correct throughout, which is what makes it invisible to a PHP test.
  */
 describe( 'rsvp-count view per-occurrence keying', () => {
 	let state;

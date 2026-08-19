@@ -3,9 +3,9 @@
  * Class handles unit tests for GatherPress\Core\Event\Recurrence\Rsvp_Occurrence.
  *
  * One RSVP belongs to one occurrence, not to the series. The
- * tests that matter here therefore drive the production entry points --
- * `Rsvp::save()`, `Rsvp::get()`, `Rsvp::responses()` -- inside a real occurrence
- * context, rather than calling the taxonomy helpers directly. A test that only
+ * tests that matter here therefore drive the production entry points
+ * `Rsvp::save()`, `Rsvp::get()` and `Rsvp::responses()` inside a real
+ * occurrence context, rather than calling the taxonomy helpers directly. A test that only
  * asserted `assign()` wrote a term would pass against a read path that ignores
  * the term entirely.
  *
@@ -468,7 +468,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * A site with no recurring events pays nothing for this feature.
 	 *
 	 * Asserts on the query log across the real `Rsvp::save()` entry point, not
-	 * on a return value -- an occurrence term written on a non-recurring site
+	 * on a return value. An occurrence term written on a non-recurring site
 	 * is invisible to every return value in the flow.
 	 *
 	 * @covers ::assign
@@ -596,7 +596,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * Approving an RSVP through its token invalidates the occurrence's cache key.
 	 *
 	 * `handle_rsvp_token()` runs on `init`, before `wp`, so there is no
-	 * occurrence context for `Cache::delete()` to resolve from — the occurrence
+	 * occurrence context for `Cache::delete()` to resolve from. The occurrence
 	 * has to come off the comment's own term instead. Without that, the
 	 * occurrence key survives the approval and serves stale counts for the
 	 * length of `Cache::CACHE_EXPIRATION`, to every visitor at once under a
@@ -625,8 +625,8 @@ class Test_Rsvp_Occurrence extends Base {
 		// this is also the production shape. Warming while context was still
 		// set made `Cache::set( $post_id, … )` resolve to the occurrence key
 		// rather than the series one, so both writes landed on the same key and
-		// the second silently overwrote the first — which the pre-assertions
-		// below now catch.
+		// the second silently overwrote the first. The pre-assertions below now
+		// catch that.
 		Context::get_instance()->clear();
 
 		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ) );
@@ -634,7 +634,7 @@ class Test_Rsvp_Occurrence extends Base {
 
 		// Both keys must exist independently before the approval, exactly as in
 		// the sibling test above. Without these, "both were invalidated" is
-		// satisfied by there never having been anything to invalidate — and the
+		// satisfied by there never having been anything to invalidate. The
 		// occurrence key is the one this test is actually about.
 		$this->assertSame(
 			array( 'all' => array( 'count' => 99 ) ),
@@ -789,7 +789,7 @@ class Test_Rsvp_Occurrence extends Base {
 		// The constructor is empty but not pointless, and this is the assertion
 		// that says so: `Traits\Singleton` declares no constructor, so deleting
 		// this one hands the class PHP's implicit *public* one and `new
-		// Rsvp_Occurrence()` becomes legal — two instances of a singleton.
+		// Rsvp_Occurrence()` becomes legal, allowing two instances of a singleton.
 		$this->assertTrue(
 			( new \ReflectionClass( Rsvp_Occurrence::class ) )->getConstructor()->isProtected(),
 			'Failed to assert the constructor stays protected so get_instance() is the only way to build one.'
@@ -826,8 +826,8 @@ class Test_Rsvp_Occurrence extends Base {
 		Rsvp_Occurrence::get_instance()->assign( $comment_id, 12, self::OCCURRENCE_A );
 
 		// A plain comment reaching the callback, and the same call with no
-		// comment object at all — the shape WordPress uses in a few legacy
-		// `do_action( 'delete_comment', $id )` call sites.
+		// comment object at all, which is the shape WordPress uses in a few
+		// legacy `do_action( 'delete_comment', $id )` call sites.
 		Cleanup::get_instance()->delete_term_relationships( $comment_id, get_comment( $comment_id ) );
 		Cleanup::get_instance()->delete_term_relationships( $comment_id );
 
@@ -1168,8 +1168,8 @@ class Test_Rsvp_Occurrence extends Base {
 	 * Removing an attendee invalidates the caches their removal changed.
 	 *
 	 * `Rsvp::save()` invalidated *after* bailing on a null `process()` result,
-	 * and the `no_status` path — the one that trashes the comment — is exactly
-	 * the path that returns null. So the single save that removes an attendee
+	 * and the `no_status` path is exactly the path that returns null. That is
+	 * the path that trashes the comment. So the single save that removes an attendee
 	 * was the single save that skipped invalidation, leaving them visible in
 	 * warm counts for the length of `Cache::CACHE_EXPIRATION` and, under a
 	 * persistent object cache, visible to every visitor at once.
@@ -1207,7 +1207,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * The occurrence read path gets a scope-varying comment-query cache domain.
 	 *
 	 * `WP_Comment_Query::get_comments()` hashes its cache key from its declared
-	 * query vars, and `tax_query` is not one of them — it reaches the SQL only
+	 * query vars, and `tax_query` is not one of them. It reaches the SQL only
 	 * through a `comments_clauses` filter. Two reads differing solely by
 	 * occurrence would hash identically and the second would be served the
 	 * first one's comment IDs.
@@ -1216,7 +1216,7 @@ class Test_Rsvp_Occurrence extends Base {
 	 * that, for every taxonomy-scoped read rather than only the ones that
 	 * remember to set a domain. `Storage::scope_to_occurrence()` used to set one
 	 * of its own, which short-circuited the derivation and left two mechanisms
-	 * where the local one was the weaker — keyed on the identifier alone where
+	 * where the local one was the weaker. It keyed on the identifier alone where
 	 * the derived key covers the series post too.
 	 *
 	 * @covers \GatherPress\Core\Rsvp\Query::ensure_cache_domain
@@ -1244,7 +1244,7 @@ class Test_Rsvp_Occurrence extends Base {
 
 		// The save above already ran occurrence A's comment query, so without
 		// this the A read below is served from `WP_Comment_Query`'s own object
-		// cache and never reaches `comments_clauses` — leaving one domain
+		// cache and never reaches `comments_clauses`, leaving one domain
 		// observed and the comparison vacuous.
 		wp_cache_flush();
 

@@ -114,7 +114,7 @@ function announceRsvpSuccess( res, previousOnlineLink ) {
  * occurrences of one series on one response, and every one of them would then
  * send the same date.
  *
- * The server cannot derive it either — a REST request never fires `wp`, so the
+ * The server cannot derive it either. A REST request never fires `wp`, so the
  * occurrence context the page was rendered in does not exist by the time the
  * route runs.
  *
@@ -141,9 +141,9 @@ export function withRecurrenceId( recurrenceId ) {
  * every row of a series into one entry and an RSVP on one date visibly applies
  * to all of them.
  *
- * A row with no occurrence — every ordinary event — gets the bare `postId`
- * back, unchanged and unstringified, so its state shape and its requests are
- * exactly what they were. The two forms cannot collide: a bare key is all
+ * A row with no occurrence, meaning every ordinary event, gets the bare
+ * `postId` back, unchanged and unstringified, so its state shape and its
+ * requests are exactly what they were. The two forms cannot collide: a bare key is all
  * digits, and a composite one always carries the `:` separator.
  *
  * @since 0.36.0
@@ -164,7 +164,7 @@ export function getPostKey( postId, recurrenceId ) {
  * If no entry exists, it creates one with default values for event responses,
  * the current user's RSVP status, and other RSVP-related details.
  *
- * The key is whatever `getPostKey()` returns for the block instance — the bare
+ * The key is whatever `getPostKey()` returns for the block instance: the bare
  * post ID for an ordinary event, `{postId}:{recurrenceId}` for one occurrence
  * row of a recurring series.
  *

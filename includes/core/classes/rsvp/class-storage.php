@@ -245,9 +245,9 @@ final class Storage {
 	 *
 	 * Hydration reads one status term and one provider term per comment, and
 	 * asking for them a comment at a time made a full read cost two queries per
-	 * stored RSVP. Because every write reads the whole set — once through
+	 * stored RSVP. Every write reads the whole set twice, once through
 	 * `Rsvp::attending_limit_reached()` and once through
-	 * `Rsvp::check_waiting_list()` — the cost of the nth response was
+	 * `Rsvp::check_waiting_list()`. The cost of the nth response was therefore
 	 * proportional to n, and filling an event was quadratic.
 	 *
 	 * This mirrors `update_object_term_cache()` rather than calling it, because
@@ -282,7 +282,7 @@ final class Storage {
 
 		// No early return for an empty set: `wp_get_object_terms()` bails on one
 		// itself, so a guard here would be a branch no test could distinguish.
-		// The list is not deduplicated either — a comment uncached in both
+		// The list is not deduplicated either. A comment uncached in both
 		// taxonomies appears twice, `IN ( … )` collapses the duplicate in SQL,
 		// and `wp_cache_add()` makes the second pass over it a no-op.
 		$terms = wp_get_object_terms(
@@ -334,17 +334,17 @@ final class Storage {
 	 *
 	 * The scoping rides the `tax_query` var `Rsvp\Query::taxonomy_query()`
 	 * already splices into the comment clauses, so no new SQL, filter, or table
-	 * is involved. Outside occurrence context — and on every site with no
-	 * recurring events at all — the args are returned untouched.
+	 * is involved. Outside occurrence context the args are returned untouched,
+	 * as they are on every site with no recurring events at all.
 	 *
 	 * No `cache_domain` is set here. `WP_Comment_Query::get_comments()` builds
 	 * its cache key from its declared query vars only, and `tax_query` is not
-	 * one of them, so a scoped query does need one — but `Rsvp\Query` derives it
+	 * one of them, so a scoped query does need one. `Rsvp\Query` derives it
 	 * for every taxonomy-scoped read in `ensure_cache_domain()`, from a hash of
 	 * the whole `tax_query`. Setting one here as well would win over that
 	 * derivation (it short-circuits on a non-empty `cache_domain`) and disable
 	 * the single funnel every RSVP read passes through, leaving two mechanisms
-	 * where one is enough — and the local one was the weaker of the two, keyed
+	 * where one is enough. The local one was the weaker of the two, keyed
 	 * on the identifier alone where the derived key covers the series post too.
 	 *
 	 * The `tax_query` is built from the occurrence's own `series_post_id` rather
@@ -532,9 +532,9 @@ final class Storage {
 	 * Get a single term slug of a taxonomy for an object.
 	 *
 	 * Reads the object term cache first, which `all()` primes for the whole
-	 * result set in a single query. `get_object_term_cache()` returns false —
-	 * not an empty array — when the object has not been primed, and that is the
-	 * only case that still costs a query of its own.
+	 * result set in a single query. `get_object_term_cache()` returns false,
+	 * rather than an empty array, when the object has not been primed. That is
+	 * the only case that still costs a query of its own.
 	 *
 	 * @since 0.35.0
 	 *

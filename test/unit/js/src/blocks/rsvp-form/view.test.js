@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 /**
  * Mock the Interactivity API with a namespace-merging store so every
  * module contributing to the `gatherpress` namespace shares one registry,
- * mirroring the real runtime — and so `withRecurrenceId()`, which reads the
- * same namespace from `src/helpers/interactivity`, sees what this file sets.
+ * mirroring the real runtime. `withRecurrenceId()` reads that same namespace
+ * from `src/helpers/interactivity`, so it sees what this file sets.
  */
 jest.mock(
 	'@wordpress/interactivity',
@@ -248,8 +248,8 @@ describe( 'rsvp-form view handleRsvpFormSubmit', () => {
 		const body = await submit();
 
 		// The loop over remaining FormData entries must not overwrite it, and
-		// nothing in the form can forge one — the value comes from the block
-		// context the server rendered this row with.
+		// nothing in the form can forge one, because the value comes from the
+		// block context the server rendered this row with.
 		expect( body.recurrence_id ).toBe( '20260917T180000' );
 	} );
 } );

@@ -197,8 +197,8 @@ final class Form {
 	 * `wp_allow_comment()` refuses a comment whose author and **content** match
 	 * an existing one on the same post. Every RSVP carries empty content by
 	 * design, so for this comment type the check reduces to "this person has
-	 * already commented on this post" — which is precisely what a recurring
-	 * event makes legitimate. Without this, a responder who booked one date was
+	 * already commented on this post". A recurring event makes precisely that
+	 * legitimate. Without this, a responder who booked one date was
 	 * refused on every other date of the same series by core, after this class's
 	 * own occurrence-scoped check had already allowed them.
 	 *
@@ -237,8 +237,8 @@ final class Form {
 		$email   = Utility::get_http_input( INPUT_POST, 'email', 'sanitize_email' );
 		$post_id = intval( $comment_data['comment_post_ID'] );
 
-		// Resolve, then authorize, then use — the same sequence the REST routes
-		// follow. This has to happen before every check below, because the
+		// Resolve, then authorize, then use, which is the same sequence the REST
+		// routes follow. This has to happen before every check below, because the
 		// past-event gate and the duplicate gate both mean different things per
 		// date: an occurrence in the future on a series whose anchor has passed
 		// is bookable, and a responder who took September 3rd has not already
@@ -397,7 +397,7 @@ final class Form {
 			// reaches `Rsvp\Storage::save()` or `handle_rsvp_creation()`, which
 			// is where every other write invalidates, so a classic submission
 			// used to leave both totals stale for the length of
-			// `Cache::CACHE_EXPIRATION` -- shared across every visitor under a
+			// `Cache::CACHE_EXPIRATION`, shared across every visitor under a
 			// persistent object cache. Called after `assign_occurrence()` so the
 			// occurrence-scoped key resolves and is dropped alongside the
 			// series-wide one.
@@ -637,7 +637,7 @@ final class Form {
 	 * `gatherpress_has_recurring_events` option.
 	 *
 	 * The term is keyed on the occurrence's own `series_post_id`, not on the
-	 * post the request named — see `Rsvp_Occurrence::current_occurrence()`.
+	 * post the request named. See `Rsvp_Occurrence::current_occurrence()`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -663,9 +663,9 @@ final class Form {
 	/**
 	 * Build the clause narrowing the duplicate check to one occurrence.
 	 *
-	 * Returns null outside occurrence context — and on every site with no
-	 * recurring events at all, since `current_occurrence()` short-circuits
-	 * on the `gatherpress_has_recurring_events` option. The query
+	 * Returns null outside occurrence context. It also returns null on every
+	 * site with no recurring events at all, since `current_occurrence()`
+	 * short-circuits on the `gatherpress_has_recurring_events` option. The query
 	 * string is then byte-identical to the one this method's caller has always
 	 * built.
 	 *
@@ -946,8 +946,8 @@ final class Form {
 		// Drop the warm counts this insertion just invalidated. This path never
 		// reaches `Rsvp\Storage::save()`, which is where every other write does
 		// its invalidation, so an open-form submission used to leave the cached
-		// totals reading zero until the transient expired — for the length of
-		// `Cache::CACHE_EXPIRATION`, and shared across every visitor under a
+		// totals reading zero until the transient expired. That lasts for
+		// `Cache::CACHE_EXPIRATION` and is shared across every visitor under a
 		// persistent object cache. Called after `assign_occurrence()` so the
 		// occurrence-scoped key is resolvable and gets dropped alongside the
 		// series-wide one.

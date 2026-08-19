@@ -238,12 +238,12 @@ class Test_Cleanup extends Base {
 	 *
 	 * Every hard delete now drops term relationships in up to three taxonomies
 	 * via `delete_term_relationships()`, and each of those recounts its terms
-	 * immediately — so a sweep clearing n stale RSVPs paid on the order of 3n
+	 * immediately, so a sweep clearing n stale RSVPs paid on the order of 3n
 	 * recount queries. Deferring collapses them into one recount per taxonomy at
 	 * the end, which is what core's own bulk paths do.
 	 *
 	 * Asserted by observing the deferral flag from inside the loop, via the
-	 * `delete_comment` hook the sweep fires — the only place the state is
+	 * `delete_comment` hook the sweep fires. That is the only place the state is
 	 * visible while it matters. Checking it afterwards would prove nothing,
 	 * since the sweep restores it before returning.
 	 *

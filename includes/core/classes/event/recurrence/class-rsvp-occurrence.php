@@ -56,8 +56,8 @@ final class Rsvp_Occurrence {
 	 * The declaration is not decorative. `Traits\Singleton` declares no
 	 * constructor of its own, so dropping this one would hand the class PHP's
 	 * implicit **public** constructor and make `new Rsvp_Occurrence()` legal
-	 * from anywhere — two instances of a singleton, and the one thing
-	 * `get_instance()` exists to prevent.
+	 * from anywhere. That allows two instances of a singleton, which is the one
+	 * thing `get_instance()` exists to prevent.
 	 *
 	 * @since 0.36.0
 	 */
@@ -69,7 +69,7 @@ final class Rsvp_Occurrence {
 	 *
 	 * The single source of truth for the slug format. The composite is passed
 	 * through `sanitize_title()` so the value this returns is byte-identical to
-	 * what WordPress stores in `wp_terms.slug` — a caller can look a term up by
+	 * what WordPress stores in `wp_terms.slug`. A caller can look a term up by
 	 * this string without a second sanitization step, and the assigned and
 	 * queried slugs cannot drift apart.
 	 *
@@ -97,8 +97,8 @@ final class Rsvp_Occurrence {
 	 * incoming identifier through `Series::resolve_post_ids()`, so once the
 	 * forward split moves an occurrence onto a sibling post of the same series,
 	 * the context legitimately holds a row whose `series_post_id` is not the
-	 * post the request named. Comparing the two for equality — which this method
-	 * used to do — rejected exactly the case `Context` had gone out of its way
+	 * post the request named. This method used to compare the two for equality,
+	 * which rejected exactly the case `Context` had gone out of its way
 	 * to admit, and every scoping consumer then fell back to series-wide with no
 	 * error anywhere: the RSVP would be written with no occurrence term at all
 	 * while the visitor believed they had booked a specific date.
@@ -108,7 +108,7 @@ final class Rsvp_Occurrence {
 	 * exactly the SQL it ran before this class existed.
 	 *
 	 * **The row's own stamp wins over the request's occurrence**, matching
-	 * `Context::resolve()` — see its docblock for why, and for why the reverse
+	 * `Context::resolve()`. See its docblock for why, and for why the reverse
 	 * order is a defect rather than a preference. The stamp is per-row and
 	 * unambiguous; the request has one occurrence for the whole response, so
 	 * preferring it collapses every row of a loop rendered on a singular
@@ -118,8 +118,8 @@ final class Rsvp_Occurrence {
 	 * admission is deliberate: once the forward split moves an occurrence
 	 * onto a sibling post, the context legitimately holds a row whose
 	 * `series_post_id` is not the post the request named. The identity
-	 * comparison stays ahead of `resolve_post_ids()`, so a one-post series — the
-	 * whole of today's traffic — never reaches the filter.
+	 * comparison stays ahead of `resolve_post_ids()`, so a one-post series never
+	 * reaches the filter. That is the whole of today's traffic.
 	 *
 	 * @since 0.36.0
 	 *
@@ -172,14 +172,15 @@ final class Rsvp_Occurrence {
 	 * Resolve just the identifier of the occurrence the request is scoped to.
 	 *
 	 * The thin accessor for the one consumer that needs the identifier without
-	 * the post it belongs to — `Rsvp\Cache`, whose occurrence-scoped transient
-	 * key is deliberately built from the post the caller named. Its sibling
+	 * the post it belongs to. That consumer is `Rsvp\Cache`, whose
+	 * occurrence-scoped transient key is deliberately built from the post the
+	 * caller named. Its sibling
 	 * call site, `Rsvp\Token`, has no request context at all and passes the
 	 * identifier explicitly, so keying the implicit path off the occurrence's
 	 * own post would make the two disagree about which transient to drop.
 	 *
 	 * Anything composing an occurrence **term slug** must use
-	 * `current_occurrence()` instead — see its docblock for why.
+	 * `current_occurrence()` instead. Its docblock explains why.
 	 *
 	 * @since 0.36.0
 	 *
@@ -200,13 +201,14 @@ final class Rsvp_Occurrence {
 	 * that occurrence identity is `(post_id, recurrence_id)`, and until this
 	 * method every block emitted `postId` alone. On an archive or Query Loop the
 	 * whole point is that one post appears many times, so a client store keyed
-	 * on the post ID collapsed every row of a series into one entry -- an RSVP
+	 * on the post ID collapsed every row of a series into one entry. An RSVP
 	 * on one date visibly applied to all of them, over server markup that was
 	 * already correct per row.
 	 *
-	 * A post with no occurrence in play -- every ordinary event, and every post
-	 * on a site that has never authored a recurring series -- gets back exactly
-	 * what it got before: `array( 'postId' => $post_id )`, byte-identical JSON,
+	 * A post with no occurrence in play gets back exactly what it got before:
+	 * `array( 'postId' => $post_id )`, byte-identical JSON. That covers every
+	 * ordinary event, and every post on a site that has never authored a
+	 * recurring series,
 	 * so its state key stays the bare post ID and its request bodies do not
 	 * change. The two key shapes cannot collide, either: a bare key is
 	 * `/^\d+$/` and a composite one always carries a `:` separator.
@@ -239,7 +241,7 @@ final class Rsvp_Occurrence {
 	 *
 	 * Reads the comment's own `_gatherpress_occurrence` term rather than the
 	 * request, which is what makes it usable from callbacks that run before
-	 * `wp` — `Rsvp\Token::handle_rsvp_token()` on `init` being the one that
+	 * `wp`. `Rsvp\Token::handle_rsvp_token()` on `init` is the one that
 	 * matters, since without this its cache invalidation drops only the
 	 * series-wide key and leaves the occurrence's warm counts stale for the
 	 * length of `Cache::CACHE_EXPIRATION`, shared across every visitor under a
@@ -261,7 +263,7 @@ final class Rsvp_Occurrence {
 	 * Resolve the whole composite key an already-stored RSVP belongs to.
 	 *
 	 * The counterpart to `current_occurrence()` for callbacks that have no
-	 * request to read — the RSVP confirmation email being the one that matters,
+	 * request to read. The RSVP confirmation email is the one that matters,
 	 * since it is composed while a comment is inserted (`Rsvp\Form`, reached
 	 * from the REST route and from `comment_post`) and is then *sent*, so a
 	 * link to the wrong date cannot be corrected afterwards.

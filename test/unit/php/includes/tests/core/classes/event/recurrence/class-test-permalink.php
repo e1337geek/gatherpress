@@ -386,9 +386,9 @@ class Test_Permalink extends Base {
 	/**
 	 * The RSVP confirmation email links to the occurrence the responder took.
 	 *
-	 * Driven through `rest_do_request()` on the `rsvp-form` route — the entry
-	 * point a browser reaches — because the occurrence term the link is
-	 * composed from is written by `Rsvp\Form` a few frames below it, and a test
+	 * Driven through `rest_do_request()` on the `rsvp-form` route, which is the
+	 * entry point a browser reaches. The occurrence term the link is composed
+	 * from is written by `Rsvp\Form` a few frames below it, and a test
 	 * calling `Token::generate_url()` directly would have to stamp that term by
 	 * hand and would prove nothing about the wiring.
 	 *
@@ -396,7 +396,7 @@ class Test_Permalink extends Base {
 	 * and the correct answer differ. This is the outbound half of the defect:
 	 * once sent, a link to the wrong date cannot be corrected.
 	 *
-	 * **This test is satisfied by either fix, and that is deliberate** — it
+	 * **This test is satisfied by either fix, and that is deliberate.** It
 	 * pins the user-visible outcome on the ordinary path. The REST route enters
 	 * occurrence context before dispatch, so `Context::permalink()` alone gets
 	 * the URL right here even with `Token::get_event_url()` reverted; measured,
@@ -430,7 +430,7 @@ class Test_Permalink extends Base {
 		$this->assertSame(
 			array( Rsvp_Occurrence::term_slug( $post_id, $second ) ),
 			wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) ),
-			'Failed to assert the RSVP was bound to the second occurrence — without that the email has nothing'
+			'Failed to assert the RSVP was bound to the second occurrence. Without that the email has nothing'
 				. ' authoritative to read.'
 		);
 		$this->assertCount( 1, $this->sent_mail, 'Failed to assert one confirmation email was sent.' );
@@ -524,7 +524,7 @@ class Test_Permalink extends Base {
 	 * and `Series::resolve_post_ids()` reaches the occurrence on the owner post.
 	 * `Context::resolve()` matches an occurrence to a post by exact
 	 * `series_post_id`, so on the *sibling* it correctly declines and
-	 * `get_permalink()` answers with the sibling's bare URL — leaving the
+	 * `get_permalink()` answers with the sibling's bare URL. That leaves the
 	 * comment's own `_gatherpress_occurrence` term, which `assign_occurrence()`
 	 * keyed on the **owner**, as the only thing that knows where the occurrence
 	 * lives.
@@ -573,7 +573,7 @@ class Test_Permalink extends Base {
 			array( Rsvp_Occurrence::term_slug( $owner_id, $second ) ),
 			wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) ),
 			'Failed to assert the RSVP was stamped with the occurrence\'s own post, not the post the request'
-				. ' named — without that the email has nothing to distinguish the two.'
+				. ' named. Without that the email has nothing to distinguish the two.'
 		);
 
 		$token       = ( new Token( $comment_id ) )->get_token();
@@ -668,9 +668,9 @@ class Test_Permalink extends Base {
 	/**
 	 * The email path costs a non-recurring site no query and no option write.
 	 *
-	 * Captured across `rest_do_request()` on the `rsvp-form` route — the real
-	 * entry point, which is where the confirmation email is composed — rather
-	 * than across `Token::generate_url()`, because a capture around the body of
+	 * Captured across `rest_do_request()` on the `rsvp-form` route rather than
+	 * across `Token::generate_url()`. That route is the real entry point and is
+	 * where the confirmation email is composed, and a capture around the body of
 	 * the work is exactly the shape that leaves an entry point unguarded.
 	 *
 	 * Both halves are asserted. The query half proves nothing reached the
@@ -779,7 +779,7 @@ class Test_Permalink extends Base {
 
 		$this->assertNotNull(
 			Rsvp_Occurrence::occurrence_for_comment( $comment_id ),
-			'Failed to assert the stamped comment resolves while the site has recurring events — without that'
+			'Failed to assert the stamped comment resolves while the site has recurring events. Without that'
 				. ' the negative below would be produced by the fixture rather than by the guard.'
 		);
 
@@ -835,7 +835,7 @@ class Test_Permalink extends Base {
 		$this->assertSame(
 			'20260903T180000',
 			Rsvp_Occurrence::recurrence_id_from_slug( 'a-20260903t180000' ),
-			'Failed to assert the identifier half of this slug does parse — without that, the null below'
+			'Failed to assert the identifier half of this slug does parse. Without that, the null below'
 				. ' would be produced by the same arm as the case above rather than by the post-ID half.'
 		);
 		$this->assertNull(

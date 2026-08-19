@@ -427,7 +427,7 @@ final class Token {
 	 *
 	 * An RSVP taken on one date of a recurring series has to link back to
 	 * *that* date. `get_permalink()` alone answers with the bare series URL,
-	 * which resolves to the next upcoming occurrence — so a responder
+	 * which resolves to the next upcoming occurrence, so a responder
 	 * confirming September 3rd would be sent a link to September 10th. The
 	 * email is outbound and cannot be corrected after sending, which is what
 	 * makes this the worse half of the defect.
@@ -435,9 +435,10 @@ final class Token {
 	 * The occurrence is read off the comment's own `_gatherpress_occurrence`
 	 * term rather than off the request, because there is no request context to
 	 * read: the confirmation email is composed while the comment is being
-	 * inserted, from `Rsvp\Form`, on paths that never reach the `wp` action —
-	 * the REST route (core's `rest_api_loaded()` runs on `parse_request` and
-	 * `die()`s) and `comment_post` on `wp-comments-post.php`. The term is the
+	 * inserted, from `Rsvp\Form`, on paths that never reach the `wp` action.
+	 * Those paths are the REST route (core's `rest_api_loaded()` runs on
+	 * `parse_request` and `die()`s) and `comment_post` on
+	 * `wp-comments-post.php`. The term is the
 	 * authoritative answer to "which occurrence did this person RSVP to."
 	 *
 	 * `occurrence_for_comment()` short-circuits on the autoloaded

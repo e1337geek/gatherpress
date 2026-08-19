@@ -61,15 +61,15 @@ final class Cleanup {
 	 *
 	 * `wp_delete_comment()` deletes the comment and its meta but never its term
 	 * relationships, so every hard delete has been leaving orphaned
-	 * `_gatherpress_rsvp_status` and `_gatherpress_rsvp_provider` rows behind —
-	 * rows that keep inflating term counts and that nothing will ever collect,
+	 * `_gatherpress_rsvp_status` and `_gatherpress_rsvp_provider` rows behind.
+	 * Those rows keep inflating term counts and nothing will ever collect them,
 	 * because the object ID they point at is gone. This predates recurrence
 	 * entirely; the occurrence taxonomy would simply have been the third
 	 * leaking one.
 	 *
 	 * `delete_comment` fires before the row is removed, which is what keeps the
 	 * object resolvable here. The three real hard-delete sites are the cleanup
-	 * cron above, the RSVP list table, and WordPress emptying its own trash —
+	 * cron above, the RSVP list table, and WordPress emptying its own trash.
 	 * `Rsvp\Storage::save()` calls `wp_delete_comment()` without the force
 	 * flag, so it trashes rather than deletes and never reaches this.
 	 *

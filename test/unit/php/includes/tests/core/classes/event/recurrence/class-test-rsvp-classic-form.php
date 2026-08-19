@@ -290,7 +290,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	 * reads that, which is exactly the runtime this path exists for the absence
 	 * of. Without a posted field the submission arrives with no occurrence
 	 * identity at all, and no amount of server-side care downstream can recover
-	 * it — inferring it from `HTTP_REFERER` is refused deliberately, because a
+	 * it. Inferring it from `HTTP_REFERER` is refused deliberately, because a
 	 * referer is attacker-controlled and routinely stripped.
 	 *
 	 * @covers \GatherPress\Core\Blocks\Rsvp_Form::transform_block_content

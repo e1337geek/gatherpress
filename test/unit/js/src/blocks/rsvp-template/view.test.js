@@ -6,8 +6,8 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 /**
  * Mock the Interactivity API with a namespace-merging store so every
  * module contributing to the `gatherpress` namespace shares one registry,
- * mirroring the real runtime — and so `withRecurrenceId()`, which reads the
- * same namespace from `src/helpers/interactivity`, sees what this file sets.
+ * mirroring the real runtime. `withRecurrenceId()` reads that same namespace
+ * from `src/helpers/interactivity`, so it sees what this file sets.
  */
 jest.mock(
 	'@wordpress/interactivity',

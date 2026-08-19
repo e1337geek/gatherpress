@@ -176,7 +176,7 @@ final class Cache {
 	 * **The occurrence-scoped key is composed from the post that owns the
 	 * occurrence row, not from the post the caller named.** The two are the
 	 * same post until a forward split moves an occurrence onto a sibling, and
-	 * after one they are not — and storage, authorization and routing all
+	 * after one they are not. Storage, authorization and routing all
 	 * follow the owner. A cache that kept following the named post would hand
 	 * the canonical page a roster warmed under a different identity, which is
 	 * indistinguishable from an empty roster and expires no sooner than

@@ -4729,8 +4729,8 @@ class Test_Occurrences extends Base {
 			'Failed to assert find_in_series picks the lowest series post ID rather than a plan-dependent row.'
 		);
 
-		// Argument order must not change the answer either — it is the ORDER BY
-		// that decides, not the caller's array.
+		// Argument order must not change the answer either. The ORDER BY decides,
+		// not the caller's array.
 		$this->assertSame(
 			$lower_post_id,
 			(int) Occurrences::get_instance()->find_in_series(

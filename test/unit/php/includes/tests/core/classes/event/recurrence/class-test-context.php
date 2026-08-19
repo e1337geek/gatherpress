@@ -1973,9 +1973,9 @@ class Test_Context extends Base {
 	/**
 	 * `set_for_series()` enters context for an occurrence a request names.
 	 *
-	 * The REST counterpart to `sync()`. A REST request never fires `wp` —
-	 * core's `rest_api_loaded()` runs on `parse_request` and ends in `die()` —
-	 * so without this nothing on that surface could ever be occurrence-scoped.
+	 * The REST counterpart to `sync()`. A REST request never fires `wp`, because
+	 * core's `rest_api_loaded()` runs on `parse_request` and ends in `die()`.
+	 * Without this, nothing on that surface could ever be occurrence-scoped.
 	 *
 	 * @covers ::set_for_series
 	 * @covers ::resolve_in_series
@@ -2001,15 +2001,15 @@ class Test_Context extends Base {
 	 *
 	 * A REST dispatch resolves the same `(post_id, recurrence_id)` pair twice:
 	 * once in the validate callback and once on entry. The two stay separate
-	 * deliberately — WordPress runs validate callbacks inside
+	 * deliberately: WordPress runs validate callbacks inside
 	 * `has_valid_params()`, before `permission_callback`, so resolving as a side
 	 * effect of validation would enter context on requests that then 403 with no
 	 * teardown filter registered. The memo removes the duplicated query without
 	 * collapsing that separation.
 	 *
 	 * A miss is memoized too, so a fabricated identifier also costs one query
-	 * per request rather than one per lookup — asserted, because remembering
-	 * only hits is the easy half to get wrong.
+	 * per request rather than one per lookup. That is asserted, because
+	 * remembering only hits is the easy half to get wrong.
 	 *
 	 * @covers ::resolve_in_series
 	 * @covers ::flush_resolved

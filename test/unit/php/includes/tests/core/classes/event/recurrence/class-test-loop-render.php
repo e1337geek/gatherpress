@@ -338,7 +338,7 @@ class Test_Loop_Render extends Base {
 	 * any of `Blocks\Rsvp`, `Blocks\Rsvp_Form`, `Blocks\Rsvp_Response` or the
 	 * online-event-link render template to `array( 'postId' => $post_id )` left
 	 * the whole PHP suite green, since only `gatherpress/rsvp-count` was ever
-	 * rendered here. A partial revert is the dangerous shape -- the RSVP button
+	 * rendered here. A partial revert is the dangerous shape. The RSVP button
 	 * keys on the bare post while the counts beside it key on the occurrence, so
 	 * the button collapses across the series and the counts stay right.
 	 *
@@ -510,7 +510,7 @@ class Test_Loop_Render extends Base {
 	 * columns is what makes the two answers differ, and
 	 * it is the same technique
 	 * `Test_Context::test_occurrence_time_of_day_comes_from_the_record_not_the_anchor`
-	 * uses on the singular path -- this is its loop counterpart.
+	 * uses on the singular path, and this is its loop counterpart.
 	 *
 	 * @covers ::metadata
 	 * @covers ::occurrence_value
@@ -570,7 +570,7 @@ class Test_Loop_Render extends Base {
 		$this->assertStringNotContainsString(
 			$anchor->modify( '+2 days' )->format( 'Y-m-d H:i' ),
 			$moved_row,
-			'Failed to assert the anchor\'s time of day was not applied to the occurrence\'s date -- that is'
+			'Failed to assert the anchor\'s time of day was not applied to the occurrence\'s date. That is'
 				. ' precisely the violation, and it renders a plausible-looking wrong time.'
 		);
 	}
@@ -694,7 +694,7 @@ class Test_Loop_Render extends Base {
 	 * In stock WordPress this class of bug is *visible*: the post identity
 	 * changes, so the title and the link visibly jump to some other event and
 	 * the reporter says "the wrong post is showing." Here the post ID is
-	 * unchanged -- only which occurrence of it is in play is wrong -- so the
+	 * unchanged, and only which occurrence of it is in play is wrong, so the
 	 * title, the link and the venue all still look right and **only the date is
 	 * wrong**. Nothing in the output announces the failure. There is nothing to
 	 * fix from this class's side: `wp_reset_postdata()` fires no action and
@@ -1127,9 +1127,9 @@ class Test_Loop_Render extends Base {
 	/**
 	 * Coverage for a loop rendered on a singular occurrence page.
 	 *
-	 * The obvious thing to build for this feature -- "other dates in this
-	 * series" on an occurrence's own page -- was the case the precedence in
-	 * `Context::resolve()` and `Rsvp_Occurrence::current_occurrence()` got
+	 * The obvious thing to build for this feature is "other dates in this
+	 * series" on an occurrence's own page, and that was the case the precedence
+	 * in `Context::resolve()` and `Rsvp_Occurrence::current_occurrence()` got
 	 * wrong. Both consulted the *request's* occurrence first and returned it
 	 * for any post in the requested series, so every correctly stamped row
 	 * resolved to the requested date. Measured before the fix, with the request
@@ -1143,7 +1143,7 @@ class Test_Loop_Render extends Base {
 	 * The request context is established by `go_to()` rather than by hand, so
 	 * the `wp` action that binds it in production is the thing under test.
 	 * The requested occurrence is the series anchor, which is in
-	 * the past and therefore *not* among the loop's upcoming rows -- so the
+	 * the past and therefore *not* among the loop's upcoming rows, so the
 	 * right answer and the collapsed answer differ on every row rather than on
 	 * three of four.
 	 *
@@ -1167,7 +1167,7 @@ class Test_Loop_Render extends Base {
 		$this->assertSame(
 			$requested,
 			Rsvp_Occurrence::current_recurrence_id( $series_id ),
-			'Failed to assert the request established the anchor occurrence as the page\'s own -- without that'
+			'Failed to assert the request established the anchor occurrence as the page\'s own. Without that'
 				. ' the fixture proves nothing, because there would be no request occurrence to collapse to.'
 		);
 
@@ -1270,7 +1270,7 @@ class Test_Loop_Render extends Base {
 	 * rule, but it reaches `loop_occurrence()` through
 	 * `Utility::invoke_hidden_method()`. Dropping
 	 * `|| (int) $post->ID !== $post_id` from that method failed exactly that one
-	 * test out of the file, and no rendered-output test at all -- because
+	 * test out of the file, and no rendered-output test at all, because
 	 * `test_inner_loop_over_a_different_post_does_not_inherit_the_occurrence()`
 	 * moves the *global* post to the inner post before rendering, so the two IDs
 	 * agree and the mismatch arm is never exercised.
@@ -1279,7 +1279,7 @@ class Test_Loop_Render extends Base {
 	 * that does exercise it: `Blocks\Setup::get_post_id()` honors the attribute,
 	 * so the block reads another post's meta while the global post is still the
 	 * occurrence row. Without the ID comparison the other post inherits this
-	 * iteration's occurrence -- its date and its permalink both.
+	 * iteration's occurrence, both its date and its permalink.
 	 *
 	 * @covers ::metadata
 	 * @covers ::permalink
@@ -1347,7 +1347,7 @@ class Test_Loop_Render extends Base {
 	 * the series' own `gatherpress_timezone` meta. Every other fixture in this
 	 * suite gives the series and its occurrences the same timezone, so the
 	 * right answer and the fallback answer coincide and nothing discriminates
-	 * between them -- mutating `stamp_occurrence()` to stamp `null` for this one
+	 * between them. Mutating `stamp_occurrence()` to stamp `null` for this one
 	 * column leaves the whole recurrence suite green.
 	 *
 	 * This fixture makes the two differ: the occurrence
@@ -1415,7 +1415,7 @@ class Test_Loop_Render extends Base {
 		$this->assertSame(
 			'Asia/Tokyo',
 			get_post_meta( $series_id, 'gatherpress_timezone', true ),
-			'Failed to assert the series\' own timezone is read again once the loop is over -- without this the'
+			'Failed to assert the series\' own timezone is read again once the loop is over. Without this the'
 				. ' fixture would prove nothing, since a substitution that never lifted would look the same.'
 		);
 	}
@@ -1544,7 +1544,7 @@ class Test_Loop_Render extends Base {
 	 * only `Context::current()` in `Rsvp_Occurrence::current_occurrence()`
 	 * yields the *request's* occurrence. A loop
 	 * has no request occurrence, so it answers null on every row and every
-	 * row reads the same series-wide RSVP state -- an attendee on the first
+	 * row reads the same series-wide RSVP state, so an attendee on the first
 	 * date appears to be attending all fourteen.
 	 *
 	 * The fixture makes the right answer and the wrong answer differ:
@@ -1747,8 +1747,8 @@ class Test_Loop_Render extends Base {
 	 * Coverage for the non-recurring arm of the emitted block context.
 	 *
 	 * An ordinary event must publish exactly what it published before this
-	 * existed -- `postId` and nothing else -- so its state key stays the bare
-	 * post ID and its request bodies stay byte-identical.
+	 * existed, which is `postId` and nothing else, so its state key stays the
+	 * bare post ID and its request bodies stay byte-identical.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
 	 *

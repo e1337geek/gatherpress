@@ -534,9 +534,9 @@ final class Occurrences {
 		// only in `Query::expand_event_clauses()`: this method is the public
 		// occurrence-aware read entry point, so a caller reaching it directly
 		// would otherwise emit SQL naming the occurrence table on a site with
-		// no recurring events, and would return an empty set -- rather than the
-		// anchor rows -- on a blog where the table is absent, because the
-		// missing table poisons the `LEFT JOIN` / `NOT EXISTS` pair below.
+		// no recurring events. On a blog where the table is absent it would
+		// return an empty set rather than the anchor rows, because the missing
+		// table poisons the `LEFT JOIN` / `NOT EXISTS` pair below.
 		//
 		// The fallback keeps the same projection and ordering with the
 		// occurrence join removed entirely, so non-recurring events are
@@ -1903,9 +1903,9 @@ final class Occurrences {
 	 *
 	 * `LIMIT 1` needs an `ORDER BY` to mean anything. Once a forward split makes a series
 	 * span several posts, an identifier can legitimately name a row under more
-	 * than one of them — two posts of one series projected from rules that meet
-	 * at the same moment — and without an ordering the row MySQL happens to
-	 * return is whatever the query plan produces. That choice is not cosmetic:
+	 * than one of them, which happens when two posts of one series are projected
+	 * from rules that meet at the same moment. Without an ordering the row MySQL
+	 * happens to return is whatever the query plan produces. That choice is not cosmetic:
 	 * the returned `series_post_id` is what every downstream consumer keys the
 	 * RSVP's occurrence term off, so an unstable pick would move a responder's
 	 * RSVP between sibling posts from one request to the next. Lowest post ID

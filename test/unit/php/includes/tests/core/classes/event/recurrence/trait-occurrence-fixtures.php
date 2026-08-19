@@ -116,7 +116,7 @@ trait Occurrence_Fixtures {
 	 * `$reference_anchor_start` above is correct for the expander and
 	 * persistence suites, which assert a *stated* occurrence set where the exact
 	 * calendar dates are the specification and WKST week buckets depend on
-	 * them — those must not move. Anything time-relative uses this instead.
+	 * them. Those must not move, so anything time-relative uses this instead.
 	 *
 	 * @since 0.36.0
 	 *

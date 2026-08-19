@@ -86,7 +86,7 @@ class Test_Backcompat_Multisite extends Base {
 	 * Relative to now rather than a literal calendar date:
 	 * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` puts
 	 * the fixture into an `upcoming` bucket and then asserts it is what the
-	 * list shows, which is a comparison against the clock -- a pinned anchor
+	 * list shows, which is a comparison against the clock. A pinned anchor
 	 * would pass until that date arrived and then report the missing-table
 	 * regression instead of a stale fixture. `test_the_fixture_series_is_never_in_the_past()`
 	 * fails by name if this is ever re-pinned.
