@@ -99,7 +99,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Rsvp_Setup::get_instance()->register_taxonomy();
 		Settings::get_instance()->set( 'enable_open_rsvp', true );
 		Context::get_instance()->clear();

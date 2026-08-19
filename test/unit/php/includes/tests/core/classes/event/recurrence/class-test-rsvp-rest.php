@@ -35,7 +35,6 @@ use GatherPress\Core\Rsvp\Rsvp;
 use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
 use GatherPress\Core\Rsvp\Token;
 use GatherPress\Core\Settings;
-use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use ReflectionMethod;
@@ -110,7 +109,7 @@ class Test_Rsvp_Rest extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Rsvp_Setup::get_instance()->register_taxonomy();
 		Rest_Api::get_instance()->register_endpoints();
 		Settings::get_instance()->set( 'enable_open_rsvp', true );

@@ -73,14 +73,15 @@ class Test_Rsvp_Occurrence extends Base {
 	const OCCURRENCE_B = '20260915T180000';
 
 	/**
-	 * Ensure the occurrence table exists and no context leaks in from another test.
+	 * Start every test from an empty occurrence table, with no context left
+	 * over from another test.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		Context::get_instance()->clear();
 	}
 
