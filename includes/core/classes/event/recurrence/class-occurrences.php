@@ -541,6 +541,11 @@ final class Occurrences {
 		// The fallback keeps the same projection and ordering with the
 		// occurrence join removed entirely, so non-recurring events are
 		// returned exactly as they would be with none of this code present.
+		// That includes the `ID` tie-breaker: `effective_start_gmt` alone is
+		// not a total order, so two events sharing one start instant can swap
+		// places between two identical reads and a paginated list repeats or
+		// drops one. Only the `recurrence_id` leg of the joined order is
+		// dropped, because this arm has no occurrence rows to name.
 		if ( ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
 			$sql = 'SELECT %i.ID AS post_id, NULL AS recurrence_id,'
 				. ' %i.datetime_start_gmt AS effective_start_gmt'
@@ -548,7 +553,7 @@ final class Occurrences {
 				. ' LEFT JOIN %i ON %i.ID = %i.post_id'
 				. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
 				. " HAVING effective_start_gmt {$comparison} %s"
-				. " ORDER BY effective_start_gmt {$order}"
+				. " ORDER BY effective_start_gmt {$order}, %i.ID {$order}"
 				. ' LIMIT %d';
 
 			$values = array_merge(
@@ -566,6 +571,7 @@ final class Occurrences {
 					$wpdb->posts,
 					'publish',
 					current_time( 'mysql', true ),
+					$wpdb->posts,
 					$limit,
 				)
 			);
