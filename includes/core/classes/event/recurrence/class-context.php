@@ -2,12 +2,12 @@
 /**
  * Request-scoped occurrence context, and the read path that feeds unmodified blocks.
  *
- * REQ-9 rests on this class. `Event::get_datetime()` reads from post meta rather
- * than from the events table, so filtering `get_post_metadata` is enough to make
+ * `Event::get_datetime()` reads from post meta rather than from the events
+ * table, so filtering `get_post_metadata` is enough to make
  * every existing date-aware block render an occurrence's date without a single
  * block file changing.
  *
- * PRD C-3 — an occurrence's time of day comes from the occurrence record. It is
+ * An occurrence's time of day comes from the occurrence record. It is
  * never computed by applying the series anchor's time to the occurrence's date.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -74,13 +74,13 @@ final class Context {
 	 * @since 0.36.0
 	 *
 	 * @return array|null The occurrence row, or null outside occurrence context.
-	 * @phpstan-ignore-next-line -- T0 skeleton; the non-null return lands with the implementation.
+	 * @phpstan-ignore-next-line -- Unimplemented stub; the non-null return lands with the implementation.
 	 */
 	public function current(): ?array {
 		return null;
 	}
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Serve the occurrence's datetime for the five derived meta keys.
 	 *
@@ -101,7 +101,7 @@ final class Context {
 	}
 	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Build the permalink of one occurrence.
 	 *

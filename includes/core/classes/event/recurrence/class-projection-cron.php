@@ -1,6 +1,6 @@
 <?php
 /**
- * Scheduling for occurrence-horizon top-up (REQ-6).
+ * Scheduling for occurrence-horizon top-up.
  *
  * `Occurrences::project()` is idempotent and callable with no request
  * context, and `Occurrences::resolve_horizon()` measures from
@@ -71,7 +71,7 @@ final class Projection_Cron {
 	 *
 	 * @since 0.36.0
 	 */
-	public function __construct() {
+	protected function __construct() {
 		$this->setup_hooks();
 	}
 
@@ -110,7 +110,7 @@ final class Projection_Cron {
 	 * @return void
 	 */
 	public function maybe_schedule_sweep(): void {
-		// REQ-16's "a site with no recurring events pays nothing" guarantee
+		// The "a site with no recurring events pays nothing" guarantee
 		// covers the scheduler itself, not only the sweep callback: an hourly
 		// cron event and the wp_options write wp_schedule_event() performs
 		// are both a cost, and the overwhelming majority of GatherPress
@@ -163,7 +163,7 @@ final class Projection_Cron {
 	 *
 	 * Short-circuits on `Query::site_has_recurring_events()` before touching
 	 * anything else, so a site with no recurring events issues no query at
-	 * all against the occurrence table (REQ-6's own acceptance criterion).
+	 * all against the occurrence table.
 	 *
 	 * @since 0.36.0
 	 *

@@ -302,15 +302,15 @@ class Test_Rule extends Base {
 	/**
 	 * A rule naming an unrecognized frequency is rejected at the boundary.
 	 *
-	 * REQ-11's other side: `Expander`'s defensive `default => null` arms
+	 * `Expander`'s defensive `default => null` arms
 	 * (`next_candidate_date()`, `matches()`, `day_scan_limit()`) exist so an
 	 * unknown frequency yields zero occurrences rather than a fatal, in case
 	 * one is ever handed to the expander directly. This asserts the boundary
 	 * this rule is actually supposed to be enforced at: `from_array()` never
 	 * lets an unrecognized frequency reach the expander in the first place.
 	 *
-	 * The fixture value used to be `yearly`, which was correct until REQ-11
-	 * landed the fourth frequency. It is now `fortnightly` -- a plausible but
+	 * The fixture value used to be `yearly`, which was correct until the yearly
+	 * frequency was added. It is now `fortnightly` -- a plausible but
 	 * genuinely unsupported frequency -- so the boundary stays covered from
 	 * the rejecting side while `test_from_array_accepts_yearly_frequency()`
 	 * covers the accepting side.
@@ -338,10 +338,10 @@ class Test_Rule extends Base {
 	/**
 	 * A yearly rule is accepted at the boundary and needs no monthly fields.
 	 *
-	 * PRD section 2.1 and REQ-11: yearly repeats every N years with the month
-	 * and day derived from the series start, so it carries no `monthly_mode`,
+	 * Yearly repeats every N years with the month and day derived from the
+	 * series start, so it carries no `monthly_mode`,
 	 * no weekday list and no mode switch of its own. `BYMONTH`, `BYYEARDAY`
-	 * and `BYWEEKNO` are permanent non-goals (PRD section 10 item 5).
+	 * and `BYWEEKNO` are permanent non-goals.
 	 *
 	 * @covers ::from_array
 	 * @covers ::is_valid

@@ -2,9 +2,9 @@
 /**
  * REST routes for occurrence state.
  *
- * One route in the POC: setting an occurrence's status, which is how REQ-12's
- * cancel and un-cancel are expressed. Cancellation is occurrence state on the
- * occurrence row (PRD C-5), never an `EXDATE` in the rule and never a term.
+ * One route in the POC: setting an occurrence's status, which is how cancel and
+ * un-cancel are expressed. Cancellation is occurrence state on the occurrence
+ * row, never an `EXDATE` in the rule and never a term.
  *
  * The authorization contract is `current_user_can( 'edit_post', $post_id )` —
  * never `is_user_logged_in()`, never the RSVP subsystem's `moderate_comments`.
@@ -74,7 +74,7 @@ final class Rest_Api {
 		return array();
 	}
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Set an occurrence's status.
 	 *
@@ -83,14 +83,14 @@ final class Rest_Api {
 	 * @param WP_REST_Request $request Request carrying `post_id`, `recurrence_id` and `status`.
 	 *
 	 * @return WP_REST_Response|WP_Error|null The updated row, or an error when the composite key matches nothing.
-	 * @phpstan-ignore-next-line -- T0 skeleton; the non-null return lands with the implementation.
+	 * @phpstan-ignore-next-line -- Unimplemented stub; the non-null return lands with the implementation.
 	 */
 	public function update_occurrence_status( WP_REST_Request $request ) {
 		return null;
 	}
 	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Report whether the current user may change this occurrence's status.
 	 *

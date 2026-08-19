@@ -2,13 +2,13 @@
 /**
  * Series resolver.
  *
- * The PRD C-2 seam, and the single most important extension point in the
+ * The series-resolution seam, and the single most important extension point in the
  * subsystem. Every occurrence read passes through here to turn one post ID into
  * the set of post IDs that make up its series, so every occurrence query emits
  * `series_post_id IN (…)`.
  *
  * In the POC a series is one post and this returns `array( $post_id )`. That is
- * an implementation detail, not a contract — REQ-18's forward split makes a
+ * an implementation detail, not a contract — the forward split makes a
  * series span several posts, and code that assumed one post would have to be
  * rewritten rather than extended.
  *
@@ -45,7 +45,7 @@ final class Series {
 	 * is `final` with a `protected` constructor, so no test can mock or subclass
 	 * it. The filter name is frozen here rather than left to the implementation,
 	 * because a one-post series makes `IN ( … )` and `= %d` behave identically
-	 * and the review gate cannot tell them apart without it.
+	 * and nothing else in the code marks the difference.
 	 *
 	 * @since 0.36.0
 	 *

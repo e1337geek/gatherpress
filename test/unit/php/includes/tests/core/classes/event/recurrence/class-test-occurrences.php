@@ -152,7 +152,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for C-1: the occurrence identifier is the local start in `Ymd\THis` form.
+	 * The occurrence identifier is the local start in `Ymd\THis` form.
 	 *
 	 * @covers ::recurrence_id
 	 *
@@ -203,7 +203,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-4: projecting twice with no rule change is idempotent.
+	 * Projecting twice with no rule change is idempotent.
 	 *
 	 * @covers ::project
 	 *
@@ -265,7 +265,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for C-5: cancellation survives a rule regeneration untouched.
+	 * Cancellation survives a rule regeneration untouched.
 	 *
 	 * @covers ::project
 	 * @covers ::insert_or_update_rows
@@ -278,7 +278,7 @@ class Test_Occurrences extends Base {
 
 		$this->assertTrue(
 			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
-			'Failed to assert that set_status cancelled the first occurrence.'
+			'Failed to assert that set_status canceled the first occurrence.'
 		);
 
 		$instance->project( $post_id );
@@ -288,16 +288,16 @@ class Test_Occurrences extends Base {
 		$this->assertSame(
 			Occurrences::STATUS_CANCELLED,
 			$row['status'],
-			'Failed to assert that the cancelled status survived regeneration.'
+			'Failed to assert that the canceled status survived regeneration.'
 		);
 	}
 
 	/**
-	 * Coverage for BLOCKING 2: a long-running `never`-ending series must
-	 * project occurrences that are actually upcoming, not stop at a horizon
-	 * measured from a years-old anchor. Anchored 2019-01-03 (matching the
-	 * reviewer's measured probe), an anchor-relative 12-month horizon would
-	 * project entirely into the past with zero upcoming entries; the horizon
+	 * A long-running `never`-ending series must project occurrences that are
+	 * actually upcoming, not stop at a horizon
+	 * measured from a years-old anchor. Anchored 2019-01-03, an
+	 * anchor-relative 12-month horizon would project entirely into the past
+	 * with zero upcoming entries; the horizon
 	 * must instead roll forward from `now`.
 	 *
 	 * @covers ::project
@@ -368,7 +368,7 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Direct coverage for `resolve_projectable()`'s no-rule branch with
-	 * `$cleanup` false (CF-1): existing rows are left untouched.
+	 * `$cleanup` false: existing rows are left untouched.
 	 *
 	 * @covers ::resolve_projectable
 	 *
@@ -540,7 +540,7 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Direct coverage for `resolve_horizon()`'s ternary: a past anchor rolls
-	 * the horizon forward from "now" instead (BLOCKING 2).
+	 * the horizon forward from "now" instead.
 	 *
 	 * @covers ::resolve_horizon
 	 *
@@ -631,7 +631,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16: a non-recurring event returns 0 without writing anything.
+	 * A non-recurring event returns 0 without writing anything.
 	 *
 	 * @covers ::project
 	 *
@@ -648,11 +648,11 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for CF-1: saving an ordinary, never-recurring event through the
+	 * Saving an ordinary, never-recurring event through the
 	 * real save-path hooks must issue zero queries against the occurrence
-	 * table -- REQ-16's "a site with no recurring events pays nothing"
+	 * table -- the "a site with no recurring events pays nothing"
 	 * guarantee. Checking only project()'s return value (the test above) is
-	 * not enough to guard this: the BLOCKING-1 fix for orphaned rows made the
+	 * not enough to guard this: the fix for orphaned rows made the
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
 	 * clean up unconditionally, which silently added a DELETE query to this
 	 * exact, most-common save path. That regression passed a return-value-only
@@ -702,7 +702,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for BLOCKING 1: a series whose rule is removed must have its
+	 * A series whose rule is removed must have its
 	 * existing occurrence rows cleared, not left orphaned. `Rule::from_post()`
 	 * returning null looks identical whether a post never had a rule or just
 	 * lost one, so `project()` cannot tell "nothing to do" from "clean up"
@@ -738,9 +738,9 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for BLOCKING 1, replayed through the real lifecycle wiring --
+	 * The same clearing, replayed through the real lifecycle wiring --
 	 * the actual `wp_after_insert_post` and `shutdown` hooks are fired, not a
-	 * hand-called sequence of the methods those hooks invoke. CF-4: a
+	 * hand-called sequence of the methods those hooks invoke. A
 	 * hand-called sequence cannot fail even when the wiring it claims to test
 	 * is broken -- inverting `maybe_project()`'s `wp_after_insert_post`
 	 * priority and its dynamic `shutdown` priority so `Occurrences` runs
@@ -810,7 +810,7 @@ class Test_Occurrences extends Base {
 	 * genuinely-invalid raw timezone, its own `Timezone_Guard::assert_named()`
 	 * check rejects it, and `clear_mirrors()` removes the rule mirrors --
 	 * `Rule::from_post()` then returns null and `project()` clears the rows
-	 * through the no-rule branch (BLOCKING 1's fix), never reaching
+	 * through the no-rule branch, never reaching
 	 * `expand_or_clear()`'s own catch at all. An earlier version of this test
 	 * changed only the datetime blob without re-running `Meta::set_recurrence()`,
 	 * which left the mirrors (and therefore `Rule::from_post()`) stale and
@@ -972,15 +972,15 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for BLOCKING 4: a nominal 2-hour span applied to an occurrence
+	 * A nominal 2-hour span applied to an occurrence
 	 * landing on the fall-back DST transition (2026-11-01, America/New_York)
 	 * must stay a nominal 2-hour span on the wall clock (01:00 -> 03:00),
 	 * even though 10,800 real seconds elapse across the repeated hour. An
 	 * absolute-seconds delta taken once from a non-transition anchor and
 	 * reapplied via raw `modify( '+N seconds' )` is fragile precisely because
 	 * it happens to agree with the calendar-decomposed `DateInterval` used
-	 * here for whole-hour spans -- this test pins the values a reviewer
-	 * measured directly, not a value re-derived from reasoning about it.
+	 * here for whole-hour spans -- this test pins the measured wall-clock
+	 * values directly, not values re-derived from reasoning about them.
 	 *
 	 * @covers ::build_occurrence_row
 	 *
@@ -1012,7 +1012,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for CF-3, end to end through `project()`: an anchor whose own
+	 * Coverage end to end through `project()`: an anchor whose own
 	 * span crosses the fall-back transition (2026-10-31 22:00 -> 2026-11-01
 	 * 02:00, a nominal 4 hours) must project every later occurrence -- even
 	 * ones that do not themselves touch a transition -- with that same
@@ -1134,7 +1134,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for C-2: `select_for_series()` accepts multiple post IDs and
+	 * `select_for_series()` accepts multiple post IDs and
 	 * emits `series_post_id IN (…)`, never `= %d`.
 	 *
 	 * @covers ::select_for_series
@@ -1333,7 +1333,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for CF-4: the priority gap on `shutdown` -- not registration
+	 * The priority gap on `shutdown` -- not registration
 	 * order -- is what guarantees `Meta::resolve_pending_recurrence()` runs
 	 * before `Occurrences::resolve_pending_projection()`. `has_action()`
 	 * returning a truthy value accepts any priority, including one that would
@@ -1480,9 +1480,9 @@ class Test_Occurrences extends Base {
 	 * Coverage for `select_upcoming()` interleaving recurring and non-recurring
 	 * events in one ascending list, each entry carrying its own identity.
 	 *
-	 * CF-2: asserting only that the recurring post ID is present, and only
+	 * Asserting only that the recurring post ID is present, and only
 	 * checking null-ness for the *non*-recurring entry, does not exercise
-	 * C-1 at all -- `row_to_ref()` could hardcode `recurrence_id = null` for
+	 * occurrence identity at all -- `row_to_ref()` could hardcode `recurrence_id = null` for
 	 * every row and this test would still pass, while every real caller of
 	 * `select_upcoming()` would silently lose occurrence identity for every
 	 * recurring series. Asserting the recurring entry's exact, expected
@@ -1620,7 +1620,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for BLOCKING 3: a fully cancelled series must not reappear in
+	 * A fully canceled series must not reappear in
 	 * `select_upcoming()` as if it were a non-recurring event at its original
 	 * anchor date. Without the `NOT EXISTS` guard, every occurrence row
 	 * failing the `status = 'scheduled'` join predicate falls through the
@@ -1661,7 +1661,7 @@ class Test_Occurrences extends Base {
 		$this->assertNotContains(
 			$post_id,
 			$post_ids,
-			'Failed to assert that a fully cancelled series is absent from select_upcoming().'
+			'Failed to assert that a fully canceled series is absent from select_upcoming().'
 		);
 	}
 
@@ -1823,7 +1823,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: a scheduled sweep re-runs `project()` for a
+	 * Coverage for the horizon top-up: a scheduled sweep re-runs `project()` for a
 	 * long-running series whose projected horizon is running short,
 	 * extending it, while every occurrence already in the past survives --
 	 * attendees' RSVPs hang off past occurrences.
@@ -1881,10 +1881,10 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: the scheduled sweep must issue no query against the
+	 * Coverage for the horizon top-up: the scheduled sweep must issue no query against the
 	 * occurrence table at all on a site with no recurring events -- checked
 	 * via a `$wpdb->queries` capture, not the sweep's return value, matching
-	 * the CF-1 zero-query test above for the save path.
+	 * the zero-query test above for the save path.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Projection_Cron::run_sweep
 	 *
@@ -1923,7 +1923,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: a `COUNT`-bounded rule is already complete and must
+	 * Coverage for the horizon top-up: a `COUNT`-bounded rule is already complete and must
 	 * never be re-projected by the sweep, however far its (fixed, final)
 	 * latest occurrence sits in the past.
 	 *
@@ -1984,7 +1984,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: an `UNTIL`-bounded rule whose latest projected
+	 * Coverage for the horizon top-up: an `UNTIL`-bounded rule whose latest projected
 	 * occurrence has already reached its `until` date is complete in the
 	 * same sense a `COUNT`-bounded rule is complete -- `Expander::expand()`'s
 	 * `past_until()` guard means nothing further will ever be produced, so
@@ -2037,14 +2037,14 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: three completed series with lower post IDs must not
+	 * Coverage for the horizon top-up: three completed series with lower post IDs must not
 	 * starve a genuinely open-ended, stale series out of a smaller batch.
-	 * This is the measured regression from review: `LIMIT` with no `ORDER BY`
-	 * deterministically returns the lowest-ID group keys, so three completed
+	 * `LIMIT` with no `ORDER BY` deterministically returns the lowest-ID group
+	 * keys, so three completed
 	 * `until` series created before an open-ended one would occupy every slot
 	 * of a batch of 3 forever, and the open-ended series would never
-	 * reach its own real horizon -- the exact ship-blocker REQ-6 exists to
-	 * close, one indirection later.
+	 * reach its own real horizon -- exactly the starvation the top-up exists
+	 * to prevent.
 	 *
 	 * @covers ::select_series_needing_top_up
 	 * @covers ::top_up
@@ -2097,7 +2097,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: `select_series_needing_top_up()` orders by
+	 * Coverage for the horizon top-up: `select_series_needing_top_up()` orders by
 	 * staleness, not by `series_post_id`, so a batch smaller than the
 	 * candidate pool cannot starve the most-overdue series behind
 	 * lower-post-ID, less-stale ones. Created deliberately out of staleness
@@ -2488,7 +2488,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: reading a stale series through `select_upcoming()`
+	 * Coverage for the horizon top-up: reading a stale series through `select_upcoming()`
 	 * -- the real production read path -- triggers exactly one repair, and a
 	 * second read within the debounce window is suppressed.
 	 *
@@ -2603,7 +2603,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: `maybe_lazy_repair()` caps how many distinct stale
+	 * Coverage for the horizon top-up: `maybe_lazy_repair()` caps how many distinct stale
 	 * series one read attempts, so a listing page surfacing many distinct
 	 * stale series cannot turn into many synchronous `project()` calls inside
 	 * one request. Two stale series are encountered by one `select_upcoming()`
@@ -2711,7 +2711,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: at the default per-read cap of 1, a fresh series
+	 * Coverage for the horizon top-up: at the default per-read cap of 1, a fresh series
 	 * that sorts first must not permanently block a genuinely stale series
 	 * sorting after it -- the exact starvation shape the cap re-created.
 	 * Refs arrive in `datetime_start_gmt` order, not staleness order, so a
@@ -2796,7 +2796,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for the review's rowless-repair blocker: a valid recurring
+	 * Coverage for rowless repair: a valid recurring
 	 * series whose occurrence rows are gone -- a partial restore, a
 	 * projection that failed halfway, a manual `DELETE` -- must be repaired
 	 * by the scheduled sweep. Candidate selection used to be driven from the
@@ -3005,7 +3005,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for the review's total-ordering finding on the limited event
+	 * Coverage for total ordering on the limited event
 	 * query: `ORDER BY effective_start_gmt` alone is not a total order, so
 	 * two events sharing one start instant can swap places between two
 	 * identical reads and a paginated list can repeat or drop one.
@@ -3123,7 +3123,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for the review's total-ordering finding on the sweep's own
+	 * Coverage for total ordering on the sweep's own
 	 * limited query. Rowless candidates all share one `NULL` sort key, so
 	 * without the `post_id` tie-breaker the batch boundary among them is
 	 * whatever the plan happens to emit -- one rowless series could be

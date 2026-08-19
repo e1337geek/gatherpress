@@ -241,7 +241,7 @@ class Test_Expander extends Base {
 	/**
 	 * A day-of-month rule on the 31st yields only the months that have a 31st.
 	 *
-	 * PRD F-1 conformance: the date is skipped, never rolled forward to the 1st.
+	 * The date is skipped, never rolled forward to the 1st.
 	 *
 	 * @covers ::expand
 	 * @covers ::next_monthly_date
@@ -788,7 +788,7 @@ class Test_Expander extends Base {
 		// `Test_Rule::test_from_array_rejects_unrecognized_frequency()`), so
 		// this deliberately-invalid shape can only be built directly. The
 		// fixture used to be 'yearly', which stopped being unrecognized when
-		// REQ-11 landed the fourth frequency.
+		// the yearly frequency was added.
 		$rule = $this->build_rule_directly(
 			array( 'fortnightly', 1, array(), '', 0, 0, 0, Rule::END_TYPE_NEVER, null, 0 )
 		);
@@ -1509,8 +1509,8 @@ class Test_Expander extends Base {
 	/**
 	 * A yearly rule repeats on the anchor's own month and day.
 	 *
-	 * PRD section 2.1 and REQ-11: yearly is "every N years", with the month and
-	 * day taken from the series start. There is no mode switch and no `BYMONTH`.
+	 * Yearly is "every N years", with the month and day taken from the series
+	 * start. There is no mode switch and no `BYMONTH`.
 	 *
 	 * @covers ::expand
 	 * @covers ::next_candidate_date
@@ -1584,8 +1584,8 @@ class Test_Expander extends Base {
 	 * ignored and MUST NOT be counted as part of the recurrence set." So 2025,
 	 * 2026 and 2027 produce nothing at all -- not 1 March, not 28 February.
 	 *
-	 * The expected set is written out literally rather than computed, exactly
-	 * as REQ-11 requires: a computed expectation would agree with a rolling
+	 * The expected set is written out literally rather than computed: a
+	 * computed expectation would agree with a rolling
 	 * implementation as readily as with a skipping one.
 	 *
 	 * @covers ::expand
@@ -1619,7 +1619,7 @@ class Test_Expander extends Base {
 	/**
 	 * A leap-day series bounded by `COUNT=3` yields exactly three occurrences.
 	 *
-	 * The F-1 conformance case. A skipped 29 February must not consume a count
+	 * The conformance case. A skipped 29 February must not consume a count
 	 * budget, so a `COUNT=3` rule anchored on 2024-02-29 spans nine years and
 	 * still delivers three occurrences. The plausible wrong implementation --
 	 * decrement the budget per candidate year and filter the invalid dates
@@ -1761,7 +1761,7 @@ class Test_Expander extends Base {
 	 * 1 November is the date that makes this visible in `America/New_York`:
 	 * daylight saving ends on the first Sunday in November, which is 1 November
 	 * in 2026 and later in every following year in the window. So the same 18:00
-	 * wall clock is -05:00 in 2026 and -04:00 afterwards. PRD C-3 -- the time of
+	 * wall clock is -05:00 in 2026 and -04:00 afterwards. The time of
 	 * day belongs to the occurrence, and the offset is whatever the zone says on
 	 * that date.
 	 *

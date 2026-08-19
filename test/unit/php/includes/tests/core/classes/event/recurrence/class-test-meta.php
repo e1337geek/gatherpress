@@ -217,9 +217,9 @@ class Test_Meta extends Base {
 	 * The deferred `wp_after_insert_post` → `shutdown` path resolves correctly
 	 * when the blob arrives after `set_recurrence()` ran but before shutdown --
 	 * the exact ordering a first publish produces when this class's hook
-	 * happens to run before the blob-writing caller. This is BLOCKING 1 from
-	 * the review: the fix is robust to hook order because it never decides
-	 * from a mid-request read, only from the state at shutdown.
+	 * happens to run before the blob-writing caller. The fix is robust to hook
+	 * order because it never decides from a mid-request read, only from the
+	 * state at shutdown.
 	 *
 	 * @covers ::set_recurrence
 	 * @covers ::resolve_pending_recurrence
@@ -364,8 +364,8 @@ class Test_Meta extends Base {
 	/**
 	 * `set_recurrence()` clears the mirrors, rather than leaving a previous
 	 * rule's mirrors in place, when the stored blob decodes to an invalid
-	 * rule -- BLOCKING 3 from the review. A stale `frequency` mirror is what
-	 * makes `Query::refresh_has_recurring_events()` keep believing the site
+	 * rule. A stale `frequency` mirror is what makes
+	 * `Query::refresh_has_recurring_events()` keep believing the site
 	 * has a recurring event that was, in fact, just invalidated.
 	 *
 	 * @covers ::set_recurrence

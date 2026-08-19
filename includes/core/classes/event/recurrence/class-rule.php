@@ -2,13 +2,13 @@
 /**
  * Value object describing one recurrence rule.
  *
- * One rule per event, permanently (PRD D-5). The rule is stored as decomposed
+ * One rule per event, permanently. The rule is stored as decomposed
  * post meta — a single writable `gatherpress_recurrence` JSON blob plus ten
  * derived read-only mirrors — never as a serialized RFC 5545 string and never
  * in a table of its own. `Rule::from_post()` reconstructs the value object from
  * the mirrors, which is what keeps the blob a pure write-boundary artifact.
  *
- * `to_rrule_string()` is the REQ-14 export seam. It exists and is unit-tested
+ * `to_rrule_string()` is the calendar-export seam. It exists and is unit-tested
  * from day one, and has no production caller in the POC.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -60,7 +60,7 @@ final class Rule {
 	 * Frequency: repeats every N years, on the series start's month and day.
 	 *
 	 * Carries no companion fields of its own. `BYMONTH`, `BYYEARDAY` and
-	 * `BYWEEKNO` are permanent non-goals (PRD section 10 item 5), so yearly has
+	 * `BYWEEKNO` are permanent non-goals, so yearly has
 	 * no mode switch to go with it -- the month and the day come from the
 	 * series anchor, and the expander reads them there.
 	 *
@@ -110,7 +110,7 @@ final class Rule {
 	const END_TYPE_COUNT = 'count';
 
 	/**
-	 * Week start, Monday. PRD D-8, and the RFC 5545 default. Not configurable.
+	 * Week start, Monday. The RFC 5545 default. Not configurable.
 	 *
 	 * @since 0.36.0
 	 * @var int
@@ -578,7 +578,7 @@ final class Rule {
 	/**
 	 * Serialize the rule as an RFC 5545 `RRULE` string.
 	 *
-	 * The REQ-14 export seam. Unit-tested against a fixture table, with no
+	 * The calendar-export seam. Unit-tested against a fixture table, with no
 	 * production caller in the POC. `WKST` is never emitted because
 	 * `WEEK_START` (Monday) is already RFC 5545's default. `UNTIL` is emitted
 	 * as a bare `Ymd` date -- the rule carries no time-of-day of its own, that
@@ -587,8 +587,7 @@ final class Rule {
 	 * The `FREQ=` value is the uppercased frequency, so a yearly rule needs no
 	 * arm of its own here. It emits no `BY*` part at all: RFC 5545 defaults the
 	 * month and month-day of a `FREQ=YEARLY` rule to the `DTSTART`'s, which is
-	 * exactly the behavior REQ-11 specifies, and `BYMONTH` is a permanent
-	 * non-goal (PRD section 10 item 5).
+	 * exactly the intended behavior, and `BYMONTH` is a permanent non-goal.
 	 *
 	 * @since 0.36.0
 	 *

@@ -4,23 +4,23 @@
  *
  * Owns every read and write of `{prefix}gatherpress_event_occurrences`, whose
  * primary key is the composite `(series_post_id, recurrence_id)`. There is no
- * autoincrement column, which is what makes PRD C-1 structural rather than a
+ * autoincrement column, which is what makes that identity structural rather than a
  * convention — no insertion-order identifier exists to leak into a URL or an
  * RSVP link.
  *
- * PRD C-2 — every read takes an array of post IDs resolved through
+ * Every read takes an array of post IDs resolved through
  * `Series::resolve_post_ids()` and emits `series_post_id IN (…)`. A query
- * written as `series_post_id = %d` forecloses REQ-18. Mutations (`project()`,
+ * written as `series_post_id = %d` forecloses a future forward split. Mutations (`project()`,
  * `set_status()`, `delete_for_post()`, `get()`) operate on exactly one post's
  * own rows, so `series_post_id = %d` there is correct rather than a violation
- * — C-2 governs series-wide reads, not single-post writes. `delete_for_post()`
- * is deliberately per-post, not per-series: one rule per event post (PRD D-5)
+ * — the array contract governs series-wide reads, not single-post writes. `delete_for_post()`
+ * is deliberately per-post, not per-series: one rule per event post
  * means every call site (`delete_post`, an expand-failure clear) only ever
  * needs to clear the post it was handed. A genuine series-wide delete is a
  * different, not-yet-needed method (`delete_for_series( array $post_ids )`),
- * added when REQ-18's forward split actually requires one.
+ * added when the forward split actually requires one.
  *
- * PRD C-5 — cancellation is the `status` column on an occurrence row. The rule
+ * Cancellation is the `status` column on an occurrence row. The rule
  * is never mutated to express it.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -72,7 +72,7 @@ final class Occurrences {
 	const STATUS_SCHEDULED = 'scheduled';
 
 	/**
-	 * Status of an occurrence that has been cancelled.
+	 * Status of an occurrence that has been canceled.
 	 *
 	 * @since 0.36.0
 	 * @var string
@@ -87,7 +87,7 @@ final class Occurrences {
 	 * measured from `max( $anchor_start, now )`, not from the anchor alone --
 	 * an anchor-relative horizon computes the same fixed window every time
 	 * `project()` runs, so a long-running series eventually projects entirely
-	 * into the past and a top-up re-run (REQ-6) is a guaranteed no-op. `until`
+	 * into the past and a top-up re-run is a guaranteed no-op. `until`
 	 * is not bounded by this constant either: `Expander::expand()` treats a
 	 * non-count rule's horizon as its stopping point, so an `UNTIL` far beyond
 	 * this window is truncated at the horizon, same as `never`.
@@ -175,7 +175,7 @@ final class Occurrences {
 	 * the moment it was deferred -- captured before `Meta`'s own deferred
 	 * resolution has a chance to touch them, since both classes read the same
 	 * meta key at the same point in the same `wp_after_insert_post` firing.
-	 * REQ-16's "a site with no recurring events pays nothing" guarantee turns
+	 * The "a site with no recurring events pays nothing" guarantee turns
 	 * on this: an ordinary event that was never recurring, and still is not
 	 * at shutdown, must resolve without ever querying the occurrence table.
 	 * Only a post that *was* recurring justifies the cleanup query when its
@@ -191,14 +191,14 @@ final class Occurrences {
 	 *
 	 * Bootstraps `Projection_Cron` here rather than from `Recurrence\Setup`:
 	 * the sweep/lazy-repair scheduler it owns exists solely to keep this
-	 * class's own `project()` re-running over time (REQ-6), so wiring it up
+	 * class's own `project()` re-running over time, so wiring it up
 	 * alongside the class it serves keeps that relationship in one file
 	 * instead of splitting it across this class and the subsystem's shared
 	 * `Setup::instantiate_classes()`.
 	 *
 	 * @since 0.36.0
 	 */
-	public function __construct() {
+	protected function __construct() {
 		$this->setup_hooks();
 
 		Projection_Cron::get_instance();
@@ -252,7 +252,7 @@ final class Occurrences {
 		// Captured now, before Meta's own deferred resolution can touch the
 		// mirrors this request -- see the $pending_projection property
 		// docblock for why this is what keeps an ordinary, never-recurring
-		// save from ever querying the occurrence table (REQ-16).
+		// save from ever querying the occurrence table.
 		$this->pending_projection[ $post_id ] = Rule::from_post( $post_id ) instanceof Rule;
 
 		add_action( 'shutdown', array( $this, 'resolve_pending_projection' ), 20 );
@@ -361,11 +361,11 @@ final class Occurrences {
 	 * row. The `status` predicate lives in the join condition, never in
 	 * `WHERE` -- but that alone is not sufficient: without the `NOT EXISTS`
 	 * guard below, a post whose occurrence rows all fail the status filter
-	 * (a fully cancelled series) would *also* fall through the `NULL`
+	 * (a fully canceled series) would *also* fall through the `NULL`
 	 * `scheduled_occurrence` branch and reappear as if it were a
 	 * non-recurring event at its original anchor date. The guard scopes the
 	 * `NULL` fallback to posts with **no occurrence rows at all**, so a
-	 * cancelled series is correctly absent rather than misrepresented.
+	 * canceled series is correctly absent rather than misrepresented.
 	 *
 	 * @since 0.36.0
 	 *
@@ -449,7 +449,7 @@ final class Occurrences {
 
 		$refs = array_map( array( $this, 'row_to_ref' ), null === $rows ? array() : $rows );
 
-		// Lazy repair (REQ-6) only runs off an upcoming-events read -- a
+		// Lazy repair only runs off an upcoming-events read -- a
 		// past-only read has nothing forward-looking to repair, and gating
 		// it here keeps select_past() genuinely read-only.
 		if ( $upcoming ) {
@@ -460,7 +460,7 @@ final class Occurrences {
 	}
 
 	/**
-	 * Debounced lazy repair (REQ-6): attempt one repair per stale series
+	 * Debounced lazy repair: attempt one repair per stale series
 	 * encountered by an upcoming-events read, at most once per
 	 * `LAZY_REPAIR_TTL` window.
 	 *
@@ -948,7 +948,7 @@ final class Occurrences {
 	 * this method's own frozen "deletes rows the rule no longer produces"
 	 * contract. The deferred path instead passes whether the post *was*
 	 * recurring at the moment it was deferred, so an ordinary, never-recurring
-	 * event resolves without ever touching the occurrence table (REQ-16) --
+	 * event resolves without ever touching the occurrence table --
 	 * `Rule::from_post()` returning null looks identical whether a post never
 	 * had a rule or just lost one, so that distinction has to be captured
 	 * earlier, in `maybe_project()`, and threaded through.
@@ -1160,7 +1160,7 @@ final class Occurrences {
 	 * an anchor-relative horizon would eventually leave a years-old series
 	 * projected entirely into the past, with no upcoming occurrences and no
 	 * way for a re-save to fix it, since `project()` is a pure function of
-	 * rule and anchor. Filterable so a future top-up task (REQ-6) is not
+	 * rule and anchor. Filterable so a future top-up task is not
 	 * boxed in by a literal.
 	 *
 	 * @since 0.36.0
@@ -1368,7 +1368,7 @@ final class Occurrences {
 	 * Read the occurrences of a series.
 	 *
 	 * Takes an array of post IDs, never a single ID, so the query emits
-	 * `series_post_id IN (…)` and REQ-18 stays reachable.
+	 * `series_post_id IN (…)` and a future forward split stays reachable.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1458,10 +1458,10 @@ final class Occurrences {
 	 * Delete every occurrence row belonging to one post.
 	 *
 	 * Deliberately per-post, not per-series -- one rule per event post
-	 * (PRD D-5) means every call site (`delete_post`, an expand-failure
+	 * means every call site (`delete_post`, an expand-failure
 	 * clear) only ever needs to clear the post it was handed. A genuine
 	 * series-wide delete is a different, not-yet-needed method
-	 * (`delete_for_series( array $post_ids )`), added when REQ-18's forward
+	 * (`delete_for_series( array $post_ids )`), added when the forward
 	 * split actually requires one.
 	 *
 	 * @since 0.36.0

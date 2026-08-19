@@ -92,7 +92,7 @@ final class Meta {
 	 *
 	 * @since 0.36.0
 	 */
-	public function __construct() {
+	protected function __construct() {
 		$this->setup_hooks();
 	}
 

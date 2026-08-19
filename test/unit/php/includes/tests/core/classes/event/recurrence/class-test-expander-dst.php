@@ -114,7 +114,7 @@ class Test_Expander_Dst extends Base {
 	/**
 	 * A daily 02:30 series skips the spring-forward date entirely.
 	 *
-	 * PRD F-1 #2 and RFC 5545 section 3.3.10: the local time 2026-03-08 02:30
+	 * RFC 5545 section 3.3.10: the local time 2026-03-08 02:30
 	 * does not exist, so it is not an occurrence. PHP would otherwise normalize
 	 * it forward to 03:30.
 	 *
@@ -153,7 +153,7 @@ class Test_Expander_Dst extends Base {
 	/**
 	 * A skipped spring-forward candidate does not consume the `COUNT` budget.
 	 *
-	 * PRD F-1 #3: the count decrements on appending a result, never on
+	 * The count decrements on appending a result, never on
 	 * consuming a candidate, so the series still delivers three occurrences.
 	 *
 	 * @covers ::expand

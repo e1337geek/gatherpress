@@ -19,7 +19,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 /**
  * Class Occurrence_Ref.
  *
- * Immutable value object. PRD C-1 — identity is the composite
+ * Immutable value object. Identity is the composite
  * `(post_id, recurrence_id)`, never insertion order and never an autoincrement.
  *
  * @since 0.36.0

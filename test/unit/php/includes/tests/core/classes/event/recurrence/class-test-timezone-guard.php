@@ -56,7 +56,7 @@ class Test_Timezone_Guard extends Base {
 	 * Coverage for is_named rejecting every timezone in WordPress's "Manual
 	 * Offsets" admin group (UTC-12 .. UTC+14). This is the list an organizer
 	 * can actually reach from the site's General Settings screen in three
-	 * clicks, so it is the live path REQ-3 exists to close, not a synthetic one.
+	 * clicks, so it is the live path the guard exists to close, not a synthetic one.
 	 *
 	 * Mirrors the offset list wp-admin/options-general.php builds for the
 	 * "Manual Offsets" <optgroup>, formatted the same way WordPress formats

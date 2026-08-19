@@ -125,7 +125,7 @@ class Test_Projection_Cron extends Base {
 
 	/**
 	 * Coverage for `maybe_schedule_sweep()`'s `site_has_recurring_events()`
-	 * guard: REQ-16's "a site with no recurring events pays nothing"
+	 * guard: the "a site with no recurring events pays nothing"
 	 * guarantee covers the scheduler itself, not only the sweep callback.
 	 * Run on `init`, an unguarded scheduler would cost every GatherPress
 	 * install -- the overwhelming majority of which never publish a
@@ -298,7 +298,7 @@ class Test_Projection_Cron extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: deactivation unschedules the sweep so a cron event
+	 * Coverage for the horizon top-up: deactivation unschedules the sweep so a cron event
 	 * never survives plugin deactivation.
 	 *
 	 * @covers ::deactivate
@@ -350,7 +350,7 @@ class Test_Projection_Cron extends Base {
 	 * Both deactivation tests above call `deactivate()` directly, so neither
 	 * would fail if the `register_deactivation_hook()` line were removed --
 	 * this asserts the registration itself, the same shape as the
-	 * cron-wiring gap a prior review round caught for `run_sweep()`.
+	 * cron-wiring gap that would leave `run_sweep()` unregistered.
 	 *
 	 * @covers ::setup_hooks
 	 *
@@ -370,7 +370,7 @@ class Test_Projection_Cron extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: a site that removes its last recurrence must lose
+	 * Coverage for the horizon top-up: a site that removes its last recurrence must lose
 	 * the hourly sweep, not keep dispatching an early-returning callback for
 	 * the life of the plugin. The `1 -> 0` transition is the whole point --
 	 * a never-recurring site has nothing to unschedule, so the existing
@@ -402,7 +402,7 @@ class Test_Projection_Cron extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-6: adding a recurrence schedules the sweep exactly
+	 * Coverage for the horizon top-up: adding a recurrence schedules the sweep exactly
 	 * once, however many times `init` runs. `wp_next_scheduled()` returns
 	 * only the soonest timestamp, so it cannot see a second, later
 	 * registration of the same hook -- this counts the real cron array

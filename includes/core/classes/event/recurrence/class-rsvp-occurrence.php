@@ -8,7 +8,7 @@
  * comment meta, and not a provisional post ID.
  *
  * The term slug format is produced by exactly one function, `term_slug()`, so
- * REQ-19's sentinel "all occurrences" slug is a one-line addition later rather
+ * a sentinel "all occurrences" slug is a one-line addition later rather
  * than a format change scattered across call sites.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -44,7 +44,7 @@ final class Rsvp_Occurrence {
 	 */
 	const TAXONOMY = '_gatherpress_occurrence';
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Build the term slug for one occurrence.
 	 *
@@ -62,7 +62,7 @@ final class Rsvp_Occurrence {
 	}
 	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Attach an RSVP comment to an occurrence.
 	 *
@@ -79,7 +79,7 @@ final class Rsvp_Occurrence {
 	}
 	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Build the taxonomy query scoping RSVPs to one occurrence.
 	 *
@@ -98,11 +98,11 @@ final class Rsvp_Occurrence {
 	}
 	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Move occurrence terms from one series post to another.
 	 *
-	 * The REQ-13 forward-split seam. Unit-tested with no production caller in
+	 * The forward-split seam. Unit-tested with no production caller in
 	 * the POC.
 	 *
 	 * @since 0.36.0

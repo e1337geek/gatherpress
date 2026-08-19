@@ -128,8 +128,8 @@ trait Occurrence_Fixtures {
 	/**
 	 * Get the canonical expected occurrence set for the reference weekly rule.
 	 *
-	 * The reference rule is the one the demo opens with and the one PRD F-2
-	 * makes WKST load-bearing for:
+	 * The reference rule is the one the demo opens with, and the one that makes
+	 * WKST load-bearing:
 	 *
 	 *     array(
 	 *         'frequency' => 'weekly',
@@ -141,11 +141,11 @@ trait Occurrence_Fixtures {
 	 *
 	 * anchored on Thursday 2026-09-03 18:00:00 in `America/New_York`. Against a
 	 * Monday-start week index that gives week buckets 0, 2, 2, 4, 4 — the exact
-	 * sequence an external review validated `week_index()` against. A day-delta
+	 * sequence `week_index()` must produce. A day-delta
 	 * implementation produces a different set, which is the point.
 	 *
-	 * Every entry is a datetime, never a date (PRD C-4), and its
-	 * `recurrence_id` is its **local** start in `Ymd\THis` (PRD C-1). The GMT
+	 * Every entry is a datetime, never a date, and its
+	 * `recurrence_id` is its **local** start in `Ymd\THis`. The GMT
 	 * columns are four hours ahead because the whole set falls inside
 	 * `America/New_York`'s 2026 daylight saving period.
 	 *

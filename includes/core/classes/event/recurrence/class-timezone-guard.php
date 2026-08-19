@@ -5,8 +5,8 @@
  * GatherPress normalizes timezones through `Utility::maybe_convert_utc_offset()`
  * and may therefore hold a value such as `UTC+5:30` where a tz-database
  * identifier belongs. PHP classifies those as timezone type 1, which carries no
- * DST rules at all, so a recurring series anchored on one silently drifts.
- * REQ-3 refuses them.
+ * DST rules at all, so a recurring series anchored on one silently drifts. The
+ * guard refuses them.
  *
  * Validation is positive, not merely a colon check: the string must appear in
  * `timezone_identifiers_list()` and must contain no colon. The colon test is

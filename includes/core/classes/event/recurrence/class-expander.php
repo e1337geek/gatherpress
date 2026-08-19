@@ -5,8 +5,8 @@
  * Pure by contract: no database access, no globals, no side effects, so the
  * hardest piece of the subsystem is testable in isolation.
  *
- * PRD C-4 — the contract is datetime-valued, never date-valued, from the first
- * commit. PRD C-3 — the wall-clock time is read once from the anchor and applied
+ * The contract is datetime-valued, never date-valued, from the first
+ * commit. The wall-clock time is read once from the anchor and applied
  * in the series timezone; interval arithmetic never runs on a wall-clock-bearing
  * datetime. RFC 5545 section 3.3.10 — a nonexistent local time in a
  * spring-forward gap is skipped and does not consume a `COUNT` budget.
@@ -156,7 +156,7 @@ final class Expander {
 		// like a working series.
 		$anchor_start = $anchor_start->setTimezone( $timezone );
 
-		// PRD C-3: the wall-clock time is read from the anchor once, and the walk
+		// The wall-clock time is read from the anchor once, and the walk
 		// itself runs on timezone-free dates so no interval arithmetic can land on
 		// a datetime that carries an offset.
 		$time       = $anchor_start->format( 'H:i:s' );
@@ -383,7 +383,7 @@ final class Expander {
 	/**
 	 * Resolve a day number within a month, without rolling a missing day forward.
 	 *
-	 * PRD F-1: the 31st of a thirty-day month is not an occurrence, and is never
+	 * The 31st of a thirty-day month is not an occurrence, and is never
 	 * the 1st of the month after.
 	 *
 	 * @since 0.36.0
@@ -449,7 +449,7 @@ final class Expander {
 	/**
 	 * Report whether a candidate date is on a selected weekday in an on-interval week.
 	 *
-	 * The interval is counted in Monday-start week buckets (PRD D-8), not in
+	 * The interval is counted in Monday-start week buckets, not in
 	 * seven-day deltas from the anchor: a Thursday anchor sits late in its own
 	 * week, and a day-delta walk lands the next occurrence in the wrong bucket.
 	 *

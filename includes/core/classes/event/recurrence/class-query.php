@@ -2,9 +2,9 @@
 /**
  * Occurrence integration with `WP_Query`.
  *
- * Short-circuits entirely when the site has no recurring events (S-6), which is
- * what REQ-16 rests on: an existing site that never authors a recurring event
- * must produce byte-identical SQL and the same query count as before.
+ * Short-circuits entirely when the site has no recurring events: an existing
+ * site that never authors a recurring event must produce byte-identical SQL and
+ * the same query count as before.
  *
  * The join is a `LEFT JOIN`, never an `INNER JOIN` — a non-recurring event has
  * no occurrence row, and an inner join would delete it from every list. The
@@ -171,7 +171,7 @@ final class Query {
 		}
 	}
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Join the occurrence table into an event query's clauses.
 	 *
@@ -191,7 +191,7 @@ final class Query {
 	}
 	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- T0 skeleton; delete with the body.
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Stamp occurrence identity onto a query's results.
 	 *

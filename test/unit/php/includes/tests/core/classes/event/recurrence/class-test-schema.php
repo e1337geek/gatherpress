@@ -180,7 +180,7 @@ class Test_Schema extends Base {
 	 * Coverage for the shared fixture's postconditions.
 	 *
 	 * Every downstream recurrence task depends on `create_recurring_event()`;
-	 * asserting its postconditions here means a broken fixture is caught in T1
+	 * asserting its postconditions here means a broken fixture is caught directly
 	 * rather than at the integration checkpoint.
 	 *
 	 * @return void
