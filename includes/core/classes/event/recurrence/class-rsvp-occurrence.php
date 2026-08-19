@@ -2,9 +2,9 @@
 /**
  * Links an RSVP comment to the occurrence it belongs to.
  *
- * The link is a native taxonomy term on the comment — the same mechanism the
- * RSVP subsystem already uses for status and provider — read through the
- * existing `Rsvp\Query::taxonomy_query()` path. It is not a mapping table, not
+ * The link is a native taxonomy term on the comment, read through the existing
+ * `Rsvp\Query::taxonomy_query()` path. Status and provider already use that
+ * same mechanism. It is not a mapping table, not
  * comment meta, and not a provisional post ID.
  *
  * The term slug format is produced by exactly one function, `term_slug()`, so
@@ -83,8 +83,8 @@ final class Rsvp_Occurrence {
 	/**
 	 * Build the taxonomy query scoping RSVPs to one occurrence.
 	 *
-	 * Passed through the existing `Rsvp\Query::get_rsvps()` path — no new SQL,
-	 * no new filter, no table.
+	 * Passed through the existing `Rsvp\Query::get_rsvps()` path, so there is no
+	 * new SQL, no new filter, and no table.
 	 *
 	 * @since 0.36.0
 	 *

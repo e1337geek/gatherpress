@@ -45,12 +45,12 @@ final class Timezone_Guard {
 	 * check even though `timezone_identifiers_list()` already excludes
 	 * offsets mirrors the same test `rlanvin/php-rrule` applies at
 	 * `RRule.php:585-590` immediately before silently rewriting such a
-	 * `DTSTART` to UTC -- the drift bug this project refuses to ship.
+	 * `DTSTART` to UTC, which is the drift bug this project refuses to ship.
 	 *
 	 * The colon check is provably redundant today: none of the 419 entries in
 	 * `timezone_identifiers_list()` contain a colon, so `in_array()` alone is
 	 * the entire guard. It is kept anyway for the legibility reason above, but
-	 * `in_array()` is the load-bearing half -- dropping it on the theory that
+	 * `in_array()` is the load-bearing half. Dropping it on the theory that
 	 * the colon check is the real test would reopen `'Not/AZone'` and `''`.
 	 *
 	 * @since 0.36.0

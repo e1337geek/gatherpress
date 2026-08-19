@@ -8,9 +8,9 @@
  * `series_post_id IN (…)`.
  *
  * In the POC a series is one post and this returns `array( $post_id )`. That is
- * an implementation detail, not a contract — the forward split makes a
- * series span several posts, and code that assumed one post would have to be
- * rewritten rather than extended.
+ * an implementation detail, not a contract. The forward split makes a series
+ * span several posts, so code that assumed one post would have to be rewritten
+ * rather than extended.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0

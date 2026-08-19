@@ -82,7 +82,7 @@ class Test_Occurrences extends Base {
 	 *
 	 * `select_upcoming()`/`select_past()` compare against `current_time()`, so
 	 * a test asserting "upcoming" or "past" placement against a fixed
-	 * calendar date is a date bomb -- it silently starts failing once real
+	 * calendar date is a date bomb. It silently starts failing once real
 	 * time passes the fixture's anchor. This builds the event directly rather
 	 * than through `create_recurring_event()`, so the anchor is always
 	 * relative to whenever the suite actually runs.
@@ -337,8 +337,8 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Direct coverage for `resolve_projectable()`'s no-rule branch (returns
-	 * `array( $post_id )` — one direct invoke per return path per AGENTS.md,
+	 * Direct coverage for `resolve_projectable()`'s no-rule branch, which returns
+	 * `array( $post_id )`. AGENTS.md requires one direct invoke per return path,
 	 * rather than reaching it only transitively through `project()`.
 	 *
 	 * @covers ::resolve_projectable
@@ -650,7 +650,7 @@ class Test_Occurrences extends Base {
 	/**
 	 * Saving an ordinary, never-recurring event through the
 	 * real save-path hooks must issue zero queries against the occurrence
-	 * table -- the "a site with no recurring events pays nothing"
+	 * table, which is the "a site with no recurring events pays nothing"
 	 * guarantee. Checking only project()'s return value (the test above) is
 	 * not enough to guard this: the fix for orphaned rows made the
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
@@ -722,7 +722,7 @@ class Test_Occurrences extends Base {
 		delete_post_meta( $post_id, Meta::META_KEY );
 		Meta::get_instance()->set_recurrence( $post_id );
 		// The blob is now empty, so Meta defers the decision to shutdown
-		// rather than clearing synchronously -- simulate shutdown firing.
+		// rather than clearing synchronously, so simulate shutdown firing.
 		Meta::get_instance()->resolve_pending_recurrence();
 
 		$this->assertNull( Rule::from_post( $post_id ), 'Failed to assert the mirrors were cleared by Meta.' );
@@ -733,7 +733,7 @@ class Test_Occurrences extends Base {
 		$this->assertCount(
 			0,
 			$instance->select_for_series( array( $post_id ) ),
-			'Failed to assert that removing the rule orphaned no rows -- they were deleted.'
+			'Failed to assert that removing the rule orphaned no rows. They were deleted.'
 		);
 	}
 
@@ -742,7 +742,7 @@ class Test_Occurrences extends Base {
 	 * the actual `wp_after_insert_post` and `shutdown` hooks are fired, not a
 	 * hand-called sequence of the methods those hooks invoke. A
 	 * hand-called sequence cannot fail even when the wiring it claims to test
-	 * is broken -- inverting `maybe_project()`'s `wp_after_insert_post`
+	 * is broken. Inverting `maybe_project()`'s `wp_after_insert_post`
 	 * priority and its dynamic `shutdown` priority so `Occurrences` runs
 	 * *before* `Meta` left the previous, hand-called version of this test
 	 * green. Firing the hooks for real is what makes the ordering the
@@ -765,8 +765,8 @@ class Test_Occurrences extends Base {
 		// Fires the real hooks, in production order: wp_after_insert_post
 		// (Meta::set_recurrence() at priority 10, Occurrences::maybe_project()
 		// at priority 20), then shutdown (Meta's priority-10 resolution, then
-		// Occurrences' priority-20 one) -- the hooks themselves decide the
-		// order, nothing here hand-sequences it.
+		// Occurrences' priority-20 one). The hooks themselves decide the
+		// order, and nothing here hand-sequences it.
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
 		do_action( 'wp_after_insert_post', $post_id, get_post( $post_id ), true, null );
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
@@ -782,7 +782,7 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Coverage for `resolve_anchor()` returning null when the stored datetime
-	 * cannot be parsed -- a rule's mirrors can exist on a post whose own
+	 * cannot be parsed. A rule's mirrors can exist on a post whose own
 	 * datetime meta never landed.
 	 *
 	 * @covers ::project
@@ -865,7 +865,7 @@ class Test_Occurrences extends Base {
 	 * raw `gatherpress_datetime` blob directly, so it passes a validly-named
 	 * timezone. `Event::get_datetime()`, which `resolve_anchor()` reads
 	 * through, applies the `gatherpress_timezone` filter *after* that
-	 * validation -- a misbehaving filter can still hand `expand_or_clear()` a
+	 * validation. A misbehaving filter can still hand `expand_or_clear()` a
 	 * fixed offset even though the mirrors (and `Rule::from_post()`) remain
 	 * valid. This is the live scenario `resolve_anchor()`'s own unguarded
 	 * `new DateTimeZone()` construction and `expand_or_clear()`'s try/catch
@@ -979,8 +979,9 @@ class Test_Occurrences extends Base {
 	 * absolute-seconds delta taken once from a non-transition anchor and
 	 * reapplied via raw `modify( '+N seconds' )` is fragile precisely because
 	 * it happens to agree with the calendar-decomposed `DateInterval` used
-	 * here for whole-hour spans -- this test pins the measured wall-clock
-	 * values directly, not values re-derived from reasoning about them.
+	 * here for whole-hour spans. This test therefore pins the measured
+	 * wall-clock values directly, not values re-derived from reasoning about
+	 * them.
 	 *
 	 * @covers ::build_occurrence_row
 	 *
@@ -1014,13 +1015,13 @@ class Test_Occurrences extends Base {
 	/**
 	 * Coverage end to end through `project()`: an anchor whose own
 	 * span crosses the fall-back transition (2026-10-31 22:00 -> 2026-11-01
-	 * 02:00, a nominal 4 hours) must project every later occurrence -- even
-	 * ones that do not themselves touch a transition -- with that same
-	 * nominal 4-hour span. `$anchor_start->diff( $anchor_end )` on the two
+	 * 02:00, a nominal 4 hours) must project every later occurrence with that
+	 * same nominal 4-hour span, including ones that do not themselves touch a
+	 * transition. `$anchor_start->diff( $anchor_end )` on the two
 	 * *zoned* anchor datetimes reports their real elapsed time (5 hours, since
 	 * the anchor itself spans the repeated hour) rather than their wall-clock
 	 * difference, and reapplying that inflated span to every occurrence is
-	 * exactly the corruption this method exists to prevent -- the anchor's
+	 * exactly the corruption this method exists to prevent. The anchor's
 	 * own stored row would then contradict the anchor it was derived from.
 	 * `test_build_occurrence_row_applies_duration_from_anchor()` and
 	 * `..._preserves_nominal_span_across_fall_back()` pass a hand-built
@@ -1221,7 +1222,7 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Coverage for `set_status()` scoping by both `series_post_id` and
-	 * `recurrence_id` -- a recurrence_id that belongs to a different series
+	 * `recurrence_id`. A recurrence_id that belongs to a different series
 	 * must not be mutated through this post's ID, and vice versa.
 	 *
 	 * @covers ::set_status
@@ -1333,8 +1334,8 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * The priority gap on `shutdown` -- not registration
-	 * order -- is what guarantees `Meta::resolve_pending_recurrence()` runs
+	 * The priority gap on `shutdown`, rather than registration order, is what
+	 * guarantees `Meta::resolve_pending_recurrence()` runs
 	 * before `Occurrences::resolve_pending_projection()`. `has_action()`
 	 * returning a truthy value accepts any priority, including one that would
 	 * put `Occurrences` first and break the ordering the whole deferred
@@ -1443,8 +1444,8 @@ class Test_Occurrences extends Base {
 		$instance = Occurrences::get_instance();
 
 		// Simulate the post type no longer supporting gatherpress-event-date
-		// by the time delete_post fires -- the guard, not an empty table, is
-		// what is under test.
+		// by the time delete_post fires. The guard is what is under test, not
+		// an empty table.
 		set_post_type( $post_id, 'post' );
 
 		$instance->maybe_delete_for_post( $post_id );
@@ -1482,8 +1483,8 @@ class Test_Occurrences extends Base {
 	 *
 	 * Asserting only that the recurring post ID is present, and only
 	 * checking null-ness for the *non*-recurring entry, does not exercise
-	 * occurrence identity at all -- `row_to_ref()` could hardcode `recurrence_id = null` for
-	 * every row and this test would still pass, while every real caller of
+	 * occurrence identity at all. `row_to_ref()` could hardcode
+	 * `recurrence_id = null` for every row and this test would still pass, while every real caller of
 	 * `select_upcoming()` would silently lose occurrence identity for every
 	 * recurring series. Asserting the recurring entry's exact, expected
 	 * `Ymd\THis` recurrence ID is what makes that change fail here.
@@ -1735,7 +1736,7 @@ class Test_Occurrences extends Base {
 	 * @since 0.36.0
 	 *
 	 * @param int $horizon_months Horizon, in months, used only while creating
-	 *                             the fixture -- smaller values produce a
+	 *                             the fixture. Smaller values produce a
 	 *                             more-stale series once the filter is
 	 *                             removed and the real horizon applies again.
 	 *
@@ -1794,7 +1795,7 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Create an `UNTIL`-bounded weekly series whose `until` has already
-	 * passed -- complete, in the same sense a `COUNT`-bounded series is
+	 * passed. It is complete in the same sense a `COUNT`-bounded series is
 	 * complete: `Expander::expand()`'s `past_until()` guard means nothing
 	 * further will ever be produced for it, no matter how far its latest
 	 * projected occurrence sits below `resolve_top_up_cutoff()`.
@@ -1882,8 +1883,9 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Coverage for the horizon top-up: the scheduled sweep must issue no query against the
-	 * occurrence table at all on a site with no recurring events -- checked
-	 * via a `$wpdb->queries` capture, not the sweep's return value, matching
+	 * occurrence table at all on a site with no recurring events. This is
+	 * checked via a `$wpdb->queries` capture rather than the sweep's return
+	 * value, matching
 	 * the zero-query test above for the save path.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Projection_Cron::run_sweep
@@ -1928,7 +1930,7 @@ class Test_Occurrences extends Base {
 	 * latest occurrence sits in the past.
 	 *
 	 * Asserts on the candidate list and on a `$wpdb->queries` capture, not on
-	 * row equality -- `project()` is value-idempotent, so a row-equality
+	 * row equality. `project()` is value-idempotent, so a row-equality
 	 * assertion (`assertSame( $before, $after )`) would pass whether or not
 	 * the sweep actually re-projected this series, and is decorative on its
 	 * own. This series is the only recurring series present, so "the sweep
@@ -1986,7 +1988,7 @@ class Test_Occurrences extends Base {
 	/**
 	 * Coverage for the horizon top-up: an `UNTIL`-bounded rule whose latest projected
 	 * occurrence has already reached its `until` date is complete in the
-	 * same sense a `COUNT`-bounded rule is complete -- `Expander::expand()`'s
+	 * same sense a `COUNT`-bounded rule is complete. `Expander::expand()`'s
 	 * `past_until()` guard means nothing further will ever be produced, so
 	 * it must never be re-projected by the sweep either.
 	 *
@@ -2043,8 +2045,8 @@ class Test_Occurrences extends Base {
 	 * keys, so three completed
 	 * `until` series created before an open-ended one would occupy every slot
 	 * of a batch of 3 forever, and the open-ended series would never
-	 * reach its own real horizon -- exactly the starvation the top-up exists
-	 * to prevent.
+	 * reach its own real horizon. That is exactly the starvation the top-up
+	 * exists to prevent.
 	 *
 	 * @covers ::select_series_needing_top_up
 	 * @covers ::top_up
@@ -2326,9 +2328,9 @@ class Test_Occurrences extends Base {
 	 * @return void
 	 */
 	public function test_is_series_stale_returns_true_for_a_series_with_no_projected_rows(): void {
-		// A never-ending rule, not the shared WEEKLY_RULE fixture (COUNT-bounded)
-		// -- is_series_stale() must reach the no-rows branch, not short-circuit
-		// on the COUNT-bounded branch that already has its own coverage above.
+		// A never-ending rule, not the shared WEEKLY_RULE fixture, which is
+		// COUNT-bounded. is_series_stale() must reach the no-rows branch rather
+		// than short-circuit on the COUNT-bounded branch covered above.
 		list( $post_id ) = $this->create_short_horizon_never_ending_series();
 
 		Occurrences::get_instance()->delete_for_post( $post_id );
@@ -2488,9 +2490,9 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Coverage for the horizon top-up: reading a stale series through `select_upcoming()`
-	 * -- the real production read path -- triggers exactly one repair, and a
-	 * second read within the debounce window is suppressed.
+	 * Coverage for the horizon top-up: reading a stale series through
+	 * `select_upcoming()`, the real production read path, triggers exactly one
+	 * repair, and a second read within the debounce window is suppressed.
 	 *
 	 * @covers ::select_by_horizon
 	 * @covers ::maybe_lazy_repair
@@ -2507,8 +2509,8 @@ class Test_Occurrences extends Base {
 		// The margin-days filter fires exactly once per maybe_repair_stale_series()
 		// attempt (inside is_series_stale() -> resolve_top_up_cutoff()), unlike
 		// the horizon-months filter, which also fires from project()'s own
-		// resolve_horizon() call whenever a repair actually re-projects -- so
-		// this is the precise "one attempt" signal the debounce governs.
+		// resolve_horizon() call whenever a repair actually re-projects. This is
+		// therefore the precise "one attempt" signal the debounce governs.
 		$calls  = 0;
 		$filter = static function ( $days ) use ( &$calls ) {
 			++$calls;
@@ -2673,7 +2675,7 @@ class Test_Occurrences extends Base {
 	 * Direct coverage for `maybe_repair_stale_series()`'s own
 	 * already-suppressed branch. `maybe_lazy_repair()`'s pre-slice
 	 * `$unsuppressed` filter means this branch is no longer reachable
-	 * through that one call site -- a post ID with a live transient is
+	 * through that one call site. A post ID with a live transient is
 	 * filtered out before the loop, not encountered by
 	 * `maybe_repair_stale_series()` and then bounced. The guard stays,
 	 * defense-in-depth for the `protected` method's own contract ("one
@@ -2713,17 +2715,17 @@ class Test_Occurrences extends Base {
 	/**
 	 * Coverage for the horizon top-up: at the default per-read cap of 1, a fresh series
 	 * that sorts first must not permanently block a genuinely stale series
-	 * sorting after it -- the exact starvation shape the cap re-created.
+	 * sorting after it, which is the exact starvation shape the cap re-created.
 	 * Refs arrive in `datetime_start_gmt` order, not staleness order, so a
 	 * fresh series consumes the first read's single slot even though it
 	 * needs no repair (`maybe_repair_stale_series()` sets its debounce
-	 * transient unconditionally -- "repair once" means one *attempt* per
-	 * window, not one successful repair). A second read must then see the
+	 * transient unconditionally, because "repair once" means one *attempt* per
+	 * window rather than one successful repair). A second read must then see the
 	 * fresh series filtered out by its own transient and give the stale
 	 * series the budget instead.
 	 *
 	 * The refs are built directly rather than produced by a real
-	 * `select_upcoming()` query -- constructing them lets the encounter
+	 * `select_upcoming()` query. Constructing them lets the encounter
 	 * order (the exact axis this bug turns on) be asserted deterministically
 	 * instead of depending on incidental fixture dates, while still
 	 * representing a real, producible `select_by_horizon()` result ordering.
@@ -2797,9 +2799,9 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Coverage for rowless repair: a valid recurring
-	 * series whose occurrence rows are gone -- a partial restore, a
-	 * projection that failed halfway, a manual `DELETE` -- must be repaired
-	 * by the scheduled sweep. Candidate selection used to be driven from the
+	 * series whose occurrence rows are gone must be repaired by the scheduled
+	 * sweep. A partial restore, a projection that failed halfway, and a manual
+	 * `DELETE` all produce that state. Candidate selection used to be driven from the
 	 * occurrence table itself, which made "has a rule but no rows" the one
 	 * state repair could never reach: `is_series_stale()` knew the series was
 	 * stale, and nothing ever asked it.
@@ -2859,8 +2861,8 @@ class Test_Occurrences extends Base {
 	 * Coverage for the rowless-repair blocker on the lazy path: an
 	 * upcoming-events read that surfaces a rowless series through
 	 * `select_by_horizon()`'s no-rows fallback must repair it. The fallback
-	 * ref carries a null `recurrence_id` -- indistinguishable from an
-	 * ordinary non-recurring event by shape alone, which is why the lazy
+	 * ref carries a null `recurrence_id`, which is indistinguishable from an
+	 * ordinary non-recurring event by shape alone. That is why the lazy
 	 * path skipped it and why the `end_type` mirror is what separates them.
 	 *
 	 * @covers ::maybe_lazy_repair
@@ -2931,7 +2933,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Direct coverage for `is_expired_until()`'s three return paths -- the
+	 * Direct coverage for `is_expired_until()`'s three return paths. The
 	 * helper is called only from `is_series_stale()`'s no-rows branch, which
 	 * xdebug does not trace into reliably.
 	 *
@@ -2974,7 +2976,7 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Direct coverage for `has_recurrence_rule()`'s two return paths -- it is
+	 * Direct coverage for `has_recurrence_rule()`'s two return paths. It is
 	 * called only from inside `maybe_lazy_repair()`'s loop, which xdebug does
 	 * not trace into reliably.
 	 *
@@ -3012,7 +3014,7 @@ class Test_Occurrences extends Base {
 	 *
 	 * The statement itself is pinned, not merely the row order. InnoDB
 	 * returns tied rows in clustered-key order today, so a row-order
-	 * assertion passes with or without the tie-breakers -- it measures the
+	 * assertion passes with or without the tie-breakers, so it measures the
 	 * current plan rather than the guarantee. Pinning the emitted `ORDER BY`
 	 * is what fails if a future refactor drops it.
 	 *
@@ -3126,7 +3128,7 @@ class Test_Occurrences extends Base {
 	 * Coverage for total ordering on the sweep's own
 	 * limited query. Rowless candidates all share one `NULL` sort key, so
 	 * without the `post_id` tie-breaker the batch boundary among them is
-	 * whatever the plan happens to emit -- one rowless series could be
+	 * whatever the plan happens to emit. One rowless series could be
 	 * selected every hour while another is never selected at all.
 	 *
 	 * Pins the emitted statement for the same reason the event-query test

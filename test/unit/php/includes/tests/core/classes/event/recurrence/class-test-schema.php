@@ -325,8 +325,8 @@ class Test_Schema extends Base {
 	 * (including the frequency mirror the recompute reads) synchronously
 	 * afterward, in the same save. Each write fires its own `added_post_meta`
 	 * hook. If only the canonical-key write triggered a recompute, it would
-	 * observe zero mirrors at that instant and write a stale `'0'` — the flag
-	 * only ends up correct because the mirror write's own hook fires a second,
+	 * observe zero mirrors at that instant and write a stale `'0'`. The flag only
+	 * ends up correct because the mirror write's own hook fires a second,
 	 * corrective recompute.
 	 *
 	 * @covers ::maybe_refresh_has_recurring_events_for_meta

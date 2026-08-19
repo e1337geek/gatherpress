@@ -76,7 +76,7 @@ final class Meta {
 	 * Posts whose recurrence blob was empty when `set_recurrence()` ran.
 	 *
 	 * `wp_after_insert_post` can fire before the request's meta writes have
-	 * all landed -- REST, duplication, and import all write the blob with a
+	 * all landed. REST, duplication, and import all write the blob with a
 	 * separate `add_post_meta()` call after the insert completes. Mirrors
 	 * `Event\Setup::$pending_datetimes`: rather than guess, note the post and
 	 * decide once more on `shutdown`, when every write this request is going
@@ -218,7 +218,7 @@ final class Meta {
 		}
 
 		// Nothing stored yet, but that does not mean nothing is coming, and it
-		// does not mean the rule was removed either -- `wp_after_insert_post`
+		// does not mean the rule was removed either. `wp_after_insert_post`
 		// fires from inside `wp_insert_post()`, before REST/editor/duplicate
 		// callers have necessarily written the blob (#2116's datetime race,
 		// same shape here). Decide once more at shutdown, once the request's
@@ -245,8 +245,8 @@ final class Meta {
 		$this->pending_recurrence = array();
 
 		foreach ( array_keys( $pending ) as $post_id ) {
-			// The post can be gone by shutdown -- a duplicate that failed, or
-			// an insert rolled back after this hook ran.
+			// The post can be gone by shutdown, after a duplicate that failed
+			// or an insert rolled back once this hook had run.
 			if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
 				continue;
 			}
@@ -270,7 +270,7 @@ final class Meta {
 	 * a fixed-offset timezone rather than a named tz-database identifier, is
 	 * treated the same way as no rule at all: the mirrors are cleared rather
 	 * than left holding a previous, now-orphaned, rule. A fixed-offset
-	 * timezone must reject the rule, not fatal the post save -- a REST write
+	 * timezone must reject the rule, not fatal the post save. A REST write
 	 * can carry one just as easily as the editor can.
 	 *
 	 * @since 0.36.0
@@ -373,13 +373,14 @@ final class Meta {
 	/**
 	 * Delete all ten derived mirrors and refresh the has-recurring-events flag.
 	 *
-	 * Called whenever a post ends up with no valid, expandable rule -- the
-	 * blob was removed, failed to decode, or carries a fixed-offset timezone.
+	 * Called whenever a post ends up with no valid, expandable rule, because
+	 * the blob was removed, failed to decode, or carries a fixed-offset
+	 * timezone.
 	 * Without this, a removed or invalidated rule's mirrors survive the save
 	 * that removed it: `from_post()` keeps reconstructing the deleted rule,
 	 * the site keeps expanding it, and `Query::refresh_has_recurring_events()`
-	 * -- which reads the frequency mirror directly from `wp_postmeta` -- never
-	 * sees the removal.
+	 * never sees the removal, because it reads the frequency mirror directly
+	 * from `wp_postmeta`.
 	 *
 	 * @since 0.36.0
 	 *

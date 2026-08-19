@@ -22,7 +22,7 @@ function testFiles() {
  * Finds the module names a file mocks with `{ virtual: true }`.
  *
  * Each `jest.mock(` opens a chunk that runs to the next one; the first quoted
- * string in the chunk is the mocked module name, and the flag — when present —
+ * string in the chunk is the mocked module name. When the flag is present, it
  * is the same call's third argument.
  *
  * @param {string} source The file's contents.
@@ -44,7 +44,7 @@ function virtuallyMockedModules( source ) {
  * specifier, but only for importers that resolve the name *after* the flag has
  * been registered. `Resolver.getModuleID()` memoizes each `(importer, name)`
  * pair, and `jest-runner`'s test worker keeps one `Resolver` for every test
- * file it runs — so if another test file in the same worker pulls the same
+ * file it runs. If another test file in the same worker pulls the same
  * importer in first, the real resolved path is cached and the later
  * `jest.mock()` registration no longer matches it. The importer then receives
  * the *real* module while the mocking test file holds the mock, and the
@@ -54,7 +54,7 @@ function virtuallyMockedModules( source ) {
  * The flag exists for modules Jest cannot resolve at all (`@wordpress/interactivity`
  * publishes an `import`-only `exports` map, so there is no CommonJS entry point
  * for the test runner to find). For anything Jest *can* resolve, the flag buys
- * nothing and creates the race above — a plain `jest.mock( name, factory )`
+ * nothing and creates the race above. A plain `jest.mock( name, factory )`
  * keys the mock to the resolved path, which every importer agrees on.
  */
 describe( 'jest.mock virtual-flag hygiene', () => {

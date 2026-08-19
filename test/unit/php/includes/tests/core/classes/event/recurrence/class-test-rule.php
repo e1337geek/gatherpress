@@ -310,10 +310,10 @@ class Test_Rule extends Base {
 	 * lets an unrecognized frequency reach the expander in the first place.
 	 *
 	 * The fixture value used to be `yearly`, which was correct until the yearly
-	 * frequency was added. It is now `fortnightly` -- a plausible but
-	 * genuinely unsupported frequency -- so the boundary stays covered from
-	 * the rejecting side while `test_from_array_accepts_yearly_frequency()`
-	 * covers the accepting side.
+	 * frequency was added. It is now `fortnightly`, which is plausible but
+	 * genuinely unsupported, so the boundary stays covered from the rejecting
+	 * side while `test_from_array_accepts_yearly_frequency()` covers the
+	 * accepting side.
 	 *
 	 * @covers ::from_array
 	 * @covers ::is_valid
@@ -385,7 +385,7 @@ class Test_Rule extends Base {
 	 */
 	public function test_to_rrule_string_emits_freq_yearly(): void {
 		$fixtures = array(
-			// Yearly, never-ending, interval 1 -- interval is omitted at 1.
+			// Yearly, never-ending, interval 1, which is omitted at 1.
 			array(
 				'values'   => array(
 					'frequency' => 'yearly',
@@ -404,7 +404,7 @@ class Test_Rule extends Base {
 				),
 				'expected' => 'FREQ=YEARLY;INTERVAL=3;COUNT=5',
 			),
-			// Yearly, until-bounded -- no BYMONTH, ever.
+			// Yearly, until-bounded, and never carrying BYMONTH.
 			array(
 				'values'   => array(
 					'frequency' => 'yearly',
@@ -435,8 +435,8 @@ class Test_Rule extends Base {
 	 * The budget arithmetic is `count * per_frequency * interval + 366`, so at
 	 * 366 days per yearly occurrence the largest accepted product of count and
 	 * interval is 545: `545 * 366 * 1 + 366 = 199,836` fits inside the 200,000
-	 * backstop, and one more occurrence -- `546 * 366 + 366 = 200,202` -- does
-	 * not. The interval side of the product is asserted independently so a
+	 * backstop, and one more occurrence does not: `546 * 366 + 366 = 200,202`.
+	 * The interval side of the product is asserted independently so a
 	 * multiplier that ignored `interval` could not pass.
 	 *
 	 * @covers ::from_array
@@ -513,7 +513,7 @@ class Test_Rule extends Base {
 
 	/**
 	 * A weekly rule with a weekday outside 0-6 is rejected, whether the whole
-	 * list is out of range or only one entry is -- an unchecked value here
+	 * list is out of range or only one entry is. An unchecked value here
 	 * would leave an undefined `WEEKDAY_CODES` lookup at write-mirror and
 	 * RRULE-export time.
 	 *
@@ -837,7 +837,7 @@ class Test_Rule extends Base {
 	 */
 	public function test_to_rrule_string_matches_fixture_table(): void {
 		$fixtures = array(
-			// Daily, count-bounded, interval 1 -- interval is omitted at 1.
+			// Daily, count-bounded, interval 1, which is omitted at 1.
 			array(
 				'values'   => array(
 					'frequency' => 'daily',
@@ -1002,10 +1002,11 @@ class Test_Rule extends Base {
 			Utility::invoke_hidden_method( $count_over_budget, 'is_valid_end_shape' )
 		);
 
-		// A frequency outside FREQUENCY_* is unreachable through from_array()
-		// -- is_valid()'s own top-level check rejects it before is_valid_end_shape()
-		// ever runs -- but the per-frequency budget lookup still carries a
-		// defensive `?? daily` fallback for it. Exercise that arm directly.
+		// A frequency outside FREQUENCY_* is unreachable through from_array(),
+		// since is_valid()'s own top-level check rejects it before
+		// is_valid_end_shape() ever runs. The per-frequency budget lookup still
+		// carries a defensive `?? daily` fallback for it, so exercise that arm
+		// directly.
 		$count_with_unmapped_frequency = $this->build_rule_directly(
 			array( 'bogus', 1, array(), '', 0, 0, 0, 'count', null, 5 )
 		);

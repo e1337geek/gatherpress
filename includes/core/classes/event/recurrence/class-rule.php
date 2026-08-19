@@ -3,9 +3,9 @@
  * Value object describing one recurrence rule.
  *
  * One rule per event, permanently. The rule is stored as decomposed
- * post meta — a single writable `gatherpress_recurrence` JSON blob plus ten
- * derived read-only mirrors — never as a serialized RFC 5545 string and never
- * in a table of its own. `Rule::from_post()` reconstructs the value object from
+ * post meta, namely a single writable `gatherpress_recurrence` JSON blob plus
+ * ten derived read-only mirrors. It is never stored as a serialized RFC 5545
+ * string and never in a table of its own. `Rule::from_post()` reconstructs the value object from
  * the mirrors, which is what keeps the blob a pure write-boundary artifact.
  *
  * `to_rrule_string()` is the calendar-export seam. It exists and is unit-tested
@@ -61,7 +61,7 @@ final class Rule {
 	 *
 	 * Carries no companion fields of its own. `BYMONTH`, `BYYEARDAY` and
 	 * `BYWEEKNO` are permanent non-goals, so yearly has
-	 * no mode switch to go with it -- the month and the day come from the
+	 * no mode switch to go with it. The month and the day come from the
 	 * series anchor, and the expander reads them there.
 	 *
 	 * @since 0.36.0
@@ -151,7 +151,7 @@ final class Rule {
 	 *
 	 * Deliberately kept in step with `Expander::iteration_budget()`'s own
 	 * `match ( $rule->frequency() ) { DAILY => 1, WEEKLY => 7, YEARLY => 366,
-	 * default => 31 }` -- both sides land on `count * per_frequency * interval
+	 * default => 31 }`. Both sides land on `count * per_frequency * interval
 	 * + 366`. This duplicates the arithmetic rather than sharing it, because `Expander` is
 	 * a different task's file and `iteration_budget()` is a `protected`
 	 * instance method taking an anchor and horizon this validation-time check
@@ -178,7 +178,7 @@ final class Rule {
 	 * Private: rules are only ever built through `from_array()`, so every
 	 * instance that exists has already passed boundary validation. Constructor
 	 * property promotion is used deliberately here (rather than the usual house
-	 * style of separate property declarations) -- with ten scalar properties
+	 * style of separate property declarations). With ten scalar properties
 	 * and no logic of its own, a promoted constructor has no assignment
 	 * statements of its own for a coverage tool to under-report.
 	 *
@@ -302,7 +302,7 @@ final class Rule {
 
 		if ( is_string( $raw_until ) && '' !== $raw_until ) {
 			// Strict `Y-m-d` parsing, matching the format `to_array()` and
-			// `write_mirrors()` emit -- `date_create_immutable()` would also
+			// `write_mirrors()` emit. `date_create_immutable()` would also
 			// accept relative strings like 'tomorrow' or '+1 year' (an end
 			// date that depends on when it was saved) and silently roll an
 			// invalid calendar date like '2026-02-31' over into March. The
@@ -316,7 +316,7 @@ final class Rule {
 		}
 
 		// RFC 5545 forbids a rule that carries both an end date and an
-		// occurrence count -- reject at the boundary rather than silently
+		// occurrence count, so reject at the boundary rather than silently
 		// preferring one.
 		if ( null !== $until && $count > 0 ) {
 			return null;
@@ -452,7 +452,7 @@ final class Rule {
 	 * Report whether the rule describes an expandable schedule.
 	 *
 	 * Checked once inside `from_array()` before a `Rule` is ever handed back
-	 * to a caller, so every `Rule` in existence is already valid -- this
+	 * to a caller, so every `Rule` in existence is already valid. This
 	 * method is what `from_array()` uses to decide, and remains public so a
 	 * caller holding a `Rule` can re-confirm the same contract.
 	 *
@@ -470,7 +470,7 @@ final class Rule {
 		$valid_end_types   = array( self::END_TYPE_NEVER, self::END_TYPE_UNTIL, self::END_TYPE_COUNT );
 
 		// A weekly rule needs at least one weekday, and every weekday it names
-		// must be a real day, 0 (Sunday) through 6 (Saturday) -- an unchecked
+		// must be a real day, 0 (Sunday) through 6 (Saturday). An unchecked
 		// out-of-range value (e.g. 7, or -1) would otherwise leave an
 		// undefined WEEKDAY_CODES lookup at write-mirror and RRULE-export time.
 		$weekly_weekdays_valid = self::FREQUENCY_WEEKLY !== $this->frequency
@@ -538,8 +538,8 @@ final class Rule {
 			}
 
 			// Matches Expander::iteration_budget()'s own `match` fallback of 31
-			// (monthly-shaped) for anything outside DAILY/WEEKLY -- unreachable
-			// through from_array() today, since is_valid() already rejects an
+			// (monthly-shaped) for anything outside DAILY/WEEKLY. It is
+			// unreachable through from_array() today, since is_valid() rejects an
 			// unrecognized frequency before this runs, but kept aligned so a
 			// future frequency added to one side is never looser on this one.
 			$per_frequency = self::BUDGET_DAYS_PER_FREQUENCY[ $this->frequency ]
@@ -581,8 +581,8 @@ final class Rule {
 	 * The calendar-export seam. Unit-tested against a fixture table, with no
 	 * production caller in the POC. `WKST` is never emitted because
 	 * `WEEK_START` (Monday) is already RFC 5545's default. `UNTIL` is emitted
-	 * as a bare `Ymd` date -- the rule carries no time-of-day of its own, that
-	 * comes from the series anchor at expansion time.
+	 * as a bare `Ymd` date. The rule carries no time-of-day of its own, so
+	 * that comes from the series anchor at expansion time.
 	 *
 	 * The `FREQ=` value is the uppercased frequency, so a yearly rule needs no
 	 * arm of its own here. It emits no `BY*` part at all: RFC 5545 defaults the

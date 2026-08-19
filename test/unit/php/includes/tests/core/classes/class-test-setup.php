@@ -742,8 +742,8 @@ class Test_Setup extends Base {
 	 *
 	 * Driven through `wp_delete_site()` rather than by calling
 	 * `on_site_delete()` directly, because the defect this closes was a
-	 * missing table name in the `wpmu_drop_tables` payload -- data surviving
-	 * the blog that owned it. Only the real deletion proves the rows are
+	 * missing table name in the `wpmu_drop_tables` payload, which left data
+	 * surviving the blog that owned it. Only the real deletion proves the rows are
 	 * actually gone.
 	 *
 	 * @group multisite
@@ -802,7 +802,7 @@ class Test_Setup extends Base {
 	 *
 	 * `SHOW TABLES LIKE` treats `_` as a single-character wildcard, so the
 	 * name is escaped before the probe and the returned name is compared
-	 * exactly by the caller -- a lookalike table must not answer for the
+	 * exactly by the caller. A lookalike table must not answer for the
 	 * real one.
 	 *
 	 * @since 0.36.0

@@ -35,7 +35,7 @@ class Test_Expander extends Base {
 	 * Build a rule from valid values via the public boundary.
 	 *
 	 * Every caller of this helper passes fixture values that `is_valid()`
-	 * accepts -- tests that need a rule shape `from_array()` itself rejects
+	 * accepts. Tests that need a rule shape `from_array()` itself rejects
 	 * (an unrecognized frequency, an empty weekday list on a weekly rule, an
 	 * unresolvable monthly ordinal) go through `build_rule_directly()` from
 	 * `Occurrence_Fixtures` instead, which bypasses `from_array()`'s boundary
@@ -294,8 +294,8 @@ class Test_Expander extends Base {
 	 *
 	 * The monthly walk steps by the interval, so a bound expressed in absolute
 	 * months would examine `bound / interval` candidates and stop early. At
-	 * interval 43 the gap between the fifth and sixth occurrence is 258 months —
-	 * six candidate months, but more than two hundred calendar ones.
+	 * interval 43 the gap between the fifth and sixth occurrence is 258 months,
+	 * which is six candidate months but more than two hundred calendar ones.
 	 *
 	 * @covers ::expand
 	 * @covers ::next_monthly_date
@@ -492,7 +492,7 @@ class Test_Expander extends Base {
 		$timezone = new DateTimeZone( 'America/New_York' );
 
 		// A weekly rule naming no weekday can never match `matches()`, but it
-		// cannot be built through `from_array()` -- `is_valid()` already
+		// cannot be built through `from_array()`, because `is_valid()` already
 		// rejects an empty weekday list on a weekly rule at the boundary.
 		// `build_rule_directly()` bypasses that guard so `expand()`'s own
 		// iteration-cap termination can be exercised directly.
@@ -783,8 +783,8 @@ class Test_Expander extends Base {
 	public function test_next_candidate_date_returns_null_for_unknown_frequency(): void {
 		$anchor = new DateTimeImmutable( '2026-09-03', new DateTimeZone( 'UTC' ) );
 
-		// 'fortnightly' is not a recognized frequency -- `is_valid()` rejects it
-		// at the `from_array()` boundary (see
+		// 'fortnightly' is not a recognized frequency, and `is_valid()` rejects
+		// it at the `from_array()` boundary (see
 		// `Test_Rule::test_from_array_rejects_unrecognized_frequency()`), so
 		// this deliberately-invalid shape can only be built directly. The
 		// fixture used to be 'yearly', which stopped being unrecognized when
@@ -1582,7 +1582,7 @@ class Test_Expander extends Base {
 	 * RFC 5545 section 3.3.10: "Recurrence rules may generate recurrence
 	 * instances with an invalid date ... Such recurrence instances MUST be
 	 * ignored and MUST NOT be counted as part of the recurrence set." So 2025,
-	 * 2026 and 2027 produce nothing at all -- not 1 March, not 28 February.
+	 * 2026 and 2027 produce nothing at all, neither 1 March nor 28 February.
 	 *
 	 * The expected set is written out literally rather than computed: a
 	 * computed expectation would agree with a rolling
@@ -1621,10 +1621,10 @@ class Test_Expander extends Base {
 	 *
 	 * The conformance case. A skipped 29 February must not consume a count
 	 * budget, so a `COUNT=3` rule anchored on 2024-02-29 spans nine years and
-	 * still delivers three occurrences. The plausible wrong implementation --
-	 * decrement the budget per candidate year and filter the invalid dates
-	 * afterwards -- delivers one, and it looks entirely reasonable while doing
-	 * it. The horizon is deliberately set inside the first gap so a count-bounded
+	 * still delivers three occurrences. The plausible wrong implementation
+	 * decrements the budget per candidate year and filters the invalid dates
+	 * afterwards. That delivers one, and it looks entirely reasonable while
+	 * doing it. The horizon is deliberately set inside the first gap so a count-bounded
 	 * rule that leaked horizon logic would truncate here too.
 	 *
 	 * @covers ::expand
@@ -2047,9 +2047,10 @@ class Test_Expander extends Base {
 		// implementation that took the step width as the raw interval rather than
 		// twelve times it would let 2026-02-28 through the guard at offset 24,
 		// then reject it anyway because 2026-02-29 does not exist. With a
-		// 2026-09-03 anchor nothing downstream can rescue the assertion -- offset
-		// 12 resolves to a real 2027-09-03 -- so the interval guard is the only
-		// thing that can produce false, which is the behavior under test.
+		// 2026-09-03 anchor nothing downstream can rescue the assertion, since
+		// offset 12 resolves to a real 2027-09-03. The interval guard is
+		// therefore the only thing that can produce false, which is the behavior
+		// under test.
 		$this->assertFalse(
 			Utility::invoke_hidden_method(
 				$expander,

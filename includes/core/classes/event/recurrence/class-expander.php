@@ -8,7 +8,7 @@
  * The contract is datetime-valued, never date-valued, from the first
  * commit. The wall-clock time is read once from the anchor and applied
  * in the series timezone; interval arithmetic never runs on a wall-clock-bearing
- * datetime. RFC 5545 section 3.3.10 — a nonexistent local time in a
+ * datetime. Per RFC 5545 section 3.3.10, a nonexistent local time in a
  * spring-forward gap is skipped and does not consume a `COUNT` budget.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -36,8 +36,8 @@ final class Expander {
 	/**
 	 * Absolute backstop on candidate steps.
 	 *
-	 * Not the working bound — see `iteration_budget()`. It exists only so a bug
-	 * in the budget calculation cannot hang a request.
+	 * `iteration_budget()` computes the working bound. This constant exists only
+	 * so a bug in that calculation cannot hang a request.
 	 *
 	 * @since 0.36.0
 	 * @var int
@@ -60,8 +60,9 @@ final class Expander {
 	 * candidates and silently truncate a legal `COUNT` at a wide interval. An
 	 * exhaustive search over every interval from 1 to `Rule::MAX_INTERVAL` and
 	 * every day from the 28th to the 31st puts the worst run of unusable
-	 * candidate months at seven — a February 29th rule at interval 12 — so this
-	 * leaves a wide margin while still terminating an unsatisfiable rule at once.
+	 * candidate months at seven, which a February 29th rule at interval 12
+	 * produces, so this leaves a wide margin while still terminating an
+	 * unsatisfiable rule at once.
 	 *
 	 * @since 0.36.0
 	 * @var int
@@ -77,14 +78,14 @@ final class Expander {
 	 * truncate a legal `COUNT` at a wide interval.
 	 *
 	 * A yearly rule takes its month and day from the anchor, and the only
-	 * anchor date that some years lack is 29 February -- every other month and
+	 * anchor date that some years lack is 29 February. Every other month and
 	 * day pair exists in every year, which an exhaustive check over all of them
 	 * from 1583 to 2400 confirms. So the worst case is a leap-day anchor whose
 	 * interval keeps landing on non-leap years. Searching every interval from 1
 	 * to `Rule::MAX_INTERVAL` against every leap-day anchor from 1600 to 2400
 	 * puts the worst run of unusable candidates at **fifteen**: interval 25 from
-	 * a 1600 anchor, which crosses 1700, 1800 and 1900 -- centuries that are not
-	 * leap years -- before landing on 2000. Interval 1 peaks at seven, over the
+	 * a 1600 anchor, which crosses 1700, 1800 and 1900 before landing on 2000.
+	 * None of those three centuries is a leap year. Interval 1 peaks at seven, over the
 	 * same 1900 gap. `Test_Expander::test_year_scan_steps_clears_the_measured_worst_case()`
 	 * re-runs that search, so the measurement cannot silently go stale.
 	 *
@@ -267,7 +268,7 @@ final class Expander {
 	/**
 	 * Walk months rather than days for the next date a month-walked rule matches.
 	 *
-	 * Serves the monthly and yearly frequencies alike -- yearly is the same walk
+	 * Serves the monthly and yearly frequencies alike. Yearly is the same walk
 	 * with a twelve-times-wider step and a wider scan bound, which is why it does
 	 * not get a pattern of its own. A day-by-day scan cannot serve either: a
 	 * day-of-month rule on the 31st skips five months a year, and a 29 February
@@ -341,8 +342,8 @@ final class Expander {
 	 * Resolve the date a month-walked rule falls on a given number of months from the anchor.
 	 *
 	 * A yearly rule takes both its month and its day from the anchor, so the
-	 * offset -- always a multiple of twelve for yearly -- carries the month and
-	 * the anchor carries the day. It never consults `monthly_mode`, which a
+	 * offset carries the month and the anchor carries the day. For a yearly
+	 * rule that offset is always a multiple of twelve. It never consults `monthly_mode`, which a
 	 * yearly rule does not have.
 	 *
 	 * @since 0.36.0
@@ -517,9 +518,10 @@ final class Expander {
 	/**
 	 * Get how many days forward the day-by-day scan looks before giving up.
 	 *
-	 * The widest legal gap between consecutive dates, so an unsatisfiable rule —
-	 * a weekly rule with no weekdays selected — terminates in one window rather
-	 * than running to `MAX_ITERATIONS`.
+	 * The window is the widest legal gap between consecutive dates. An
+	 * unsatisfiable rule, such as a weekly rule with no weekdays selected,
+	 * therefore terminates in one window rather than running to
+	 * `MAX_ITERATIONS`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -568,9 +570,9 @@ final class Expander {
 	/**
 	 * Apply a wall-clock time to a date in the series timezone.
 	 *
-	 * PHP normalizes a nonexistent local time forward — 02:30 on a spring-forward
-	 * date becomes 03:30 — so the detection is a round trip: format the result
-	 * back out and compare it to what went in.
+	 * PHP normalizes a nonexistent local time forward, turning 02:30 on a
+	 * spring-forward date into 03:30. Detection is therefore a round trip:
+	 * format the result back out and compare it to what went in.
 	 *
 	 * The comparison is on the whole local datetime rather than on the time
 	 * alone, because a zone can skip an entire calendar date: Samoa's date-line
@@ -619,10 +621,11 @@ final class Expander {
 	/**
 	 * Reduce a datetime to its date, held in UTC.
 	 *
-	 * The walk runs on UTC midnights because `setTime( 0, 0, 0 )` is undefined in
-	 * a zone whose transition lands on midnight — `America/Santiago` on
-	 * 2026-09-06 and `Asia/Beirut` on 2026-03-29 both return 01:00 — and because
-	 * `diff()->days` on a timezone-aware pair misreports a 23-hour day. Week
+	 * The walk runs on UTC midnights for two reasons. `setTime( 0, 0, 0 )` is
+	 * undefined in a zone whose transition lands on midnight, and both
+	 * `America/Santiago` on 2026-09-06 and `Asia/Beirut` on 2026-03-29 return
+	 * 01:00 for it. `diff()->days` on a timezone-aware pair also misreports a
+	 * 23-hour day. Week
 	 * bucketing is not the reason: `floor( $timestamp / 604800 )` breaks at
 	 * Thursday 00:00 UTC, so a local Monday midnight sits in the bucket interior
 	 * and never crosses under a daylight saving shift. The series timezone is

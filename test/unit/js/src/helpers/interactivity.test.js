@@ -35,9 +35,9 @@ jest.mock(
  * bare specifier instead of that resolved path. Because the module ID for
  * each `(importer, name)` pair is memoized on a `Resolver` that the test
  * worker shares across files, another file loading `src/helpers/interactivity.js`
- * first would cache the resolved path and leave this registration unmatched —
- * handing the module under test the real `speak()` while these tests watch
- * the mock. See `test/unit/js/mock-hygiene.test.js`.
+ * first would cache the resolved path and leave this registration unmatched.
+ * The module under test would then receive the real `speak()` while these
+ * tests watch the mock. See `test/unit/js/mock-hygiene.test.js`.
  */
 jest.mock( '@wordpress/a11y', () => ( {
 	speak: jest.fn(),

@@ -3,8 +3,8 @@
  * Wires the recurrence subsystem.
  *
  * Instantiates the `Recurrence\*` sibling singletons so `Event\Setup` can hand
- * off the whole subsystem with a single `Recurrence\Setup::get_instance()` line
- * — the same shape `Rsvp\Setup` and `Venue\Setup` use.
+ * off the whole subsystem with a single `Recurrence\Setup::get_instance()`
+ * line, the same shape `Rsvp\Setup` and `Venue\Setup` use.
  *
  * Recurrence belongs to the `gatherpress-event-date` post type support, not to
  * the `gatherpress_event` post type, so any hook this class grows must be

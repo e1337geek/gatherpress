@@ -5,15 +5,15 @@
  * Owns every read and write of `{prefix}gatherpress_event_occurrences`, whose
  * primary key is the composite `(series_post_id, recurrence_id)`. There is no
  * autoincrement column, which is what makes that identity structural rather than a
- * convention — no insertion-order identifier exists to leak into a URL or an
+ * convention. No insertion-order identifier exists to leak into a URL or an
  * RSVP link.
  *
  * Every read takes an array of post IDs resolved through
  * `Series::resolve_post_ids()` and emits `series_post_id IN (…)`. A query
  * written as `series_post_id = %d` forecloses a future forward split. Mutations (`project()`,
  * `set_status()`, `delete_for_post()`, `get()`) operate on exactly one post's
- * own rows, so `series_post_id = %d` there is correct rather than a violation
- * — the array contract governs series-wide reads, not single-post writes. `delete_for_post()`
+ * own rows, so `series_post_id = %d` there is correct rather than a violation.
+ * The array contract governs series-wide reads, not single-post writes. `delete_for_post()`
  * is deliberately per-post, not per-series: one rule per event post
  * means every call site (`delete_post`, an expand-failure clear) only ever
  * needs to clear the post it was handed. A genuine series-wide delete is a
@@ -151,9 +151,9 @@ final class Occurrences {
 	 *
 	 * `maybe_lazy_repair()` runs synchronously inside a front-end read, so a
 	 * listing page surfacing many distinct stale series must not turn into
-	 * many synchronous `project()` calls inside one request -- the scheduled
-	 * sweep is the primary top-up path; this is a same-request safety net,
-	 * not expected to carry the bulk of the work. Filterable via
+	 * many synchronous `project()` calls inside one request. The scheduled
+	 * sweep is the primary top-up path, and this is a same-request safety net
+	 * that is not expected to carry the bulk of the work. Filterable via
 	 * `gatherpress_recurrence_lazy_repair_batch_size`.
 	 *
 	 * @since 0.36.0
@@ -165,14 +165,14 @@ final class Occurrences {
 	 * Posts whose recurrence blob had not landed yet when a save tried to project it.
 	 *
 	 * `wp_after_insert_post` can fire before the request's meta writes have
-	 * all landed — REST, duplication, and import all write the blob with a
+	 * all landed. REST, duplication, and import all write the blob with a
 	 * separate `add_post_meta()` call after the insert completes, the same
 	 * race `Recurrence\Meta::$pending_recurrence` guards. Rather than guess,
 	 * the post is noted here and decided again on `shutdown`, once every
 	 * write this request is going to make has already happened.
 	 *
 	 * Each value is whether the post already had valid recurrence mirrors at
-	 * the moment it was deferred -- captured before `Meta`'s own deferred
+	 * the moment it was deferred. It is captured before `Meta`'s own deferred
 	 * resolution has a chance to touch them, since both classes read the same
 	 * meta key at the same point in the same `wp_after_insert_post` firing.
 	 * The "a site with no recurring events pays nothing" guarantee turns
@@ -250,7 +250,7 @@ final class Occurrences {
 		}
 
 		// Captured now, before Meta's own deferred resolution can touch the
-		// mirrors this request -- see the $pending_projection property
+		// mirrors this request. See the $pending_projection property
 		// docblock for why this is what keeps an ordinary, never-recurring
 		// save from ever querying the occurrence table.
 		$this->pending_projection[ $post_id ] = Rule::from_post( $post_id ) instanceof Rule;
@@ -263,8 +263,8 @@ final class Occurrences {
 	 *
 	 * Runs on `shutdown` at priority 20, strictly after
 	 * `Recurrence\Meta::resolve_pending_recurrence()`'s own default-priority-10
-	 * `shutdown` resolution — registered dynamically per post, so the priority
-	 * gap is what guarantees the ordering rather than registration order.
+	 * `shutdown` resolution. That resolution is registered dynamically per post,
+	 * so the priority gap guarantees the ordering rather than registration order.
 	 *
 	 * @since 0.36.0
 	 *
@@ -275,8 +275,8 @@ final class Occurrences {
 		$this->pending_projection = array();
 
 		foreach ( $pending as $post_id => $was_recurring ) {
-			// The post can be gone by shutdown -- a duplicate that failed, or
-			// an insert rolled back after this hook ran.
+			// The post can be gone by shutdown, after a duplicate that failed
+			// or an insert rolled back once this hook had run.
 			if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
 				continue;
 			}
@@ -359,7 +359,7 @@ final class Occurrences {
 	 * `COALESCE( scheduled_occurrence.datetime_start_gmt, events.datetime_start_gmt )`,
 	 * while a recurring series produces one result per matching occurrence
 	 * row. The `status` predicate lives in the join condition, never in
-	 * `WHERE` -- but that alone is not sufficient: without the `NOT EXISTS`
+	 * `WHERE`. That alone is not sufficient: without the `NOT EXISTS`
 	 * guard below, a post whose occurrence rows all fail the status filter
 	 * (a fully canceled series) would *also* fall through the `NULL`
 	 * `scheduled_occurrence` branch and reappear as if it were a
@@ -405,7 +405,7 @@ final class Occurrences {
 			. " HAVING effective_start_gmt {$comparison} %s"
 			// The sort key alone is not unique: any number of events can
 			// share one start instant, and one series contributes many rows
-			// with the same key only by coincidence -- but ties under a
+			// with the same key only by coincidence. Ties under a
 			// LIMIT are resolved by whatever order the plan happens to
 			// produce, so a paginated list can repeat or drop an entry after
 			// an index or statistics change. post_id then recurrence_id makes
@@ -449,8 +449,8 @@ final class Occurrences {
 
 		$refs = array_map( array( $this, 'row_to_ref' ), null === $rows ? array() : $rows );
 
-		// Lazy repair only runs off an upcoming-events read -- a
-		// past-only read has nothing forward-looking to repair, and gating
+		// Lazy repair only runs off an upcoming-events read. A past-only
+		// read has nothing forward-looking to repair, and gating
 		// it here keeps select_past() genuinely read-only.
 		if ( $upcoming ) {
 			$this->maybe_lazy_repair( $refs );
@@ -481,7 +481,7 @@ final class Occurrences {
 	 * post ID list first lets a series that is currently suppressed (or was
 	 * already repaired earlier in this same read) occupy a batch slot and
 	 * starve every series behind it out of every read for the rest of the
-	 * transient's `LAZY_REPAIR_TTL` window -- a fresh series sorting first
+	 * transient's `LAZY_REPAIR_TTL` window. A fresh series sorting first
 	 * would otherwise permanently block a genuinely stale one sorting after
 	 * it. `maybe_repair_stale_series()` still re-checks the transient itself
 	 * (a second read within the same request could otherwise double-attempt
@@ -557,7 +557,7 @@ final class Occurrences {
 	 * Attempt one repair for a series, then suppress further attempts for
 	 * `LAZY_REPAIR_TTL`.
 	 *
-	 * The transient governs attempt frequency only -- it is never read as an
+	 * The transient governs attempt frequency only. It is never read as an
 	 * oracle for whether the series is actually stale. When it is missing,
 	 * this checks real storage via `is_series_stale()` rather than assuming
 	 * either state, so a fresh series costs one cheap `SELECT` and no write,
@@ -587,16 +587,16 @@ final class Occurrences {
 	 * Report whether a series' projected horizon has run short.
 	 *
 	 * Two end types are already complete by design and are never reported
-	 * stale: `COUNT`, always -- and `UNTIL`, once its latest projected
-	 * occurrence has reached the rule's own `until` bound, which
+	 * stale. `COUNT` is always complete. `UNTIL` is complete once its latest
+	 * projected occurrence has reached the rule's own `until` bound, which
 	 * `has_reached_until()` checks. Re-projecting either would be a no-op at
 	 * best and a rewrite of the same rows forever at worst. An empty end type
 	 * means the post carries no recurrence rule at all. A series with a rule
 	 * but zero projected rows (a failed projection, a partial restore) is
 	 * reported stale, since it would otherwise be invisible to both the sweep
-	 * and the lazy repair forever -- unless it is `UNTIL`-bounded with an
-	 * `until` already in the past, which can only ever expand to nothing and
-	 * would otherwise be re-projected fruitlessly forever. That exception is
+	 * and the lazy repair forever. The one exception is an `UNTIL`-bounded
+	 * series whose `until` is already in the past, which can only ever expand
+	 * to nothing and would otherwise be re-projected fruitlessly forever. That exception is
 	 * the same one `select_series_needing_top_up()` encodes in SQL; the two
 	 * predicates must agree or a series repaired by one path is re-selected
 	 * by the other.
@@ -680,7 +680,7 @@ final class Occurrences {
 	 *
 	 * Compares only the date portion, since `gatherpress_recurrence_until` is
 	 * stored as a bare `Y-m-d` (RFC 5545's `UNTIL` is date-only in this
-	 * plugin's authoring model) while `$latest_local` carries a time -- once
+	 * plugin's authoring model) while `$latest_local` carries a time. Once
 	 * the latest projected occurrence's local date is on or after `until`,
 	 * `Expander::expand()`'s own `past_until()` guard means nothing further
 	 * will ever be produced, so the series is complete rather than stale.
@@ -751,18 +751,19 @@ final class Occurrences {
 	 * Candidate selection is driven from the `end_type` mirror in
 	 * `wp_postmeta`, with the occurrence table `LEFT JOIN`ed on, rather than
 	 * driven from the occurrence table itself. Driving it from occurrence
-	 * rows made a series with a valid rule and *zero* rows -- a partial
-	 * restore, a projection that failed halfway, a manual `DELETE` --
-	 * structurally unselectable: the only candidates were series that
-	 * already had at least one row, so precisely the series that most needed
-	 * repair could never be repaired. `MAX( o.datetime_start_gmt ) IS NULL`
+	 * rows made a series with a valid rule and *zero* rows structurally
+	 * unselectable. A partial restore, a projection that failed halfway, and a
+	 * manual `DELETE` all produce that shape. The only candidates were series
+	 * that already had at least one row, so precisely the series that most
+	 * needed repair could never be repaired. `MAX( o.datetime_start_gmt ) IS NULL`
 	 * is therefore treated as maximally stale rather than as "not a series".
 	 *
 	 * Excluded structurally, in SQL, so none of the following is ever a
-	 * candidate: a post with no recurrence rule at all (empty `end_type`
-	 * mirror -- kept in parity with `is_series_stale()`'s own empty-end-type
-	 * branch, since the two predicates disagreeing would silently make an
-	 * unrecognized/blank end type a permanent hourly candidate);
+	 * candidate: a post with no recurrence rule at all, identified by an empty
+	 * `end_type` mirror and kept in parity with `is_series_stale()`'s own
+	 * empty-end-type branch, since the two predicates disagreeing would
+	 * silently make an unrecognized/blank end type a permanent hourly
+	 * candidate;
 	 * `COUNT`-bounded rules, via the `end_type` mirror; `UNTIL`-bounded
 	 * rules whose latest projected occurrence has already reached their
 	 * `until` mirror; and rowless `UNTIL`-bounded rules whose `until` is
@@ -777,7 +778,7 @@ final class Occurrences {
 	 * staleness rather than by `series_post_id`. Without it, `LIMIT` alone
 	 * deterministically returns the same subset (MySQL's default row order
 	 * for an unordered `GROUP BY` tracks storage/insertion order, i.e. the
-	 * lowest post IDs) on every sweep -- a site with more stale candidates
+	 * lowest post IDs) on every sweep. A site with more stale candidates
 	 * than one batch can starve a newer, more-overdue series behind older,
 	 * lower-ID ones indefinitely. Rowless series sort first, since SQL `ASC`
 	 * orders `NULL` before every value, which is also the priority they
@@ -803,7 +804,7 @@ final class Occurrences {
 		// `until_meta.meta_value` in GROUP BY and HAVING. A bare reference to
 		// a non-aggregate joined column used only in HAVING, once three
 		// tables are joined, is rejected as "Unknown column" by both MariaDB
-		// and MySQL 8 -- this is not engine-specific, and putting the raw
+		// and MySQL 8. This is not engine-specific, and putting the raw
 		// (unaliased) columns in the SELECT list only worked around it
 		// because both were literally named `meta_value`, which itself
 		// breaks under a site running with ONLY_FULL_GROUP_BY (WordPress
@@ -864,9 +865,9 @@ final class Occurrences {
 	 * The entry point the scheduled sweep (`Projection_Cron::run_sweep()`)
 	 * calls. `project()` is idempotent, so calling it again for a candidate
 	 * genuinely extends its horizon without disturbing rows the rule still
-	 * produces -- including every past occurrence, which `Expander::expand()`
-	 * regenerates identically because it always walks forward from the
-	 * series' own anchor, never from "now".
+	 * produces, past occurrences included. `Expander::expand()` regenerates
+	 * those identically because it always walks forward from the series' own
+	 * anchor, never from "now".
 	 *
 	 * @since 0.36.0
 	 *
@@ -923,9 +924,10 @@ final class Occurrences {
 	 *
 	 * Idempotent: upserts on the composite primary key without touching the
 	 * `status` of an existing row, and deletes rows the rule no longer
-	 * produces. A post that no longer has an expandable rule -- no rule at
-	 * all, or an anchor that cannot be resolved -- has its existing rows
-	 * cleared rather than left orphaned: `Recurrence\Meta` clears the rule
+	 * produces. A post that no longer has an expandable rule has its existing
+	 * rows cleared rather than left orphaned. That covers a post with no rule
+	 * at all and a post whose anchor cannot be resolved. `Recurrence\Meta`
+	 * clears the rule
 	 * mirrors the moment a recurrence is removed or its timezone is rejected,
 	 * and this method is the only thing that ever deletes the occurrence rows
 	 * mirrors used to imply.
@@ -989,7 +991,7 @@ final class Occurrences {
 	 *
 	 * `DateTimeImmutable::diff()` on two *zoned* datetimes returns their
 	 * elapsed real time decomposed into calendar units, not their wall-clock
-	 * difference -- across a DST transition the two disagree, and the elapsed
+	 * difference. Across a DST transition the two disagree, and the elapsed
 	 * form silently inflates a nominal span the same way an absolute-seconds
 	 * delta does. Stripping the zone before diffing (both sides reconstructed
 	 * from their own `Y-m-d H:i:s` string in UTC) makes the result a pure
@@ -1082,7 +1084,7 @@ final class Occurrences {
 		try {
 			// The `gatherpress_timezone` filter runs inside get_datetime()
 			// after GatherPress's own validation, so a misbehaving filter can
-			// still hand back a string DateTimeZone rejects outright -- that
+			// still hand back a string DateTimeZone rejects outright. That
 			// must not fatal the post save.
 			$timezone = new DateTimeZone( $timezone_name );
 		} catch ( Exception $e ) {
@@ -1115,7 +1117,7 @@ final class Occurrences {
 	 * turns out not to be a named tz-database identifier.
 	 *
 	 * `Expander::expand()` asserts the timezone is named on its first line and
-	 * does not catch what it throws -- GatherPress normalizes site/event
+	 * does not catch what it throws. GatherPress normalizes site/event
 	 * timezones through `Utility::maybe_convert_utc_offset()`, and the
 	 * `gatherpress_timezone` filter `resolve_anchor()` reads through can also
 	 * hand back a fixed offset after GatherPress's own validation has already
@@ -1457,7 +1459,7 @@ final class Occurrences {
 	/**
 	 * Delete every occurrence row belonging to one post.
 	 *
-	 * Deliberately per-post, not per-series -- one rule per event post
+	 * Deliberately per-post, not per-series. One rule per event post
 	 * means every call site (`delete_post`, an expand-failure
 	 * clear) only ever needs to clear the post it was handed. A genuine
 	 * series-wide delete is a different, not-yet-needed method

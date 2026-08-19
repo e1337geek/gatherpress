@@ -11,13 +11,13 @@
 
 // Record every query so the suite's query-capture assertions have something to
 // read. Several tests slice `$wpdb->queries` to prove a code path issues the
-// SQL it claims to -- with SAVEQUERIES off that property stays null and those
+// SQL it claims to. With SAVEQUERIES off that property stays null and those
 // tests error on `count( null )` instead of asserting. This has to happen
 // before `Bootstrap::start()` loads wp-config and boots `$wpdb`, and it is
 // guarded so an environment that already turns query recording on (a wp-env
 // override, a CI config, or the WordPress test config) keeps its own value.
-// Applies to the single-site and multisite runs alike -- both configs load
-// this same bootstrap.
+// Applies to the single-site and multisite runs alike, because both configs
+// load this same bootstrap.
 if ( ! defined( 'SAVEQUERIES' ) ) {
 	define( 'SAVEQUERIES', true ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound
 }
@@ -73,9 +73,10 @@ gatherpress_reset_custom_tables();
  * classes use to start from an empty occurrence table. The tables themselves
  * are created once in the bootstrap, before the first test transaction opens.
  *
- * Only the rows are cleared. `create_tables()`'s other side effects -- adding
- * the online-event term and scheduling a rewrite flush -- are deliberately not
- * reproduced: re-registering the venue taxonomy outside a test's own lifecycle
+ * Only the rows are cleared. `create_tables()`'s other side effects are
+ * deliberately not reproduced, neither adding the online-event term nor
+ * scheduling a rewrite flush: re-registering the venue taxonomy outside a
+ * test's own lifecycle
  * clobbers the object-type list the calendar suite reads, and the term insert
  * would commit permanently from the bootstrap.
  *

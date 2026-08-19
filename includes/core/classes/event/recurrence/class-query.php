@@ -6,8 +6,8 @@
  * site that never authors a recurring event must produce byte-identical SQL and
  * the same query count as before.
  *
- * The join is a `LEFT JOIN`, never an `INNER JOIN` — a non-recurring event has
- * no occurrence row, and an inner join would delete it from every list. The
+ * The join is a `LEFT JOIN`, never an `INNER JOIN`. A non-recurring event has
+ * no occurrence row, so an inner join would delete it from every list. The
  * `status = 'scheduled'` predicate lives in the join condition rather than the
  * `WHERE`, and ordering and range predicates use
  * `COALESCE( o.datetime_start_gmt, {events}.datetime_start_gmt )`, which is not
@@ -84,7 +84,7 @@ final class Query {
 	 * `transition_post_status` and `deleted_post` are scoped to posts whose
 	 * post type declares `gatherpress-event-date` support, so a WXR import or
 	 * an editor save does not pay a `wp_postmeta` query for every attachment,
-	 * revision, and unrelated post type it touches — `import_end` already
+	 * revision, and unrelated post type it touches. `import_end` already
 	 * sweeps once per import for the bulk case. The three meta hooks watch
 	 * both `Meta::META_KEY` and `FREQUENCY_META_KEY`, because the two are
 	 * written by separate statements in another lane's rule-meta derivation
@@ -229,7 +229,7 @@ final class Query {
 	 * stored, so a lost or duplicated lifecycle event cannot desynchronize it.
 	 * Reads the rule meta rather than the occurrence table, because the meta is
 	 * written the moment a rule is saved while the occurrence table is
-	 * populated by a separate projection step — reading the table here could
+	 * populated by a separate projection step. Reading the table here could
 	 * observe a rule before its occurrences are projected and write a false
 	 * `'0'`, which would hide every recurring event from every query on the
 	 * site.

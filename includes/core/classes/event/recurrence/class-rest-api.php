@@ -6,8 +6,9 @@
  * un-cancel are expressed. Cancellation is occurrence state on the occurrence
  * row, never an `EXDATE` in the rule and never a term.
  *
- * The authorization contract is `current_user_can( 'edit_post', $post_id )` —
- * never `is_user_logged_in()`, never the RSVP subsystem's `moderate_comments`.
+ * The authorization contract is `current_user_can( 'edit_post', $post_id )`,
+ * never `is_user_logged_in()` and never the RSVP subsystem's
+ * `moderate_comments`.
  * Validating `post_id` and `recurrence_id` independently is not sufficient: the
  * underlying update must scope by both columns of the composite key, so a user
  * with `edit_post` on one series cannot cancel another series' occurrence.

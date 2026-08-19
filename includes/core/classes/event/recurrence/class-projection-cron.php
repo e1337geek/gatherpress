@@ -6,8 +6,8 @@
  * context, and `Occurrences::resolve_horizon()` measures from
  * `max( anchor, now )`, so re-running it genuinely extends an open-ended
  * series' projected horizon over time. This class owns *when* that re-run
- * happens -- a recurring scheduled sweep and its deactivation cleanup -- kept
- * separate from `Occurrences` so the repository class stays a storage and
+ * happens: a recurring scheduled sweep and its deactivation cleanup. It is
+ * kept separate from `Occurrences` so the repository class stays a storage and
  * projection API, and the scheduling concern (cron registration, WP-Cron vs.
  * Action Scheduler, deactivation) lives on its own, matching the existing
  * split between `Venue\Map` (renderer) and `Venue\Map\Prewarm` (scheduler).
@@ -94,7 +94,7 @@ final class Projection_Cron {
 	 *
 	 * Short-circuits on `Query::site_has_recurring_events()` first, so a site
 	 * with no recurring events never schedules the cron event or writes the
-	 * `wp_options` row that scheduling it performs -- run on `init`, this
+	 * `wp_options` row that scheduling it performs. This runs on `init`, so it
 	 * would otherwise cost every GatherPress install a permanent hourly cron
 	 * event and an option write regardless of whether the site has ever
 	 * published a recurring event at all.
@@ -116,8 +116,9 @@ final class Projection_Cron {
 		// are both a cost, and the overwhelming majority of GatherPress
 		// installs never publish a recurring event at all.
 		if ( ! Query::site_has_recurring_events() ) {
-			// Guarded on wp_next_scheduled() so the never-recurring site --
-			// the overwhelming majority -- still pays nothing: an unguarded
+			// Guarded on wp_next_scheduled() so the never-recurring site,
+			// which is the overwhelming majority, still pays nothing: an
+			// unguarded
 			// wp_clear_scheduled_hook() rewrites the cron option on every
 			// init of every install that has no sweep scheduled at all.
 			if ( false !== wp_next_scheduled( self::SWEEP_ACTION ) ) {
@@ -132,7 +133,7 @@ final class Projection_Cron {
 		 *
 		 * Return any non-null value from this filter to suppress the
 		 * `wp_next_scheduled()` dedup check and the `wp_schedule_event()`
-		 * call -- a companion plugin that hooks this filter (e.g. one that
+		 * call. A companion plugin that hooks this filter (e.g. one that
 		 * routes the sweep through Action Scheduler) owns the full
 		 * scheduling path end-to-end, including its own dedup. Mirrors
 		 * `gatherpress_async_geocode_pre_enqueue_job`'s convention: `null`

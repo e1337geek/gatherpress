@@ -440,7 +440,7 @@ final class Setup {
 	 * Every custom table `create_tables()` creates must be listed here, or the
 	 * blog's rows survive the blog. `$wpdb->prefix` is read at call time and
 	 * WordPress runs this callback inside the deleted blog's context, so the
-	 * names are always the deleted blog's own -- never another blog's.
+	 * names are always the deleted blog's own, never another blog's.
 	 *
 	 * @since 0.27.0
 	 *
@@ -480,9 +480,9 @@ final class Setup {
 	 * Creates or updates the plugin's custom database tables.
 	 *
 	 * The DDL half of `create_tables()`, split out so a caller that only needs
-	 * the tables -- the PHPUnit bootstrap, which has to issue the DDL once
-	 * before any test transaction opens -- can get them without also re-adding
-	 * the online-event term or scheduling a rewrite flush.
+	 * the tables can get them without also re-adding the online-event term or
+	 * scheduling a rewrite flush. The PHPUnit bootstrap is that caller, and it
+	 * has to issue the DDL once before any test transaction opens.
 	 *
 	 * @since 0.36.0
 	 *

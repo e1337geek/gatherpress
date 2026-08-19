@@ -62,11 +62,11 @@ class Test_Timezone_Guard extends Base {
 	 * "Manual Offsets" <optgroup>, formatted the same way WordPress formats
 	 * the option value: `UTC` followed by the signed decimal-hour offset
 	 * (WP's own sign test is `0 <= $offset`, so the zero case reads `UTC+0`,
-	 * not `UTC0` -- getting that sign wrong would let a regression that
+	 * not `UTC0`. Getting that sign wrong would let a regression that
 	 * accepted `UTC+0` slip past this loop unnoticed, so it is asserted
 	 * explicitly below as well as generated here).
 	 *
-	 * GatherPress never actually stores a raw `<option value>` like this --
+	 * GatherPress never actually stores a raw `<option value>` like this.
 	 * `Event::save_datetimes()` runs every timezone through
 	 * `Utility::maybe_convert_utc_offset()` first, which rewrites `UTC+5.5` to
 	 * `+05:30`. Both forms are asserted here: the raw form because it is what
@@ -163,8 +163,8 @@ class Test_Timezone_Guard extends Base {
 	}
 
 	/**
-	 * Coverage for is_named rejecting malformed strings that contain no colon
-	 * -- the case a colon-only check would have let through.
+	 * Coverage for is_named rejecting malformed strings that contain no colon,
+	 * which is the case a colon-only check would have let through.
 	 *
 	 * @covers ::is_named
 	 *

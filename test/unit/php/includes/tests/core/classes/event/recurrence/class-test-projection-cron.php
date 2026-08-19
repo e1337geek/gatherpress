@@ -56,8 +56,9 @@ class Test_Projection_Cron extends Base {
 	 * Create and project a recurring event anchored relative to "now".
 	 *
 	 * Duplicated from `Test_Occurrences` rather than added to
-	 * `Occurrence_Fixtures` -- this lane's file scope is the `Occurrences`
-	 * class, its test, and this new test file, not the shared trait.
+	 * `Occurrence_Fixtures`, because this lane's file scope is the
+	 * `Occurrences` class, its test, and this new test file, not the shared
+	 * trait.
 	 *
 	 * @since 0.36.0
 	 *
@@ -128,9 +129,9 @@ class Test_Projection_Cron extends Base {
 	 * guard: the "a site with no recurring events pays nothing"
 	 * guarantee covers the scheduler itself, not only the sweep callback.
 	 * Run on `init`, an unguarded scheduler would cost every GatherPress
-	 * install -- the overwhelming majority of which never publish a
-	 * recurring event -- a permanent hourly cron event and the
-	 * `wp_options` write `wp_schedule_event()` performs. Measured via a
+	 * install a permanent hourly cron event and the `wp_options` write
+	 * `wp_schedule_event()` performs. The overwhelming majority of those
+	 * installs never publish a recurring event. Measured via a
 	 * `$wpdb->queries` capture, not the schedule alone, since a version
 	 * that scheduled without writing an option would still pass a
 	 * schedule-only assertion.
@@ -178,7 +179,7 @@ class Test_Projection_Cron extends Base {
 	/**
 	 * Coverage for `maybe_schedule_sweep()` scheduling the recurring sweep
 	 * on a site that does have recurring events, when nothing is scheduled
-	 * yet -- the companion to the no-recurring-events guard above.
+	 * yet. This is the companion to the no-recurring-events guard above.
 	 *
 	 * @covers ::maybe_schedule_sweep
 	 *
@@ -219,7 +220,7 @@ class Test_Projection_Cron extends Base {
 	}
 
 	/**
-	 * Coverage for `maybe_schedule_sweep()`'s filter short-circuit -- the
+	 * Coverage for `maybe_schedule_sweep()`'s filter short-circuit. That is the
 	 * seam a companion plugin uses to route the sweep through Action
 	 * Scheduler instead of WP-Cron, mirroring
 	 * `gatherpress_async_geocode_pre_enqueue_job`.
@@ -248,9 +249,9 @@ class Test_Projection_Cron extends Base {
 	// Test_Occurrences::test_scheduled_job_performs_no_writes_on_a_site_with_no_recurring_events(),
 	// which fires this same real cron hook and asserts against a $wpdb->queries
 	// capture. A prior version of this test asserted only that
-	// site_has_recurring_events() was still false after the sweep -- a
+	// site_has_recurring_events() was still false after the sweep. That is a
 	// tautology, since nothing in run_sweep() can write that option regardless
-	// of whether the guard runs; removing the guard left that assertion green.
+	// of whether the guard runs, and removing the guard left it green.
 
 	/**
 	 * Coverage for `run_sweep()`'s top-up branch, driven through the real
@@ -405,7 +406,7 @@ class Test_Projection_Cron extends Base {
 	 * Coverage for the horizon top-up: adding a recurrence schedules the sweep exactly
 	 * once, however many times `init` runs. `wp_next_scheduled()` returns
 	 * only the soonest timestamp, so it cannot see a second, later
-	 * registration of the same hook -- this counts the real cron array
+	 * registration of the same hook, so this counts the real cron array
 	 * entries instead.
 	 *
 	 * The second half seeds an existing schedule an hour out before calling

@@ -198,7 +198,7 @@ class Test_Expander_Dst extends Base {
 	 *
 	 * Samoa moved west of the date line at the end of 2011, so 2011-12-30 never
 	 * existed in `Pacific/Apia`. PHP normalizes 09:00 that day to 09:00 on the
-	 * 31st — the clock time survives intact, so a round trip on the time alone
+	 * 31st. The clock time survives intact, so a round trip on the time alone
 	 * accepts it, emits a duplicate of the following day, and spends a `COUNT`
 	 * slot doing it. The round trip is on the whole local datetime for that
 	 * reason.

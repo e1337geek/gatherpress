@@ -59,7 +59,7 @@ trait Occurrence_Fixtures {
 	 * `gatherpress_recurrence` blob for the passed rule.
 	 *
 	 * This works against the tree as it stands today, before any recurrence
-	 * behavior exists — writing the rule blob is a plain `add_post_meta()` call,
+	 * behavior exists. Writing the rule blob is a plain `add_post_meta()` call,
 	 * so the fixture never depends on the code the tests are about to drive out.
 	 *
 	 * @since 0.36.0
@@ -100,9 +100,9 @@ trait Occurrence_Fixtures {
 	/**
 	 * Build a `Rule` directly through its private constructor via reflection.
 	 *
-	 * Used only to exercise `is_valid()` branches -- and the expander's own
-	 * defensive arms downstream of them -- that `from_array()`'s boundary
-	 * guards make unreachable through the public API (e.g. an `end_type` of
+	 * Used only to exercise `is_valid()` branches that `from_array()`'s boundary
+	 * guards make unreachable through the public API, along with the expander's
+	 * own defensive arms downstream of them (e.g. an `end_type` of
 	 * `count` carrying a stray `until`, or an unrecognized frequency, both of
 	 * which `from_array()` already rejects before a `Rule` is ever built).
 	 * Shared between `Test_Rule`, which exercises `is_valid()` itself, and
@@ -140,9 +140,9 @@ trait Occurrence_Fixtures {
 	 *     )
 	 *
 	 * anchored on Thursday 2026-09-03 18:00:00 in `America/New_York`. Against a
-	 * Monday-start week index that gives week buckets 0, 2, 2, 4, 4 — the exact
-	 * sequence `week_index()` must produce. A day-delta
-	 * implementation produces a different set, which is the point.
+	 * Monday-start week index that gives week buckets 0, 2, 2, 4, 4, the exact
+	 * sequence `week_index()` must produce. A day-delta implementation produces a
+	 * different set, which is the point.
 	 *
 	 * Every entry is a datetime, never a date, and its
 	 * `recurrence_id` is its **local** start in `Ymd\THis`. The GMT

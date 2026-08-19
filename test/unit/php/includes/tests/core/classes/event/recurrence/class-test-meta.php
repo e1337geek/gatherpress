@@ -140,8 +140,8 @@ class Test_Meta extends Base {
 
 	/**
 	 * The five numeric mirrors register with `type => integer`, so REST reads
-	 * back a JSON number rather than a string -- the whole justification for
-	 * decomposing into individually typed mirrors in the first place.
+	 * back a JSON number rather than a string. That is the whole justification
+	 * for decomposing into individually typed mirrors in the first place.
 	 *
 	 * @covers ::register
 	 *
@@ -191,7 +191,7 @@ class Test_Meta extends Base {
 
 	/**
 	 * `set_recurrence()` does not write mirrors immediately when the post
-	 * carries no recurrence blob yet -- it defers the decision to `shutdown`
+	 * carries no recurrence blob yet. It defers the decision to `shutdown`
 	 * rather than treating "not written yet" the same as "removed", since
 	 * `wp_after_insert_post` can fire before a REST/editor/duplicate caller's
 	 * separate `add_post_meta()` call for the blob has landed.
@@ -272,8 +272,8 @@ class Test_Meta extends Base {
 
 	/**
 	 * `resolve_pending_recurrence()` clears any (necessarily stale) mirrors
-	 * when the blob is still empty at shutdown -- a genuine removal, not a
-	 * late arrival.
+	 * when the blob is still empty at shutdown, which is a genuine removal
+	 * rather than a late arrival.
 	 *
 	 * @covers ::resolve_pending_recurrence
 	 * @covers ::clear_mirrors
@@ -293,7 +293,7 @@ class Test_Meta extends Base {
 		$instance->set_recurrence( $post_id );
 		$this->assertSame( 'daily', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
 
-		// The rule is removed entirely -- the blob is gone by shutdown.
+		// The rule is removed entirely, so the blob is gone by shutdown.
 		delete_post_meta( $post_id, Meta::META_KEY );
 		$instance->set_recurrence( $post_id );
 
@@ -311,7 +311,7 @@ class Test_Meta extends Base {
 
 	/**
 	 * `resolve_pending_recurrence()` skips a post whose type no longer
-	 * supports `gatherpress-event-date` by the time shutdown runs -- the post
+	 * supports `gatherpress-event-date` by the time shutdown runs. The post
 	 * can be gone, or its type support can have changed, between the insert
 	 * hook and shutdown.
 	 *
@@ -332,7 +332,8 @@ class Test_Meta extends Base {
 
 	/**
 	 * `set_recurrence()` writes all ten mirrors from a valid rule when the
-	 * blob is already present on this pass -- the immediate, non-deferred path.
+	 * blob is already present on this pass, which is the immediate,
+	 * non-deferred path.
 	 *
 	 * @covers ::set_recurrence
 	 * @covers ::write_recurrence
@@ -413,8 +414,8 @@ class Test_Meta extends Base {
 	 *
 	 * Driven through the real `wp_after_insert_post` hook rather than by
 	 * calling `write_recurrence()` directly, so the assertion covers the
-	 * path a REST write actually takes -- the write that can carry a fixed
-	 * offset without ever passing through the editor.
+	 * path a REST write actually takes. That write can carry a fixed offset
+	 * without ever passing through the editor.
 	 *
 	 * @covers ::set_recurrence
 	 * @covers ::write_recurrence
@@ -445,8 +446,8 @@ class Test_Meta extends Base {
 		);
 
 		// The same rule, re-saved after the series moves onto a fixed UTC
-		// offset -- the shape Utility::maybe_convert_utc_offset() produces
-		// for a site whose timezone is set as an offset rather than a
+		// offset. That is the shape Utility::maybe_convert_utc_offset()
+		// produces for a site whose timezone is set as an offset rather than a
 		// tz-database identifier.
 		update_post_meta(
 			$post_id,
@@ -483,7 +484,7 @@ class Test_Meta extends Base {
 
 	/**
 	 * `Query::refresh_has_recurring_events()` runs after `write_mirrors()`,
-	 * never before it -- a regression test for the ordering, since
+	 * never before it. This is a regression test for that ordering, since
 	 * `refresh_has_recurring_events()` reads the frequency mirror directly
 	 * from storage and would observe nothing yet if it ran first.
 	 *
@@ -575,7 +576,7 @@ class Test_Meta extends Base {
 
 	/**
 	 * `sanitize_signed_int()` casts to a signed integer, preserving a negative
-	 * value -- the reason `intval` (which errors under WP's meta sanitize
+	 * value. That is why `intval` (which errors under WP's meta sanitize
 	 * callback signature) and `absint()` (which would clamp `-1` to `1`) are
 	 * both wrong for `gatherpress_recurrence_monthly_ordinal`.
 	 *
