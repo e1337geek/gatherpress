@@ -794,7 +794,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * REQ-12: a cancelled occurrence's rendered content carries a notice, not
+	 * A canceled occurrence's rendered content carries a notice, not
 	 * just a resolving URL. `Test_Rewrite::test_cancelled_occurrence_url_resolves_rather_than_404()`
 	 * already pins the "resolves, not 404" half; this pins the "and says so" half.
 	 *
@@ -819,14 +819,14 @@ class Test_Context extends Base {
 		$content = apply_filters( 'the_content', get_the_content() );
 
 		$this->assertStringContainsString(
-			'This occurrence has been cancelled.',
+			'This occurrence has been canceled.',
 			$content,
-			'A cancelled occurrence must carry a cancellation notice in its rendered content.'
+			'A canceled occurrence must carry a cancellation notice in its rendered content.'
 		);
 	}
 
 	/**
-	 * A scheduled (non-cancelled) occurrence's content carries no notice.
+	 * A scheduled (non-canceled) occurrence's content carries no notice.
 	 *
 	 * @covers ::maybe_prepend_cancelled_notice
 	 *
@@ -842,7 +842,7 @@ class Test_Context extends Base {
 		$content = apply_filters( 'the_content', get_the_content() );
 
 		$this->assertStringNotContainsString(
-			'This occurrence has been cancelled.',
+			'This occurrence has been canceled.',
 			$content,
 			'A scheduled occurrence must not carry a cancellation notice.'
 		);
@@ -864,12 +864,12 @@ class Test_Context extends Base {
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
 		$content = apply_filters( 'the_content', get_the_content() );
 
-		$this->assertStringNotContainsString( 'This occurrence has been cancelled.', $content );
+		$this->assertStringNotContainsString( 'This occurrence has been canceled.', $content );
 	}
 
 	/**
 	 * An inner loop rendering a different post's content while the main
-	 * request's occurrence context is a cancelled occurrence must not
+	 * request's occurrence context is a canceled occurrence must not
 	 * inherit that notice -- matching how `metadata()` scopes substitution to
 	 * the post the context belongs to, not to whatever post a loop reaches.
 	 *
@@ -900,14 +900,14 @@ class Test_Context extends Base {
 		$content = apply_filters( 'the_content', get_the_content() );
 
 		$this->assertStringNotContainsString(
-			'This occurrence has been cancelled.',
+			'This occurrence has been canceled.',
 			$content,
 			'An inner loop over a different post must not inherit the main request\'s cancellation notice.'
 		);
 	}
 
 	/**
-	 * Coverage for a bare series request composing with PRD D-4.
+	 * Coverage for a bare series request composing with bare-series resolution.
 	 *
 	 * `Rewrite` resolves a bare series URL to the next upcoming occurrence and
 	 * sets the query var during `parse_request`; `Context` then establishes that

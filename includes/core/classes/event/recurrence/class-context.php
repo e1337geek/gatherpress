@@ -11,10 +11,10 @@
  * An occurrence's time of day comes from the occurrence record. It is never
  * computed by applying the series anchor's time to the occurrence's date.
  *
- * REQ-12's second half lives here too: a cancelled occurrence's URL already
- * resolves rather than 404s (`Rewrite::parse_request()`), and this class
- * prepends a notice to the content so "an attendee holding the link deserves
- * to be told it was cancelled" is actually true, not just "the page loads."
+ * A canceled occurrence's URL resolves rather than 404s
+ * (`Rewrite::parse_request()`), and this class prepends a notice to the
+ * content so an attendee holding the link is told the occurrence was
+ * canceled, not merely served a page.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0

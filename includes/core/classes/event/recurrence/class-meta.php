@@ -427,14 +427,14 @@ final class Meta {
 	 * this save. An organizer who changes an existing recurring event's
 	 * timezone to a fixed offset therefore passes `Timezone_Guard` against the
 	 * old named zone, and nothing revisits the decision: the mirrors and the
-	 * projected rows stay active in a state REQ-3 refuses, while the editor
+	 * projected rows stay active in a state `Timezone_Guard` refuses, while the editor
 	 * disables the Repeat control. The same staleness silently misprojects a
 	 * plain named-to-named timezone change.
 	 *
 	 * Hooking the datetime meta write is what makes the trigger exact. It
 	 * fires only when `gatherpress_datetime` actually changes, and it costs a
 	 * cached `get_post_meta()` on posts that carry no recurrence blob at all,
-	 * so an ordinary event save never queues anything (REQ-16).
+	 * so an ordinary event save never queues anything.
 	 *
 	 * The recurrence blob itself is deliberately left alone: it is the
 	 * organizer's authored rule, and keeping it means switching the timezone

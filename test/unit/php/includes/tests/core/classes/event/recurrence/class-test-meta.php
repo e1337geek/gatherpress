@@ -673,7 +673,7 @@ class Test_Meta extends Base {
 	 * DST-unsafe rule reach the expander. GatherPress normalizes WordPress's
 	 * manual-offset option (e.g. `UTC+5.5`) into `+05:30`, and a site left on
 	 * a manual UTC offset is a common configuration -- this is the live path
-	 * REQ-3 exists to close, not a synthetic one.
+	 * the guard exists to close, not a synthetic one.
 	 *
 	 * @covers ::set_recurrence
 	 * @covers ::write_recurrence
@@ -788,15 +788,15 @@ class Test_Meta extends Base {
 	}
 
 	/**
-	 * REQ-3: changing an existing recurring series to a fixed-offset timezone
-	 * must not leave the recurrence active.
+	 * Changing an existing recurring series to a fixed-offset timezone must
+	 * not leave the recurrence active.
 	 *
 	 * `set_recurrence()` runs on `wp_after_insert_post`, which fires from
 	 * inside `wp_insert_post()` -- before the request's meta writes land. The
 	 * recurrence blob is already stored on an existing series, so
 	 * `write_recurrence()` validates immediately, against the timezone the
 	 * post had *before* this save. Nothing revisited that decision: the
-	 * mirrors and the projected rows stayed active in a state REQ-3 refuses,
+	 * mirrors and the projected rows stayed active in a state the guard refuses,
 	 * while the editor disabled the Repeat control -- the stored series and
 	 * the visible UI disagreeing about whether the event repeats.
 	 *
@@ -904,7 +904,7 @@ class Test_Meta extends Base {
 	 * The revalidation trigger is exact: a meta write that is not the datetime
 	 * blob, a post type without `gatherpress-event-date` support, and a post
 	 * holding no recurrence blob all queue nothing, so an ordinary event save
-	 * never pays for this (REQ-16).
+	 * never pays for this.
 	 *
 	 * @covers ::maybe_revalidate_for_datetime
 	 *

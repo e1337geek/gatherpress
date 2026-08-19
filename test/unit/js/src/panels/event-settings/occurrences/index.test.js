@@ -186,7 +186,7 @@ describe( 'OccurrencesPanel', () => {
 		expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument();
 		expect( screen.getByText( 'Restore' ) ).toBeInTheDocument();
 		expect( screen.getByText( 'Scheduled' ) ).toBeInTheDocument();
-		expect( screen.getByText( 'Cancelled' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Canceled' ) ).toBeInTheDocument();
 	} );
 
 	test( 'calls the cancel endpoint and reflects the new status, leaving the other row untouched', async () => {
@@ -223,13 +223,13 @@ describe( 'OccurrencesPanel', () => {
 				status: 'cancelled',
 			},
 		} );
-		expect( screen.getByText( 'Cancelled' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Canceled' ) ).toBeInTheDocument();
 		// The untouched second row must remain scheduled.
 		expect( screen.getByText( 'Scheduled' ) ).toBeInTheDocument();
 		expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument();
 	} );
 
-	test( 'calls the restore endpoint when the occurrence is already cancelled', async () => {
+	test( 'calls the restore endpoint when the occurrence is already canceled', async () => {
 		mockApiFetch.mockResolvedValueOnce( [
 			occurrence( { status: 'cancelled' } ),
 		] );
@@ -262,8 +262,8 @@ describe( 'OccurrencesPanel', () => {
 	} );
 
 	test( "submits the row's own owner post ID, not the post open in the editor", async () => {
-		// The list route returns every sibling post's rows, so the row a
-		// reviewer clicks need not belong to post 42 at all.
+		// The list route returns every sibling post's rows, so the clicked row
+		// need not belong to the post open in the editor at all.
 		mockApiFetch.mockResolvedValueOnce( [
 			occurrence( { series_post_id: 84 } ),
 		] );
@@ -386,7 +386,7 @@ describe( 'OccurrencesPanel', () => {
 		// The sibling row that was not clicked must still be scheduled.
 		expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument();
 		expect( screen.getByText( 'Scheduled' ) ).toBeInTheDocument();
-		expect( screen.getByText( 'Cancelled' ) ).toBeInTheDocument();
+		expect( screen.getByText( 'Canceled' ) ).toBeInTheDocument();
 
 		keyWarnings.mockRestore();
 	} );

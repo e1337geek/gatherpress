@@ -2,24 +2,22 @@
 /**
  * Class handles the front-end surface census for recurring events.
  *
- * Three defects reached a hand-test that 2151 passing tests did not catch, and
- * all three had one shape: **occurrence identity was present on the row and a
- * consumer did not read it.** The RSVP resolver read only the request's
- * occurrence; the interactivity block context keyed on the post ID alone; the
- * paged archive query never received the join that triggers expansion. Each of
- * the three lanes passed two independent reviews, because none of the defects
- * existed inside any single diff -- they lived in the seam where two diffs met,
- * which per-lane review is structurally blind to.
+ * A whole class of defect shares one shape: **occurrence identity is present
+ * on the row and a consumer does not read it.** An RSVP resolver that reads
+ * only the request's occurrence; an interactivity block context keyed on the
+ * post ID alone; a paged archive query that never receives the join that
+ * triggers expansion. None of these live inside a single unit -- they live in
+ * the seam where two units meet.
  *
  * This class is the census of those seams. Every test drives a **real request**
  * -- `go_to()`, a real `WP_Query` walked through `the_post()`, real
  * `render_block()` -- and asserts the **whole per-row vector** rather than one
  * row. That distinction is the point rather than a stylistic preference: all
- * three defects produced *uniform* wrong output, which a single-row assertion
+ * these defects produce *uniform* wrong output, which a single-row assertion
  * accepts. A vector assertion cannot be satisfied by a collapse.
  *
  * The fixture is built so that the right answer and the fallback answer differ
- * on every axis the census asserts (preamble rule 3a #8) -- see
+ * on every axis the census asserts -- see
  * `build_census_fixture()` for the four separations and why each one is needed.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -81,7 +79,7 @@ class Test_Surface_Census extends Base {
 	const MOVED_INDEX = 2;
 
 	/**
-	 * Index of the occurrence that is cancelled.
+	 * Index of the occurrence that is canceled.
 	 *
 	 * @since 0.36.0
 	 * @var int
@@ -225,7 +223,7 @@ class Test_Surface_Census extends Base {
 	 * calendar date. That is required here rather than merely tidy: the census
 	 * reaches `upcoming` / `past` buckets, `has_event_past()` and
 	 * `current_time()` on every surface, so a pinned anchor would be a date bomb
-	 * (preamble rule 3a #7). `class-test-loop-render.php` is the model.
+	 * `class-test-loop-render.php` is the model.
 	 *
 	 * The series timezone is UTC throughout, so an occurrence's identifier -- a
 	 * *local* start in `Ymd\THis` -- and its GMT columns read identically, and a
@@ -280,8 +278,7 @@ class Test_Surface_Census extends Base {
 	 *
 	 * Fixtures are arranged in production order -- the datetime blob and its
 	 * derived row first, then the recurrence blob, then the mirrors, then the
-	 * projection -- which is the sequence a real save produces (preamble rule
-	 * 3a #4).
+	 * projection -- which is the sequence a real save produces.
 	 *
 	 * @since 0.36.0
 	 *
@@ -318,7 +315,7 @@ class Test_Surface_Census extends Base {
 	 *
 	 * Derived from the fixture's own arithmetic rather than read back out of
 	 * the table, so the expectation is the requirement rather than a transcript
-	 * of what the code produced (preamble rule 3a #5).
+	 * of what the code produced.
 	 *
 	 * @since 0.36.0
 	 *
@@ -336,20 +333,18 @@ class Test_Surface_Census extends Base {
 	 *
 	 * Four deliberate separations, one per axis the census asserts. Each exists
 	 * because without it the right answer and a fallback answer coincide, and an
-	 * assertion that cannot distinguish them is not a test (preamble rule 3a
-	 * #8):
+	 * assertion that cannot distinguish them is not a test:
 	 *
 	 * 1. **The series anchor is in the past.** Its first occurrence has already
 	 *    started, so the bare-series URL's "next upcoming occurrence" is the
 	 *    *second* one. Anchoring in the future would make the anchor and the
 	 *    next-upcoming occurrence the same row, and the bare-series surface
-	 *    would pass with the resolver removed entirely -- the exact vacuity that
-	 *    left CF-10(a) green.
+	 *    would pass with the resolver removed entirely -- a vacuous assertion.
 	 * 2. **One occurrence's stored datetime is rewritten.** The expander holds
 	 *    the wall-clock time constant across a series, so for a rule-generated
 	 *    row "the record's datetime" and "the anchor's time applied to the
 	 *    record's date" are the same value and no rendered clock can separate
-	 *    them (PRD C-3). Rewriting one row's own columns makes the two answers
+	 *    them. Rewriting one row's own columns makes the two answers
 	 *    differ. Its *identifier* is deliberately left alone, so the moved row's
 	 *    URL segment and its rendered date disagree -- which additionally kills
 	 *    any implementation that derives the date back out of the URL.
@@ -466,8 +461,8 @@ class Test_Surface_Census extends Base {
 	 *
 	 * One entry per row a visitor should see, ordered ascending by the row's own
 	 * start: the plain event, every scheduled upcoming occurrence of both
-	 * series, and nothing else. The cancelled occurrence is absent by
-	 * construction (REQ-12), and the series' first occurrence is absent because
+	 * series, and nothing else. The canceled occurrence is absent by
+	 * construction, and the series' first occurrence is absent because
 	 * it has already started.
 	 *
 	 * @since 0.36.0
@@ -530,7 +525,7 @@ class Test_Surface_Census extends Base {
 	 * Compose one expected row of a surface's vector.
 	 *
 	 * The permalink is built as a literal URL rather than through
-	 * `Rewrite::get_occurrence_url()`, so the assertion states the REQ-8
+	 * `Rewrite::get_occurrence_url()`, so the assertion states the
 	 * `{permalink}{Ymd}T{His}/` shape itself instead of agreeing with whatever
 	 * the production builder currently emits.
 	 *
@@ -541,14 +536,12 @@ class Test_Surface_Census extends Base {
 	 * requested URL already was the occurrence URL and rewriting
 	 * `get_permalink()` would disturb core's canonical-redirect comparison. That
 	 * left `get_permalink()` returning the *bare series* URL on an occurrence
-	 * page, which per PRD D-4 resolves to the **next upcoming** occurrence -- so
-	 * the iCal `URL:` field and every link on the page named a different date.
+	 * page, which resolves to the **next upcoming** occurrence -- so the iCal
+	 * `URL:` field and every link on the page named a different date.
 	 *
-	 * The census encoded that contract explicitly so a change to it would be
-	 * visible rather than silent, and that is exactly what happened: CF-15
-	 * removed the stand-down after measuring that `redirect_canonical()` never
-	 * reaches `get_permalink()` on a matched occurrence rewrite rule. The flag
-	 * is gone with it. Two contracts became one.
+	 * The stand-down is gone: `redirect_canonical()` never reaches
+	 * `get_permalink()` on a matched occurrence rewrite rule, so the flag is
+	 * gone with it. Two contracts became one.
 	 *
 	 * @since 0.36.0
 	 *
@@ -769,8 +762,7 @@ class Test_Surface_Census extends Base {
 	/**
 	 * Reduce a query's results to `post_id|recurrence_id` strings.
 	 *
-	 * Identity is read off each result object, never off its list position
-	 * (preamble rule 6).
+	 * Identity is read off each result object, never off its list position.
 	 *
 	 * @since 0.36.0
 	 *
@@ -873,13 +865,13 @@ class Test_Surface_Census extends Base {
 			$this->assertMatchesRegularExpression(
 				'#/\d{8}T\d{6}/$#',
 				$url,
-				'Failed to assert the occurrence URL carries the REQ-8 {Ymd}T{His} segment.'
+				'Failed to assert the occurrence URL carries the {Ymd}T{His} segment.'
 			);
 		}
 	}
 
 	/**
-	 * Census of the bare series URL (PRD D-4).
+	 * Census of the bare series URL.
 	 *
 	 * The series anchor is in the past, so the next upcoming occurrence is the
 	 * *second* one and never the anchor's own row. That separation is the whole
@@ -921,9 +913,9 @@ class Test_Surface_Census extends Base {
 	/**
 	 * Census of the `/event/` archive, page one and page two.
 	 *
-	 * The paged case is where CF-13 lived: page two's SQL carried no occurrence
-	 * join, so four event posts at `LIMIT 10, 10` yielded nothing and the
-	 * request 404'd, making most events unreachable. Both pages are asserted
+	 * The paged case is the fragile one: if page two's SQL carries no occurrence
+	 * join, four event posts at `LIMIT 10, 10` yield nothing and the request
+	 * 404s, making most events unreachable. Both pages are asserted
 	 * here, and the two pages' rows concatenated must equal the whole required
 	 * vector -- a page-one-only assertion is satisfied by exactly the broken
 	 * state.
@@ -1067,11 +1059,11 @@ class Test_Surface_Census extends Base {
 	}
 
 	/**
-	 * Census of a cancelled occurrence (REQ-12).
+	 * Census of a canceled occurrence.
 	 *
 	 * Three claims, and all three are needed: it is absent from every list, its
 	 * URL still resolves rather than 404ing, and what it renders says it was
-	 * cancelled while still carrying its own date.
+	 * canceled while still carrying its own date.
 	 *
 	 * @covers ::maybe_prepend_cancelled_notice
 	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
@@ -1095,7 +1087,7 @@ class Test_Surface_Census extends Base {
 		$this->assertNotContains(
 			$entry,
 			$listed,
-			'Failed to assert the cancelled occurrence is absent from every list.'
+			'Failed to assert the canceled occurrence is absent from every list.'
 		);
 
 		$this->go_to( Rewrite::get_occurrence_url( $fixture['series'], $recurrence_id ) );
@@ -1104,7 +1096,7 @@ class Test_Surface_Census extends Base {
 
 		$this->assertFalse(
 			$wp_query->is_404(),
-			'Failed to assert a cancelled occurrence\'s own URL still resolves (REQ-12).'
+			'Failed to assert a canceled occurrence\'s own URL still resolves.'
 		);
 
 		$wp_query->the_post();
@@ -1112,7 +1104,7 @@ class Test_Surface_Census extends Base {
 		$this->assertSame(
 			$this->series_start( $fixture, self::CANCELLED_INDEX )->format( self::DATE_FORMAT ),
 			$this->rendered_row()['date'],
-			'Failed to assert the cancelled occurrence\'s page renders its own date.'
+			'Failed to assert the canceled occurrence\'s page renders its own date.'
 		);
 		// Applying a core filter, not declaring a plugin one: this is the filter
 		// every theme template runs post content through.
@@ -1120,23 +1112,22 @@ class Test_Surface_Census extends Base {
 		$rendered = apply_filters( 'the_content', 'Body copy.' );
 
 		$this->assertStringContainsString(
-			'This occurrence has been cancelled.',
+			'This occurrence has been canceled.',
 			$rendered,
-			'Failed to assert the cancelled occurrence tells the attendee holding the link that it was cancelled.'
+			'Failed to assert the canceled occurrence tells the attendee holding the link that it was canceled.'
 		);
 
 		wp_reset_postdata();
 	}
 
 	/**
-	 * Census of REQ-16: a site with no recurring events is untouched.
+	 * Census of a site with no recurring events being untouched.
 	 *
 	 * The capture is taken from `$wpdb->queries` across the **real** entry
 	 * points -- the singular event URL, both archive pages and a bucket loop --
 	 * rather than from inside any one filter, because a filter-level capture
-	 * only observes the queries that already reach that filter, which is how two
-	 * separate "performs no writes" tests passed over an unguarded entry point
-	 * in this build.
+	 * only observes the queries that already reach that filter, which lets a
+	 * "performs no writes" test pass over an unguarded entry point.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::site_has_recurring_events
 	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request

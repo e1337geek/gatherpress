@@ -270,7 +270,7 @@ async function openEventEditor( page, eventId ) {
 /**
  * Set an event's own Time Zone control, inside the "Event settings" panel.
  *
- * This is the three-click organizer path REQ-3 targets: open Event settings
+ * This is the three-click organizer path: open Event settings
  * (already open by the time a spec reaches this helper), open the Time Zone
  * dropdown, pick a manual UTC offset.
  *
@@ -613,8 +613,8 @@ function getSeriesRows( page, title ) {
  *
  * The vector, not one row, is the point. A single-row assertion about an
  * occurrence's RSVP state passes just as happily when *every* row is
- * attending — which is precisely the collapsed-store defect (CF-14) beat 5
- * exists to catch. Reading every row lets a spec assert "this one, and not the
+ * attending — which is precisely the collapsed-store defect beat 5 exists to
+ * catch. Reading every row lets a spec assert "this one, and not the
  * others."
  *
  * @since 0.36.0
@@ -743,8 +743,8 @@ async function deletePost( page, id, restBase = 'gatherpress_events' ) {
 
 /**
  * Set the site timezone to a named tz-database identifier via the REST
- * settings endpoint. Recurrence requires this (REQ-3): tests that author a
- * rule must call this before touching the Recurrence panel.
+ * settings endpoint. Recurrence requires a named timezone: tests that author
+ * a rule must call this before touching the Recurrence panel.
  *
  * @since 0.36.0
  *
@@ -765,7 +765,7 @@ async function setSiteTimezone( page, tz ) {
  * Read the site's currently configured timezone via the REST settings
  * endpoint, so a spec that changes it can put it back.
  *
- * Several specs in this suite must run under a named timezone (REQ-3), and
+ * Several specs in this suite must run under a named timezone, and
  * other e2e files share this WordPress install — leaving the site on
  * whatever the last recurrence spec set is a cross-file side effect.
  *
@@ -906,9 +906,8 @@ function firstLastWeekdayOnOrAfter( anchor, weekday ) {
 /**
  * Get the Monday-start week bucket a date falls in.
  *
- * Mirrors `Expander::week_index()`. PRD D-8: a weekly rule's interval is
- * counted in Monday-start week buckets, never in seven-day deltas from the
- * anchor.
+ * Mirrors `Expander::week_index()`. A weekly rule's interval is counted in
+ * Monday-start week buckets, never in seven-day deltas from the anchor.
  *
  * @since 0.36.0
  *

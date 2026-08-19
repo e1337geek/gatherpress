@@ -238,10 +238,10 @@ const RecurrencePanel = () => {
 
 	// Tracks the blob this component itself last wrote, so the effect below
 	// can tell "the store caught up with our own write" apart from "the
-	// entity resolved, or was changed, out from under us" -- see BLOCKING 3
-	// in the review: without this, a panel that mounts before `core/editor`
-	// resolves the post entity renders "Repeat: off" for a saved recurring
-	// event and never corrects itself.
+	// entity resolved, or was changed, out from under us". Without this, a
+	// panel that mounts before `core/editor` resolves the post entity renders
+	// "Repeat: off" for a saved recurring event and never corrects itself: a
+	// late entity resolution would clobber the saved state.
 	const lastWrittenBlobRef = useRef( recurrenceMeta );
 
 	useEffect( () => {

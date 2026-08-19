@@ -6,18 +6,15 @@
  * branch switch. `Blocks\Setup::register()` registers block types from
  * `build/blocks/`, never from `src/blocks/`, so a stale bundle means PHPUnit is
  * measuring the *previous* commit's block render templates while the working
- * tree shows the current one. That has cost this build three separate rounds:
- * a hand-test that measured a stale bundle and reported a defect that was
- * already fixed, a reviewer's mutation pass that edited a block's `render.php`
- * under `src` and returned a false OK because PHPUnit never loaded it, and a merge that went
- * red until someone thought to rebuild.
+ * tree shows the current one, so edits to a block's `render.php` under `src/`
+ * are silently invisible to the suite until `build/` is regenerated.
  *
  * It is a purely local hazard -- CI builds before both the PHPUnit job
  * (`phpunit-tests.yml:67`) and the e2e job (`e2e-tests.yml:119`) -- which is why
  * the guard lives at the PHPUnit bootstrap rather than in a workflow. The
  * bootstrap is the only place that runs on *every* local invocation: an
  * `npm run pretest:*` hook is skipped by the `wp-env run … phpunit` form that
- * agents and reviewers actually type, and a guard expressed as a test case
+ * is typed directly, and a guard expressed as a test case
  * reports as one more red test among many, which is the mystery failure this is
  * meant to replace.
  *

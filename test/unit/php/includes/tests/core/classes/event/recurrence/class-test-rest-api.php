@@ -507,7 +507,7 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * Cancelling sets the status column and the front-end upcoming list --
+	 * Canceling sets the status column and the front-end upcoming list --
 	 * driven through a real `WP_Query`, not just a column read -- drops it.
 	 *
 	 * @covers ::update_occurrence_status
@@ -530,12 +530,12 @@ class Test_Rest_Api extends Base {
 		$this->assertNotContains(
 			$post_id . '|' . $recurrence_id,
 			$entries,
-			'A cancelled occurrence must drop out of the upcoming list.'
+			'A canceled occurrence must drop out of the upcoming list.'
 		);
 	}
 
 	/**
-	 * Un-cancelling restores the occurrence to the front-end upcoming list.
+	 * Un-canceling restores the occurrence to the front-end upcoming list.
 	 *
 	 * @covers ::update_occurrence_status
 	 *
@@ -557,18 +557,17 @@ class Test_Rest_Api extends Base {
 		$this->assertContains(
 			$post_id . '|' . $recurrence_id,
 			$this->run_upcoming_query_entries(),
-			'Un-cancelling must restore the occurrence to the upcoming list.'
+			'Un-canceling must restore the occurrence to the upcoming list.'
 		);
 	}
 
 	/**
-	 * REQ-12 is explicit that a cancelled occurrence's RSVPs are retained,
-	 * never deleted.
+	 * A canceled occurrence's RSVPs are retained, never deleted.
 	 *
 	 * Scope note: `Rsvp_Occurrence` (the comment taxonomy that ties an RSVP
 	 * to the specific occurrence it was made for) does not register its
 	 * hooks yet, so `save()` here does not tag the comment with an
-	 * occurrence identifier -- it proves "cancelling an occurrence does not
+	 * occurrence identifier -- it proves "canceling an occurrence does not
 	 * delete the event's comments" rather than the fully occurrence-scoped
 	 * claim in the method name. `Rsvp_Occurrence::assign()` is being wired up
 	 * in another lane; tighten this test to assert the specific occurrence's
@@ -608,11 +607,11 @@ class Test_Rest_Api extends Base {
 			)
 		);
 
-		$this->assertSame( $before, $after, "Cancelling an occurrence must not delete the event's RSVPs." );
+		$this->assertSame( $before, $after, "Canceling an occurrence must not delete the event's RSVPs." );
 	}
 
 	/**
-	 * PRD C-5: cancellation is occurrence state, never expressed by mutating
+	 * Cancellation is occurrence state, never expressed by mutating
 	 * the rule. Re-projecting the rule after a cancellation -- exactly what
 	 * happens when the series is re-saved -- must not clear the cancellation.
 	 * Pinned from the REST side: the cancellation itself is set through the
@@ -639,7 +638,7 @@ class Test_Rest_Api extends Base {
 		$this->assertSame(
 			Occurrences::STATUS_CANCELLED,
 			$row['status'],
-			'Re-projecting the rule must not clear a cancellation (PRD C-5).'
+			'Re-projecting the rule must not clear a cancellation.'
 		);
 	}
 
@@ -666,7 +665,7 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * The occurrences-list route returns every upcoming row, cancelled and
+	 * The occurrences-list route returns every upcoming row, canceled and
 	 * scheduled alike, so the sidebar can offer a restore action.
 	 *
 	 * @covers ::get_occurrences
@@ -688,7 +687,7 @@ class Test_Rest_Api extends Base {
 		$data     = $response->get_data();
 
 		$this->assertSame( 200, $response->get_status() );
-		$this->assertCount( 5, $data, 'All five projected occurrences must be listed, cancelled included.' );
+		$this->assertCount( 5, $data, 'All five projected occurrences must be listed, canceled included.' );
 
 		$recurrence_ids = array_column( $data, 'recurrence_id' );
 		$this->assertContains( $recurrence_id, $recurrence_ids );
@@ -698,7 +697,7 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * REQ-16: a site that has never authored a recurring event pays no
+	 * A site that has never authored a recurring event pays no
 	 * occurrence-table query when the sidebar's occurrences route is hit.
 	 * Unlike the write route, this one runs from every ordinary event's
 	 * editor screen, so the guard belongs on the read path specifically.
@@ -756,9 +755,9 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * PRD C-2: `get_occurrences()` reads through `Series::resolve_post_ids()`
+	 * `get_occurrences()` reads through `Series::resolve_post_ids()`
 	 * rather than wrapping `$post_id` alone in an array, so a series split
-	 * across posts by the `gatherpress_series_post_ids` seam (REQ-18) still
+	 * across posts by the `gatherpress_series_post_ids` seam still
 	 * lists every sibling post's occurrences from the one open post. Without
 	 * the resolver, a sibling's occurrences become unreachable from the
 	 * restore UI.

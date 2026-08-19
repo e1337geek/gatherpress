@@ -66,17 +66,17 @@ const ONLINE_EVENT_URL = 'https://example.test/private-meeting-room';
  * and publishing, switching the rule and watching the dates change, seeing
  * one row per occurrence in the upcoming list, following a row to that
  * occurrence's own page, RSVPing to one occurrence without it following to
- * the next, and cancelling one occurrence (REQ-12) — plus two specs the build
- * has earned: the recurrence-aware `posts_clauses` leaving an ordinary event
- * alone, and REQ-3 (a fixed-offset timezone visibly refuses recurrence).
+ * the next, and canceling one occurrence — plus two more specs: the
+ * recurrence-aware `posts_clauses` leaving an ordinary event alone, and a
+ * fixed-offset timezone visibly refusing recurrence.
  *
- * Beat 5 is the load-bearing one, and it is worth saying why. Three defects
- * found by hand-testing shared a shape: occurrence identity reached the row
- * and a consumer did not read it. One of the three — the interactivity store
- * keyed on post ID alone (CF-14) — was visible **only** in a browser: the
- * server rendered every row correctly and JavaScript then flattened them to a
- * single status. PHP tests could not see it, and Jest could prove the key was
- * right without proving the page was. Beat 5 is the check that catches that
+ * Beat 5 is the load-bearing one, and it is worth saying why. A whole class of
+ * defect shares one shape: occurrence identity reaches the row and a consumer
+ * does not read it. One such defect — the interactivity store keyed on post ID
+ * alone — is visible **only** in a browser: the
+ * server renders every row correctly and JavaScript then flattens them to a
+ * single status. PHP tests cannot see it, and Jest can prove the key is right
+ * without proving the page is. Beat 5 is the check that catches that
  * class as a user experiences it, and it asserts the **whole per-row vector**
  * rather than one row, because a single-row assertion passes just as happily
  * when every row is attending — which is exactly the bug.
@@ -90,7 +90,7 @@ test.describe( 'Recurring events', () => {
 	/**
 	 * The site timezone as found, restored in `afterAll`.
 	 *
-	 * Three specs below need a named timezone (REQ-3) and set one; other e2e
+	 * Three specs below need a named timezone and set one; other e2e
 	 * files share this WordPress install, so leaving it changed is a
 	 * cross-file side effect.
 	 *
@@ -117,8 +117,8 @@ test.describe( 'Recurring events', () => {
 	test( 'the recurrence-aware event query neither drops nor duplicates an ordinary, non-recurring event', async ( {
 		page,
 	} ) => {
-		// Named for what it proves. REQ-16's actual criterion — that a site
-		// with `gatherpress_has_recurring_events` set to '0' runs byte-identical
+		// Named for what it proves. The site-level guard's actual criterion —
+		// that a site with `gatherpress_has_recurring_events` set to '0' runs byte-identical
 		// SQL and performs no extra writes — is a query-level guarantee, and it
 		// is proven by the PHP suite (a `$wpdb->queries` capture across the real
 		// entry points), not here: an e2e run cannot establish a genuinely
@@ -202,13 +202,13 @@ test.describe( 'Recurring events', () => {
 		}
 	} );
 
-	test( 'REQ-3: a fixed-offset timezone visibly refuses recurrence', async ( { page } ) => {
+	test( 'a fixed-offset timezone visibly refuses recurrence', async ( { page } ) => {
 		await gotoAdmin( page );
 
 		// Seeded with a named zone so the only variable under test is the
 		// in-editor timezone change below.
 		const { eventId } = await seedEventWithDatetime( page, {
-			title: `REQ-3 fixed offset ${ Date.now() }`,
+			title: `Fixed offset ${ Date.now() }`,
 			daysFromNow: 10,
 			timezone: 'America/New_York',
 		} );
@@ -423,9 +423,8 @@ test.describe( 'Recurring events', () => {
 			// This asserts the exact projected dates rather than
 			// `length > 1`, because `length > 1` is weaker than the property
 			// it is named for: a query that expanded to the right *number* of
-			// rows and rendered the anchor's date into every one of them —
-			// which is precisely what CF-8 measured in a browser — satisfies
-			// a count and fails the requirement.
+			// rows and rendered the anchor's date into every one of them
+			// satisfies a count and fails the requirement.
 			expect(
 				matching.map( ( row ) => leadingDateText( row.dateText ) ),
 				'the upcoming list shows exactly the projected occurrence dates, in order'
@@ -435,7 +434,7 @@ test.describe( 'Recurring events', () => {
 			// click a row and land on that row's occurrence. Nothing else in
 			// this file exercises the row's *own* href; every other assertion
 			// below builds the URL itself, so a row that linked to the bare
-			// series (CF-8, measured in a browser) would leave them all green.
+			// series would leave them all green.
 			//
 			// A later row, not the first: the bare-series fallback resolves to
 			// the next-upcoming occurrence, so a row whose href had lost its
@@ -462,7 +461,7 @@ test.describe( 'Recurring events', () => {
 				'and that row is a later occurrence, not the one a bare-series fallback would resolve to'
 			).toBe( dateText( expected[ 2 ] ) );
 
-			// Beat 4, part one: the exact occurrence URL REQ-8 defines
+			// Beat 4, part one: the exact occurrence URL
 			// (`{permalink}{Ymd}T{His}/`) resolves and shows that specific
 			// occurrence's date.
 			const firstUrl = `${ seriesBase }/${ toRecurrenceId( firstOccurrence, '180000' ) }/`;
@@ -520,8 +519,8 @@ test.describe( 'Recurring events', () => {
 
 			// Beat 4, part three: following the series' own (bare) link — the
 			// one every row in the list actually points to — lands on the
-			// next-upcoming occurrence via `Rewrite::maybe_resolve_bare_series()`
-			// (PRD D-4), rather than the series' stale anchor date. The anchor
+			// next-upcoming occurrence via `Rewrite::maybe_resolve_bare_series()`,
+			// rather than the series' stale anchor date. The anchor
 			// is a Monday and the rule is Tuesday/Thursday, so "the first
 			// occurrence" and "the anchor" are never the same date.
 			await page.goto( seriesLink );
@@ -652,10 +651,10 @@ test.describe( 'Recurring events', () => {
 			// The client half, asserted WITHOUT reloading. This is the check
 			// nothing else in the build can make: `state.posts` is keyed by
 			// `getPostKey( postId, recurrenceId )`, and if that key ever
-			// collapses back to the post ID alone (CF-14), every row of this
+			// collapses back to the post ID alone, every row of this
 			// series shares one entry and `sendRsvpApiRequest`'s single write
-			// lights up all six at once. The server markup was already correct
-			// per row; only a browser can see JavaScript flatten it.
+			// lights up all six at once. The server markup is correct per row;
+			// only a browser can see JavaScript flatten it.
 			await expect(
 				target.locator( '.gatherpress-online-event__text' ),
 				'the row that was RSVPed to reveals the private meeting URL'
@@ -722,7 +721,7 @@ test.describe( 'Recurring events', () => {
 		}
 	} );
 
-	test( 'Beat 6 (REQ-12): a cancelled occurrence leaves the list, still resolves, and says it was cancelled', async ( {
+	test( 'Beat 6: a canceled occurrence leaves the list, still resolves, and says it was canceled', async ( {
 		page,
 	} ) => {
 		// The organizer path here opens the editor twice — once to author the
@@ -755,11 +754,11 @@ test.describe( 'Recurring events', () => {
 			const expected = weeklyOccurrences( anchorDate, [ 2, 4 ], 1, 6 );
 
 			// Cancel the SECOND occurrence, not the first — same reason as
-			// beat 5. Cancelling the first would also move what the bare-series
+			// beat 5. Canceling the first would also move what the bare-series
 			// URL resolves to, so "it left the list" could be satisfied by a
 			// resolver that had simply advanced; and an off-by-one in the
 			// panel's own row-to-occurrence mapping would be invisible against
-			// the first row. Cancelling a middle occurrence leaves neighbours
+			// the first row. Canceling a middle occurrence leaves neighbours
 			// on both sides to prove the rest of the series is untouched.
 			const cancelIndex = 1;
 
@@ -781,7 +780,7 @@ test.describe( 'Recurring events', () => {
 
 			await expect(
 				cancelRow.locator( '.gatherpress-occurrence-row__date' ),
-				'the panel row about to be cancelled is the occurrence it claims to be'
+				'the panel row about to be canceled is the occurrence it claims to be'
 			).toContainText( dateText( expected[ cancelIndex ] ) );
 
 			await expect(
@@ -794,8 +793,8 @@ test.describe( 'Recurring events', () => {
 
 			await expect(
 				cancelRow.locator( '.gatherpress-occurrence-row__status' ),
-				'the panel reports the occurrence cancelled'
-			).toHaveText( 'Cancelled', { timeout: 20000 } );
+				'the panel reports the occurrence canceled'
+			).toHaveText( 'Canceled', { timeout: 20000 } );
 
 			await expect(
 				cancelRow.getByRole( 'button', { name: 'Restore' } ),
@@ -803,12 +802,12 @@ test.describe( 'Recurring events', () => {
 			).toBeVisible();
 
 			// Every other panel row is untouched — cancellation is occurrence
-			// state (PRD C-5), never a mutation of the rule.
+			// state, never a mutation of the rule.
 			await expect(
 				panelRows.locator( '.gatherpress-occurrence-row__status' ).filter( {
-					hasText: 'Cancelled',
+					hasText: 'Canceled',
 				} ),
-				'exactly one occurrence is cancelled, not the series'
+				'exactly one occurrence is canceled, not the series'
 			).toHaveCount( 1 );
 
 			await gotoAdmin( page );
@@ -828,22 +827,21 @@ test.describe( 'Recurring events', () => {
 
 			// Half one: it left the upcoming list — and the other five are all
 			// still there, in order. Asserting the whole vector rather than
-			// "the cancelled date is absent" is what separates "one occurrence
+			// "the canceled date is absent" is what separates "one occurrence
 			// was dropped" from "the join went wrong and took the series with
 			// it", which is exactly what a `status = 'scheduled'` predicate in
 			// the WHERE clause rather than the JOIN condition would do.
 			expect(
 				remaining.map( ( row ) => leadingDateText( row.dateText ) ),
-				'the cancelled occurrence leaves the upcoming list and its siblings stay'
+				'the canceled occurrence leaves the upcoming list and its siblings stay'
 			).toEqual(
 				expected
 					.filter( ( _date, index ) => cancelIndex !== index )
 					.map( dateText )
 			);
 
-			// Half two: its own URL still resolves. REQ-12's second half —
-			// somebody holding a link to the cancelled date has to be *told*,
-			// not 404ed and left guessing.
+			// Half two: its own URL still resolves. Somebody holding a link to
+			// the canceled date has to be *told*, not 404ed and left guessing.
 			const cancelledUrl =
 				`${ seriesLink.replace( /\/$/, '' ) }/` +
 				`${ toRecurrenceId( expected[ cancelIndex ], '180000' ) }/`;
@@ -852,14 +850,14 @@ test.describe( 'Recurring events', () => {
 
 			expect(
 				response.status(),
-				"a cancelled occurrence's URL still resolves rather than 404ing"
+				"a canceled occurrence's URL still resolves rather than 404ing"
 			).toBe( 200 );
 
 			// Half three: the page says so, on the occurrence's own date.
 			await expect(
 				page.locator( '.gatherpress-occurrence-cancelled-notice' ),
-				'the cancelled occurrence says it was cancelled'
-			).toHaveText( 'This occurrence has been cancelled.' );
+				'the canceled occurrence says it was canceled'
+			).toHaveText( 'This occurrence has been canceled.' );
 
 			await expect(
 				page.locator( 'body' ),
@@ -867,7 +865,7 @@ test.describe( 'Recurring events', () => {
 			).toContainText( dateText( expected[ cancelIndex ] ) );
 
 			// A sibling occurrence's page carries no such notice — the notice
-			// is scoped to the cancelled row, not prepended to the series.
+			// is scoped to the canceled row, not prepended to the series.
 			const siblingUrl =
 				`${ seriesLink.replace( /\/$/, '' ) }/` +
 				`${ toRecurrenceId( expected[ cancelIndex + 1 ], '180000' ) }/`;

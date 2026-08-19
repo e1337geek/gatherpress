@@ -65,12 +65,12 @@ function normalizeOccurrences( rows ) {
  * Sidebar list of a series' upcoming occurrences, each with a cancel/restore
  * action.
  *
- * REQ-12: an organizer skips a holiday without touching the rest of the
- * series. The front-end drop of a cancelled occurrence is already handled by
+ * An organizer skips a holiday without touching the rest of the
+ * series. The front-end drop of a canceled occurrence is already handled by
  * the occurrence-aware query filter (`Recurrence\Query::expand_event_clauses()`),
  * so this panel's only job is to read the list and flip one row's status via
  * the `occurrence-status` REST route -- it never reaches into the recurrence
- * rule itself (PRD C-5).
+ * rule itself.
  *
  * Every request the panel issues carries the row's own composite identity:
  * the GET is scoped to the edited post, but the status write submits
@@ -127,7 +127,7 @@ const OccurrencesPanel = () => {
 	}, [ isEventDateSupported, postId, reloadCount ] );
 
 	/**
-	 * Flip one occurrence between scheduled and cancelled.
+	 * Flip one occurrence between scheduled and canceled.
 	 *
 	 * @param {Object} occurrence Occurrence row to toggle.
 	 *

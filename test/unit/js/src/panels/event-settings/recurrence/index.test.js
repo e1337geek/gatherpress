@@ -271,10 +271,9 @@ describe( 'RecurrencePanel', () => {
 			target: { value: 'weekly' },
 		} );
 
-		// Switching back to weekly with no weekday selected yet is withheld
-		// (BLOCKING 2 from the review) — the last persisted blob is still the
-		// monthly one until a weekday is chosen, proving no leak either way
-		// once that happens.
+		// Switching back to weekly with no weekday selected yet is withheld —
+		// the last persisted blob is still the monthly one until a weekday is
+		// chosen, proving no leak either way once that happens.
 		expect( lastPersistedBlob().monthly_day ).toBe( 20 );
 
 		fireEvent.click( screen.getByLabelText( 'Monday' ) );
@@ -285,7 +284,7 @@ describe( 'RecurrencePanel', () => {
 		expect( blob.monthly_day ).toBe( 1 );
 	} );
 
-	test( 'CF-5: switching to Yearly clears weekly and monthly state and hides their controls', () => {
+	test( 'switching to Yearly clears weekly and monthly state and hides their controls', () => {
 		render( <RecurrencePanel /> );
 
 		fireEvent.click( screen.getByLabelText( 'Repeat' ) );

@@ -9,10 +9,10 @@ import { dateI18n, getSettings } from '@wordpress/date';
  * One row in the occurrence list: its date, its status, and the
  * cancel/restore action.
  *
- * REQ-12: an organizer skips a holiday without touching the rest of the
- * series. This row is the per-occurrence surface that action lives on --
- * cancelling writes the occurrence's `status` column via the
- * `occurrence-status` REST route (PRD C-5); it never touches the rule.
+ * An organizer skips a holiday without touching the rest of the series. This
+ * row is the per-occurrence surface that action lives on -- canceling writes
+ * the occurrence's `status` column via the `occurrence-status` REST route; it
+ * never touches the rule.
  *
  * @since 0.36.0
  *
@@ -36,7 +36,7 @@ const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
 			</span>
 			<span className="gatherpress-occurrence-row__status">
 				{ isCancelled
-					? __( 'Cancelled', 'gatherpress' )
+					? __( 'Canceled', 'gatherpress' )
 					: __( 'Scheduled', 'gatherpress' ) }
 			</span>
 			<Button

@@ -4,9 +4,8 @@
  *
  * Two routes: a read route the editor sidebar uses to list a series' upcoming
  * occurrences, and the write route that sets an occurrence's status, which is
- * how cancel and un-cancel are expressed. Cancellation is occurrence
- * state on the occurrence row, never an `EXDATE` in the rule and
- * never a term.
+ * how cancel and un-cancel are expressed. Cancellation is occurrence state on
+ * the occurrence row, never an `EXDATE` in the rule and never a term.
  *
  * The authorization contract is `current_user_can( 'edit_post', $post_id )`,
  * never `is_user_logged_in()` and never the RSVP subsystem's
@@ -176,22 +175,22 @@ final class Rest_Api {
 	}
 
 	/**
-	 * List a series' upcoming occurrences, cancelled and scheduled alike.
+	 * List a series' upcoming occurrences, canceled and scheduled alike.
 	 *
-	 * Cancelled occurrences are included deliberately -- the whole point of
-	 * the sidebar list is to offer a restore action, and a cancelled
+	 * Canceled occurrences are included deliberately -- the whole point of
+	 * the sidebar list is to offer a restore action, and a canceled
 	 * occurrence that dropped out of the list would have no way back.
 	 *
-	 * Guarded by `Query::site_has_recurring_events()` (REQ-16): unlike the
+	 * Guarded by `Query::site_has_recurring_events()`: unlike the
 	 * write route, this one is reachable from every ordinary event's editor
 	 * screen the moment the sidebar mounts, not just when an organizer
 	 * explicitly acts on a recurring series. Without the guard, opening any
 	 * event on a site that has never authored a recurring one still pays an
 	 * uncached `SELECT` against the occurrence table.
 	 *
-	 * PRD C-2: reads `post_ids` from `Series::resolve_post_ids()` rather than
+	 * Reads `post_ids` from `Series::resolve_post_ids()` rather than
 	 * wrapping `$post_id` alone, so a future series split across posts
-	 * (REQ-18's `gatherpress_series_post_ids` seam) still lists every
+	 * (the `gatherpress_series_post_ids` seam) still lists every
 	 * sibling post's occurrences here. The permission callback authorizes the
 	 * *requested* post only, so every resolved sibling is authorized
 	 * separately before it is selected -- see
@@ -231,7 +230,7 @@ final class Rest_Api {
 	 * `recurrence_id`; a `false` return means the composite key matched no
 	 * row -- either the recurrence ID does not belong to this post, or it
 	 * does not exist at all -- and is reported as a 404 rather than as
-	 * success (PRD C-1, C-2).
+	 * success.
 	 *
 	 * @since 0.36.0
 	 *
