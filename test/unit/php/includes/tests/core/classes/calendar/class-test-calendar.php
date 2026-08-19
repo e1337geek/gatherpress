@@ -742,4 +742,60 @@ class Test_Calendar extends Base {
 		$this->assertIsString( $url );
 		$this->assertNotEmpty( $url );
 	}
+
+	/**
+	 * The `.ics` template survives a request whose queried object is not an event.
+	 *
+	 * `Calendar\Setup::get_ics_body()` is what both `ical-feed.php` and
+	 * `ical-download.php` call, and on a non-feed request it builds a
+	 * `Calendar` from `get_queried_object_id()`. When that object is not an
+	 * event -- a venue, or any post that does not support
+	 * `gatherpress-event-date` -- `Event::$event` stays null, and
+	 * `get_ical_event_string()` used to read `post_title` straight off it.
+	 * PHP 8 evaluates that to null rather than raising, so the null reached
+	 * `escape_ical_text( string $text )` and threw a `TypeError` that took the
+	 * whole public request down.
+	 *
+	 * Driven through `get_ics_body()` rather than `escape_ical_text()` so the
+	 * assertion covers the path a client actually reaches.
+	 *
+	 * @covers ::get_ical_event_string
+	 *
+	 * @return void
+	 */
+	public function test_ics_body_on_a_non_event_request_renders_instead_of_fataling(): void {
+		$venue_id = $this->mock->post(
+			array(
+				'post_type'   => Venue::POST_TYPE,
+				'post_title'  => 'Orphan Office',
+				'post_name'   => 'orphan-office',
+				'post_status' => 'publish',
+			)
+		)->get()->ID;
+
+		$this->go_to( home_url( '/?p=' . $venue_id . '&post_type=' . Venue::POST_TYPE ) );
+
+		$this->assertSame(
+			$venue_id,
+			get_queried_object_id(),
+			'Failed to assert that the request resolved to the venue post.'
+		);
+		$this->assertFalse(
+			is_feed(),
+			'Failed to assert that the request is the non-feed branch of get_ics_body().'
+		);
+
+		$body = Setup::get_instance()->get_ics_body();
+
+		$this->assertStringStartsWith(
+			'BEGIN:VCALENDAR',
+			$body,
+			'Failed to assert that a non-event request still renders a calendar envelope.'
+		);
+		$this->assertStringNotContainsString(
+			'BEGIN:VEVENT',
+			$body,
+			'Failed to assert that a non-event request emits no VEVENT.'
+		);
+	}
 }

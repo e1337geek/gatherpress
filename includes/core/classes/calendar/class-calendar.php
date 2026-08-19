@@ -32,6 +32,7 @@ use GatherPress\Core\Event\Recurrence\Rule;
 use GatherPress\Core\Event\Recurrence\Series;
 use GatherPress\Core\Event\Recurrence\Timezone_Guard;
 use GatherPress\Core\Utility;
+use WP_Post;
 
 /**
  * Per-event calendar wrapper.
@@ -257,11 +258,27 @@ final class Calendar {
 	 *
 	 * @since 0.34.0
 	 *
-	 * @return string The VEVENT block.
+	 * @return string The VEVENT block, or an empty string when the wrapped
+	 *                post is not a resolvable event.
 	 *
 	 * @throws Exception If reading event data fails.
 	 */
 	public function get_ical_event_string(): string {
+		// Nothing to serialize when the wrapped post is not a resolvable
+		// event. `Event::$event` is declared `?WP_Post` and stays null
+		// whenever the ID does not resolve to a post that supports
+		// `gatherpress-event-date` -- a deleted post, a venue, or the 0 that
+		// `get_queried_object_id()` yields on an unresolved request. Every
+		// line below reads through it, and reading `post_title` off null
+		// evaluates to null in PHP 8, which reaches `escape_ical_text()`'s
+		// `string` parameter and fatals the whole request on what is a public
+		// endpoint. `Event::get_calendar_links()` and `get_endpoint_url()`
+		// already bail on the same condition; this is the one caller that
+		// dereferenced it unguarded.
+		if ( ! $this->event->event instanceof WP_Post ) {
+			return '';
+		}
+
 		$timezone       = $this->series_timezone();
 		$occurrence     = $this->current_occurrence();
 		$modified_gmt   = strtotime( $this->event->event->post_modified_gmt );
