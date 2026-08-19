@@ -17,7 +17,6 @@ use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rest_Api;
 use GatherPress\Core\Event\Setup as Event_Setup;
-use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use WP_Post;
@@ -47,15 +46,15 @@ class Test_Rest_Api extends Base {
 	);
 
 	/**
-	 * Ensure the occurrence table exists and the route is registered before
-	 * every test, independent of execution order.
+	 * Start every test from an empty occurrence table with the route
+	 * registered, independent of execution order.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		update_option( Query::HAS_RECURRING_OPTION, '0', true );
 
 		Rest_Api::get_instance()->register_endpoints();

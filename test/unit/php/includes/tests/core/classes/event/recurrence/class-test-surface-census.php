@@ -40,10 +40,8 @@ use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Rsvp;
-use GatherPress\Core\Setup;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
-use PMC\Unit_Test\Utility;
 use WP_Post;
 use WP_Query;
 
@@ -130,7 +128,7 @@ class Test_Surface_Census extends Base {
 	public function setUp(): void {
 		parent::setUp();
 
-		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 
 		global $wp_rewrite;
 

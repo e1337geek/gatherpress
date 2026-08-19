@@ -13,7 +13,6 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rule;
-use GatherPress\Core\Setup;
 use GatherPress\Core\Utility;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility as PMC_Utility;
@@ -30,24 +29,22 @@ class Test_Meta extends Base {
 	use Occurrence_Fixtures;
 
 	/**
-	 * Ensure the occurrence table exists and holds nothing before every test,
-	 * and leave it that way afterwards.
+	 * Start every test from an occurrence table that holds nothing, and leave
+	 * it that way afterwards.
 	 *
 	 * The timezone-transition tests assert on projected rows, not only on the
-	 * derived mirrors, so the table has to exist. It also has to be empty in
-	 * both directions: `create_tables()` issues DDL, DDL implicitly commits in
-	 * MySQL, and that ends the transaction `WP_UnitTestCase` rolls back at the
-	 * end of a test. Occurrence rows therefore outlive the test that projected
-	 * them while post IDs restart from the rollback, so a later test's
-	 * brand-new post can inherit an earlier series' ID and resolve occurrences
-	 * it never had.
+	 * derived mirrors, so the table has to exist -- the bootstrap creates it --
+	 * and it has to be empty in both directions. Occurrence rows that outlive
+	 * the test that projected them, while post IDs restart from the rollback,
+	 * let a later test's brand-new post inherit an earlier series' ID and
+	 * resolve occurrences it never had.
 	 *
 	 * @return void
 	 */
 	public function setUp(): void {
 		parent::setUp();
 
-		PMC_Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+		gatherpress_reset_custom_tables();
 		$this->clear_occurrences();
 	}
 
