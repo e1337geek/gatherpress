@@ -6,7 +6,7 @@ import apiFetch from '@wordpress/api-fetch';
 import { Button, RadioControl, SelectControl } from '@wordpress/components';
 import { useSelect } from '@wordpress/data';
 import { dateI18n, getSettings } from '@wordpress/date';
-import { useEffect, useState } from '@wordpress/element';
+import { useEffect, useRef, useState } from '@wordpress/element';
 import { addQueryArgs } from '@wordpress/url';
 
 /**
@@ -57,7 +57,25 @@ const ApplyScope = ( { postId } ) => {
 		[]
 	);
 
+	const latestRequest = useRef( 0 );
+
 	useEffect( () => {
+		// Everything below is scoped to one post, and this component survives
+		// navigation from event A to event B. Clearing first means B's panel
+		// cannot offer A's occurrences, A's notice or A's "Edit the new event"
+		// link while B's request is still in flight -- a split fired from that
+		// state would submit B's post with A's occurrence.
+		latestRequest.current += 1;
+
+		const generation = latestRequest.current;
+		const isCurrent = () => generation === latestRequest.current;
+
+		setOccurrences( [] );
+		setSplitFrom( '' );
+		setNotice( '' );
+		setForwardPostId( 0 );
+		setIsSplitting( false );
+
 		if ( 'forward' !== scope || ! postId ) {
 			return;
 		}
@@ -66,6 +84,10 @@ const ApplyScope = ( { postId } ) => {
 			path: `${ EVENT_REST_API }/occurrences?post_id=${ postId }`,
 		} )
 			.then( ( rows ) => {
+				if ( ! isCurrent() ) {
+					return;
+				}
+
 				setOccurrences( rows ?? [] );
 				// The route lists upcoming occurrences only, so the first row is
 				// the series' own first date whenever the series has not started
@@ -78,7 +100,11 @@ const ApplyScope = ( { postId } ) => {
 						''
 				);
 			} )
-			.catch( () => setOccurrences( [] ) );
+			.catch( () => {
+				if ( isCurrent() ) {
+					setOccurrences( [] );
+				}
+			} );
 	}, [ scope, postId ] );
 
 	/**
@@ -125,6 +151,16 @@ const ApplyScope = ( { postId } ) => {
 	 * @return {void}
 	 */
 	const handleSplit = () => {
+		const generation = latestRequest.current;
+		const isCurrent = () => generation === latestRequest.current;
+		// The row's own owner, not the post open in the editor. A series split
+		// once already holds later occurrences on a sibling post, and the split
+		// has to cap the rule that actually produces the chosen date.
+		const owner =
+			occurrences.find(
+				( occurrence ) => occurrence.recurrence_id === splitFrom
+			)?.series_post_id ?? postId;
+
 		setIsSplitting( true );
 		setNotice( '' );
 		setForwardPostId( 0 );
@@ -132,18 +168,28 @@ const ApplyScope = ( { postId } ) => {
 		apiFetch( {
 			path: `${ EVENT_REST_API }/split-series`,
 			method: 'POST',
-			data: { post_id: postId, recurrence_id: splitFrom },
+			data: { post_id: owner, recurrence_id: splitFrom },
 		} )
 			.then( ( result ) => {
+				if ( ! isCurrent() ) {
+					return;
+				}
+
 				setNotice( describe( result ) );
 				setForwardPostId( result.forward_post_id ?? 0 );
 			} )
-			.catch( () =>
-				setNotice(
-					__( 'Could not split this series.', 'gatherpress' )
-				)
-			)
-			.finally( () => setIsSplitting( false ) );
+			.catch( () => {
+				if ( isCurrent() ) {
+					setNotice(
+						__( 'Could not split this series.', 'gatherpress' )
+					);
+				}
+			} )
+			.finally( () => {
+				if ( isCurrent() ) {
+					setIsSplitting( false );
+				}
+			} );
 	};
 
 	return (

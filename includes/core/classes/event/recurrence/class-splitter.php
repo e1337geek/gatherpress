@@ -16,9 +16,12 @@
  *   the occurrence's own local start, so moving a row changes which post owns it
  *   and nothing else. Permalinks, cancellation state and RSVP mappings survive
  *   because none of them was recreated.
- * - **RSVP terms are renamed, never re-tagged.** `wp_update_term()` leaves
- *   `term_taxonomy_id` alone, so every `term_relationships` row survives however
- *   many RSVPs an occurrence carries.
+ * - **RSVP terms are renamed, never re-tagged, and the comments follow them.**
+ *   `wp_update_term()` leaves `term_taxonomy_id` alone, so every
+ *   `term_relationships` row survives however many RSVPs an occurrence carries.
+ *   `comment_post_ID` moves in the same step, because `Rsvp\Storage` narrows on
+ *   the post *and* the occurrence term conjoined: a comment whose two owners
+ *   disagree is readable through neither.
  * - **The scope degrades automatically.** "Forward" from the first occurrence is
  *   retroactive and produces no split at all; a side left holding exactly one
  *   occurrence is a plain non-recurring event rather than a series of one.
@@ -32,7 +35,9 @@ namespace GatherPress\Core\Event\Recurrence;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use GatherPress\Core\Calendar\Revision;
 use GatherPress\Core\Event\Setup as Event_Setup;
+use GatherPress\Core\Rsvp\Cache as Rsvp_Cache;
 use GatherPress\Core\Traits\Singleton;
 use WP_Error;
 use WP_Post;
@@ -72,6 +77,58 @@ final class Splitter {
 	);
 
 	/**
+	 * Post fields the forward post inherits from the origin.
+	 *
+	 * An allowlist rather than a hand-written literal, because the omissions are
+	 * what bite. `post_password` was absent, so splitting a password-protected
+	 * published event produced a second published event with the same content
+	 * and no password at all. `comment_status` decides whether the forward half
+	 * can be RSVPd to; `post_parent` and `menu_order` are ordinary authoring
+	 * state a copy has no business dropping.
+	 *
+	 * `post_name` is deliberately absent: two posts cannot share a slug, and
+	 * letting WordPress derive the forward post's own is the only correct
+	 * answer.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	const COPIED_POST_FIELDS = array(
+		'comment_status',
+		'menu_order',
+		'ping_status',
+		'post_author',
+		'post_content',
+		'post_excerpt',
+		'post_parent',
+		'post_password',
+		'post_status',
+		'post_title',
+		'post_type',
+	);
+
+	/**
+	 * How to undo each durable phase the split in progress has completed.
+	 *
+	 * A split spans posts, postmeta, the occurrence table, comments and terms,
+	 * and no two of those share a transaction. The stack is the compensating
+	 * substitute: each phase pushes its own reversal before the next one runs,
+	 * and the first failure pops the stack.
+	 *
+	 * @since 0.36.0
+	 * @var callable[]
+	 */
+	private array $undo = array();
+
+	/**
+	 * The calendar revision each post of the series carried before the split.
+	 *
+	 * @since 0.36.0
+	 * @var array<int, mixed>
+	 */
+	private array $revisions = array();
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -82,6 +139,11 @@ final class Splitter {
 	/**
 	 * Split a series forward at one of its occurrences.
 	 *
+	 * The public entry point, and the one that still accepts a bare pair. It
+	 * resolves that pair to the authoritative occurrence identity and hands the
+	 * *identity* on, so nothing downstream re-derives an owner from the post the
+	 * caller happened to name.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Post the organizer is editing.
@@ -90,10 +152,38 @@ final class Splitter {
 	 * @return array|WP_Error The split result, or an error when the occurrence or rule is missing.
 	 */
 	public function split_forward( int $post_id, string $recurrence_id ) {
-		$row = Occurrences::get_instance()->find_in_series(
-			Series::get_instance()->resolve_post_ids( $post_id ),
-			$recurrence_id
-		);
+		$identity = Occurrence_Identity::resolve( $post_id, $recurrence_id );
+
+		if ( null === $identity ) {
+			return new WP_Error(
+				'gatherpress_occurrence_not_found',
+				__( 'No occurrence matches the given post and recurrence ID.', 'gatherpress' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		return $this->split_identity( $identity );
+	}
+
+	/**
+	 * Split a series forward at an occurrence whose identity is already resolved.
+	 *
+	 * Step 3 of resolve-authorize-use. A caller that has authorized
+	 * `$identity->owner_post_id` passes the same immutable instance in here, so
+	 * the post this mutates is provably the post that was checked -- the route
+	 * used to authorize the post the request named and then let this class
+	 * discover a different sibling to cap, move and rewrite.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param Occurrence_Identity $identity The occurrence to split at.
+	 *
+	 * @return array|WP_Error The split result, or an error when the rule or row is missing.
+	 */
+	public function split_identity( Occurrence_Identity $identity ) {
+		$row         = Occurrences::get_instance()->get( $identity->owner_post_id, $identity->recurrence_id );
+		$rule        = Rule::from_post( $identity->owner_post_id );
+		$origin_post = get_post( $identity->owner_post_id );
 
 		if ( null === $row ) {
 			return new WP_Error(
@@ -102,13 +192,6 @@ final class Splitter {
 				array( 'status' => 404 )
 			);
 		}
-
-		// The occurrence's own post, not the post the request named: a series
-		// already split once holds occurrence 5 on a sibling post, and the split
-		// has to cap the rule that actually produces it (PRD C-2).
-		$origin_post_id = (int) $row['series_post_id'];
-		$rule           = Rule::from_post( $origin_post_id );
-		$origin_post    = get_post( $origin_post_id );
 
 		if ( ! $rule instanceof Rule || ! $origin_post instanceof WP_Post ) {
 			return new WP_Error(
@@ -124,18 +207,25 @@ final class Splitter {
 	/**
 	 * Perform the split once the owning post, its rule and the split row are known.
 	 *
+	 * A split writes to five WordPress stores -- posts, postmeta, the occurrence
+	 * table, comments, and terms with their relationships -- none of which share
+	 * a transaction. This method is therefore the compensating boundary: every
+	 * durable phase registers how to undo itself before the next one runs, and
+	 * the first failure unwinds the stack in reverse and settles the origin back
+	 * to the state it described before the call.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param WP_Post $origin_post Post whose rule produces the split occurrence.
 	 * @param Rule    $rule        That post's rule.
 	 * @param array   $row         The occurrence row the split happens at.
 	 *
-	 * @return array The split result.
+	 * @return array|WP_Error The split result, or the first failure with everything rolled back.
 	 */
-	protected function split_owned_series( WP_Post $origin_post, Rule $rule, array $row ): array {
+	protected function split_owned_series( WP_Post $origin_post, Rule $rule, array $row ) {
 		$origin_post_id = (int) $origin_post->ID;
 		$rows           = Occurrences::get_instance()->select_for_series( array( $origin_post_id ) );
-		$identifiers    = wp_list_pluck( $rows, 'recurrence_id' );
+		$identifiers    = array_map( 'strval', wp_list_pluck( $rows, 'recurrence_id' ) );
 		$index          = (int) array_search( (string) $row['recurrence_id'], $identifiers, true );
 
 		// "Forward" from the first occurrence is retroactive: every occurrence
@@ -145,30 +235,612 @@ final class Splitter {
 			return $this->result( false, 'first_occurrence', $origin_post_id );
 		}
 
-		$forward_rows = array_slice( $rows, $index );
-		$forward_ids  = array_map( 'strval', array_slice( $identifiers, $index ) );
+		$this->undo      = array();
+		$this->revisions = $this->revision_snapshot( $origin_post_id );
+
+		$result = $this->run_phases(
+			$origin_post,
+			$rule,
+			$row,
+			$index,
+			$rows,
+			$identifiers
+		);
+
+		if ( is_wp_error( $result ) ) {
+			$this->roll_back( $origin_post_id );
+
+			return $result;
+		}
+
+		$this->undo = array();
+
+		return $result;
+	}
+
+	/**
+	 * Run every durable phase of a split, stopping at the first failure.
+	 *
+	 * The order is chosen so the reversible work happens before the work that
+	 * rewrites rules: a rule rewrite re-projects, and re-projecting while rows
+	 * are half-moved is what turns one failure into duplicate rows on the
+	 * composite primary key.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Post  $origin_post Post being split.
+	 * @param Rule     $rule        Its rule.
+	 * @param array    $row         The occurrence row split at.
+	 * @param int      $index       Index of that row in the origin's ordered set.
+	 * @param array[]  $rows        The origin's ordered occurrence rows.
+	 * @param string[] $identifiers Those rows' identifiers, in the same order.
+	 *
+	 * @return array|WP_Error The split result, or the first failure.
+	 */
+	protected function run_phases(
+		WP_Post $origin_post,
+		Rule $rule,
+		array $row,
+		int $index,
+		array $rows,
+		array $identifiers
+	) {
+		$origin_post_id = (int) $origin_post->ID;
+		$forward_rows   = array_slice( $rows, $index );
+		$forward_ids    = array_slice( $identifiers, $index );
+		$origin_ids     = array_slice( $identifiers, 0, $index );
 
 		$forward_post_id = $this->create_forward_post( $origin_post, $row );
 
-		$moved   = Occurrences::get_instance()->move_to_post( $origin_post_id, $forward_post_id, $forward_ids );
-		$renamed = Rsvp_Occurrence::get_instance()->rename_series( $origin_post_id, $forward_post_id, $forward_ids );
+		if ( is_wp_error( $forward_post_id ) ) {
+			return $forward_post_id;
+		}
 
-		$origin_recurring  = $this->apply_capped_rule( $origin_post_id, $rule, $index, $rows[0] );
-		$forward_recurring = $this->apply_forward_rule( $forward_post_id, $rule, $index, $forward_rows );
+		$this->record(
+			static function () use ( $forward_post_id ): void {
+				wp_delete_post( $forward_post_id, true );
+			}
+		);
 
-		Series::get_instance()->join( $origin_post_id, $forward_post_id );
-		Context::flush_resolved();
+		$failure = $this->phase( 'create_forward_post', $origin_post_id, $forward_post_id );
+
+		if ( null !== $failure ) {
+			return $failure;
+		}
+
+		$failure = $this->move_occurrences( $origin_post_id, $forward_post_id, $forward_ids );
+
+		if ( null !== $failure ) {
+			return $failure;
+		}
+
+		$migrated = $this->migrate_rsvps( $origin_post_id, $forward_post_id, $forward_ids );
+
+		if ( is_wp_error( $migrated ) ) {
+			return $migrated;
+		}
+
+		$failure = $this->join_series( $origin_post_id, $forward_post_id );
+
+		if ( null !== $failure ) {
+			return $failure;
+		}
+
+		$forward_recurring = $this->rule_phase(
+			'forward_rule',
+			$forward_post_id,
+			$forward_ids,
+			$origin_post_id,
+			fn (): bool => $this->apply_forward_rule( $forward_post_id, $rule, $index, $forward_rows )
+		);
+
+		if ( is_wp_error( $forward_recurring ) ) {
+			return $forward_recurring;
+		}
+
+		$origin_recurring = $this->rule_phase(
+			'origin_rule',
+			$origin_post_id,
+			$origin_ids,
+			$origin_post_id,
+			fn (): bool => $this->apply_capped_rule( $origin_post_id, $rule, $index, $rows[0] )
+		);
+
+		if ( is_wp_error( $origin_recurring ) ) {
+			return $origin_recurring;
+		}
+
+		$failure = $this->verify_partition(
+			$origin_post_id,
+			$forward_post_id,
+			$origin_recurring ? $origin_ids : array(),
+			$forward_recurring ? $forward_ids : array()
+		);
+
+		if ( null !== $failure ) {
+			return $failure;
+		}
+
+		$failure = $this->advance_revision( $origin_post_id );
+
+		if ( null !== $failure ) {
+			return $failure;
+		}
+
+		$this->settle_caches( $origin_post_id, $forward_post_id, $identifiers );
 
 		return array(
 			'split'              => true,
 			'reason'             => '',
 			'origin_post_id'     => $origin_post_id,
 			'forward_post_id'    => $forward_post_id,
-			'moved'              => $moved,
-			'renamed_rsvp_terms' => $renamed,
+			'moved'              => count( $forward_ids ),
+			'renamed_rsvp_terms' => $migrated['terms'],
+			'migrated_rsvps'     => count( $migrated['comments'] ),
 			'origin_recurring'   => $origin_recurring,
 			'forward_recurring'  => $forward_recurring,
 		);
+	}
+
+	/**
+	 * Move the forward occurrence rows, and insist that every one of them moved.
+	 *
+	 * A partial move is the failure that matters here: the rows that did not
+	 * move keep answering under the origin while their RSVP terms and comments
+	 * have already been told to expect the sibling.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $origin_post_id  Post the rows belong to.
+	 * @param int      $forward_post_id Post they move to.
+	 * @param string[] $forward_ids     Identifiers to move.
+	 *
+	 * @return WP_Error|null The failure, or null when every row moved.
+	 */
+	protected function move_occurrences( int $origin_post_id, int $forward_post_id, array $forward_ids ): ?WP_Error {
+		$moved = Occurrences::get_instance()->move_to_post( $origin_post_id, $forward_post_id, $forward_ids );
+
+		if ( count( $forward_ids ) !== $moved ) {
+			// Whatever did move is put back before the error is reported, so
+			// the undo stack stays a record of completed phases only.
+			Occurrences::get_instance()->move_to_post( $forward_post_id, $origin_post_id, $forward_ids );
+
+			return new WP_Error(
+				'gatherpress_split_rows_not_moved',
+				__( 'The occurrences could not be moved to the new event.', 'gatherpress' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		$this->record(
+			static function () use ( $origin_post_id, $forward_post_id, $forward_ids ): void {
+				Occurrences::get_instance()->move_to_post( $forward_post_id, $origin_post_id, $forward_ids );
+			}
+		);
+
+		return $this->phase( 'move_occurrences', $origin_post_id, $forward_post_id );
+	}
+
+	/**
+	 * Move the RSVP terms and the RSVP comments that ride on them.
+	 *
+	 * Both owners move together because production reads conjoin them: an RSVP
+	 * whose `comment_post_ID` and occurrence term name different posts is
+	 * invisible from either post through `Rsvp::responses()`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $origin_post_id  Post the RSVPs belong to.
+	 * @param int      $forward_post_id Post they move to.
+	 * @param string[] $forward_ids     Identifiers whose RSVPs move.
+	 *
+	 * @return array{terms: int, comments: int[]}|WP_Error What moved, or the failure.
+	 */
+	protected function migrate_rsvps( int $origin_post_id, int $forward_post_id, array $forward_ids ) {
+		$migrated = Rsvp_Occurrence::get_instance()->migrate_owner(
+			$origin_post_id,
+			$forward_post_id,
+			$forward_ids
+		);
+
+		if ( is_wp_error( $migrated ) ) {
+			return $migrated;
+		}
+
+		$this->record(
+			static function () use ( $origin_post_id, $forward_post_id, $forward_ids ): void {
+				Rsvp_Occurrence::get_instance()->migrate_owner(
+					$forward_post_id,
+					$origin_post_id,
+					$forward_ids
+				);
+			}
+		);
+
+		$failure = $this->phase( 'migrate_rsvps', $origin_post_id, $forward_post_id );
+
+		return null === $failure ? $migrated : $failure;
+	}
+
+	/**
+	 * Record that the two posts are one series, and refuse a split that cannot.
+	 *
+	 * `Series::join()` answers 0 when the term could neither be created nor
+	 * recovered. Ignoring that answer produced two posts that resolve as two
+	 * unrelated series: an old permalink through the origin can no longer find
+	 * the rows that moved, and nothing anywhere reports a failure.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $origin_post_id  Post the series already existed on.
+	 * @param int $forward_post_id Post the split created.
+	 *
+	 * @return WP_Error|null The failure, or null when both posts share a term.
+	 */
+	protected function join_series( int $origin_post_id, int $forward_post_id ): ?WP_Error {
+		// Registration first, because the read below has to be able to tell an
+		// origin that already belongs to a series from one that does not, and
+		// on a site whose first split this is the taxonomy does not exist yet.
+		Series::register_taxonomy_for( (string) get_post_type( $origin_post_id ) );
+
+		$existing = Series::get_instance()->term_id_for_post( $origin_post_id );
+		$term_id  = Series::get_instance()->join( $origin_post_id, $forward_post_id );
+
+		if ( 0 === $term_id ) {
+			return new WP_Error(
+				'gatherpress_split_series_not_joined',
+				__( 'The split events could not be recorded as one series.', 'gatherpress' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		$this->record(
+			static function () use ( $existing, $origin_post_id, $forward_post_id, $term_id ): void {
+				wp_remove_object_terms( $forward_post_id, array( $term_id ), Series::TAXONOMY );
+
+				// A term this split created is removed with it; a term the
+				// series already carried is left exactly as it was found.
+				if ( 0 === $existing ) {
+					wp_remove_object_terms( $origin_post_id, array( $term_id ), Series::TAXONOMY );
+					wp_delete_term( $term_id, Series::TAXONOMY );
+				}
+
+				Series::get_instance()->flush_memo();
+			}
+		);
+
+		return $this->phase( 'join_series', $origin_post_id, $forward_post_id );
+	}
+
+	/**
+	 * Rewrite one side's rule, having first captured everything the rewrite can destroy.
+	 *
+	 * A rule rewrite can demote its post to a plain event, which removes the
+	 * rule, deletes the post's occurrence rows and deletes the occurrence terms
+	 * whose `term_relationships` rows carry its RSVPs. The snapshot is what
+	 * makes that reversible: rows come back from re-projecting the restored
+	 * rule, and the RSVP relationships come back from the membership map.
+	 *
+	 * The undo deliberately restores stored values without re-projecting.
+	 * Projection is deferred to `roll_back()`, because projecting while the
+	 * rows are still half-moved would upsert a second copy of every moved
+	 * occurrence under the origin.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string   $phase          Phase name, for the failure-injection seam.
+	 * @param int      $post_id        Post whose rule is being written.
+	 * @param string[] $recurrence_ids Identifiers that post is meant to keep.
+	 * @param int      $origin_post_id Origin post, reported to the phase seam.
+	 * @param callable $write          Writes the rule and reports whether the post stays recurring.
+	 *
+	 * @return bool|WP_Error Whether the post remains recurring, or the failure.
+	 */
+	protected function rule_phase(
+		string $phase,
+		int $post_id,
+		array $recurrence_ids,
+		int $origin_post_id,
+		callable $write
+	) {
+		$snapshot = $this->snapshot( $post_id, $recurrence_ids );
+
+		$this->record(
+			function () use ( $post_id, $snapshot ): void {
+				$this->restore( $post_id, $snapshot );
+			}
+		);
+
+		$recurring = (bool) $write();
+		$failure   = $this->phase( $phase, $origin_post_id, $post_id );
+
+		return null === $failure ? $recurring : $failure;
+	}
+
+	/**
+	 * Capture everything a rule rewrite can destroy on one post.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $post_id        Post to capture.
+	 * @param string[] $recurrence_ids Identifiers whose RSVP memberships to capture.
+	 *
+	 * @return array The snapshot.
+	 */
+	protected function snapshot( int $post_id, array $recurrence_ids ): array {
+		return array(
+			'has_rule'    => metadata_exists( 'post', $post_id, Meta::META_KEY ),
+			'rule'        => get_post_meta( $post_id, Meta::META_KEY, true ),
+			'datetime'    => get_post_meta( $post_id, 'gatherpress_datetime', true ),
+			'memberships' => Rsvp_Occurrence::get_instance()->memberships( $post_id, $recurrence_ids ),
+		);
+	}
+
+	/**
+	 * Put back what a rule rewrite changed, without re-deriving anything.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int   $post_id  Post to restore.
+	 * @param array $snapshot The snapshot taken before the rewrite.
+	 *
+	 * @return void
+	 */
+	protected function restore( int $post_id, array $snapshot ): void {
+		if ( $snapshot['has_rule'] ) {
+			update_post_meta( $post_id, Meta::META_KEY, $snapshot['rule'] );
+		} else {
+			delete_post_meta( $post_id, Meta::META_KEY );
+		}
+
+		update_post_meta( $post_id, 'gatherpress_datetime', $snapshot['datetime'] );
+
+		Rsvp_Occurrence::get_instance()->restore_memberships( $post_id, $snapshot['memberships'] );
+	}
+
+	/**
+	 * Check that the two posts partition the series rather than losing or sharing it.
+	 *
+	 * The one check that catches a rule rewrite which reported success and
+	 * projected something else. Three properties, and the asymmetry between the
+	 * first two is real rather than sloppy:
+	 *
+	 * - The origin owns **exactly** what stayed behind. It is capped by `COUNT`
+	 *   at that many rows, so re-projection cannot produce a different set.
+	 * - The forward post owns **at least** what moved. Its horizon is measured
+	 *   from its own, later anchor, so an open-ended rule legitimately projects
+	 *   dates past where the origin had reached.
+	 * - Neither owns anything the other does. A shared identifier is the
+	 *   duplicate the composite primary key cannot catch, because the key is
+	 *   per-post.
+	 *
+	 * A demoted side is expected to own no rows at all, which is what demotion
+	 * means.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $origin_post_id  Origin post.
+	 * @param int      $forward_post_id Forward post.
+	 * @param string[] $origin_ids      Identifiers the origin should own.
+	 * @param string[] $forward_ids     Identifiers the forward post must own.
+	 *
+	 * @return WP_Error|null The failure, or null when the partition holds.
+	 */
+	protected function verify_partition(
+		int $origin_post_id,
+		int $forward_post_id,
+		array $origin_ids,
+		array $forward_ids
+	): ?WP_Error {
+		$owned = static function ( int $post_id ): array {
+			return array_map(
+				'strval',
+				wp_list_pluck(
+					Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+					'recurrence_id'
+				)
+			);
+		};
+
+		$origin_owned  = $owned( $origin_post_id );
+		$forward_owned = $owned( $forward_post_id );
+
+		if (
+			$origin_owned !== $origin_ids
+			|| array() !== array_diff( $forward_ids, $forward_owned )
+			|| array() !== array_intersect( $origin_owned, $forward_owned )
+		) {
+			return new WP_Error(
+				'gatherpress_split_partition_mismatch',
+				__( 'The split did not leave the occurrences where it said it would.', 'gatherpress' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		return $this->phase( 'verify_partition', $origin_post_id, $forward_post_id );
+	}
+
+	/**
+	 * Advance the logical series' calendar revision, and be able to put it back.
+	 *
+	 * Capping the origin's `RRULE` changes published calendar content without
+	 * touching an occurrence row, so nothing else advances the revision for it:
+	 * `Occurrences::move_to_post()` announces its own change, but the rule cap
+	 * is a bare `postmeta` write. Without this the origin's already-published
+	 * `UID` acquires a shorter rule while reporting the same `SEQUENCE`, and a
+	 * subscriber keeps the dates the split just moved away.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $origin_post_id Any post of the series.
+	 *
+	 * @return WP_Error|null The failure, or null.
+	 */
+	protected function advance_revision( int $origin_post_id ): ?WP_Error {
+		Revision::get_instance()->advance( $origin_post_id );
+
+		return $this->phase( 'advance_revision', $origin_post_id, $origin_post_id );
+	}
+
+	/**
+	 * Capture the calendar revision every post of the series is carrying.
+	 *
+	 * Restored last of all by `roll_back()` rather than by an undo entry of its
+	 * own, because the settle step re-projects and re-projecting announces an
+	 * occurrence change, which advances the revision again. A rollback has to
+	 * put the value back after everything that could move it has run.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $origin_post_id Any post of the series.
+	 *
+	 * @return array<int, mixed> The stored revision of each sibling, keyed by post ID.
+	 */
+	protected function revision_snapshot( int $origin_post_id ): array {
+		$revisions = array();
+
+		foreach ( Series::get_instance()->resolve_post_ids( $origin_post_id ) as $sibling_id ) {
+			$revisions[ (int) $sibling_id ] = metadata_exists( 'post', (int) $sibling_id, Revision::META_KEY )
+				? get_post_meta( (int) $sibling_id, Revision::META_KEY, true )
+				: null;
+		}
+
+		return $revisions;
+	}
+
+	/**
+	 * Drop every cache whose identity the split just changed.
+	 *
+	 * The resolved-context memo maps an occurrence to the post that owned it,
+	 * and the RSVP transients are keyed on `(owner post, recurrence id)` -- both
+	 * of which are exactly what moved. `Rsvp\Cache::delete()` drops the series
+	 * key and the occurrence key for each identity it is given.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $origin_post_id  Origin post.
+	 * @param int      $forward_post_id Forward post.
+	 * @param string[] $identifiers     Every identifier the series had.
+	 *
+	 * @return void
+	 */
+	protected function settle_caches( int $origin_post_id, int $forward_post_id, array $identifiers ): void {
+		Context::flush_resolved();
+		Series::get_instance()->flush_memo();
+
+		foreach ( $identifiers as $recurrence_id ) {
+			Rsvp_Cache::delete( $origin_post_id, (string) $recurrence_id );
+			Rsvp_Cache::delete( $forward_post_id, (string) $recurrence_id );
+		}
+
+		Rsvp_Cache::delete( $origin_post_id );
+		Rsvp_Cache::delete( $forward_post_id );
+	}
+
+	/**
+	 * Register how to undo the phase that just completed.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param callable $undo Reverses that phase.
+	 *
+	 * @return void
+	 */
+	protected function record( callable $undo ): void {
+		$this->undo[] = $undo;
+	}
+
+	/**
+	 * Unwind every completed phase, then re-derive the origin.
+	 *
+	 * The stack unwinds in reverse so each phase sees the state it produced.
+	 * Projection is deliberately left until afterwards: the individual undos
+	 * restore stored values only, and re-deriving before the rows are back
+	 * under the origin would upsert a duplicate of every moved occurrence.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $origin_post_id Post to re-derive once the stack is empty.
+	 *
+	 * @return void
+	 */
+	protected function roll_back( int $origin_post_id ): void {
+		// A failure before the first durable phase completed has nothing to
+		// undo, and re-deriving anyway would advance the calendar revision for a
+		// split that never touched the series.
+		if ( array() === $this->undo ) {
+			return;
+		}
+
+		while ( array() !== $this->undo ) {
+			$undo = array_pop( $this->undo );
+
+			$undo();
+		}
+
+		Meta::get_instance()->set_recurrence( $origin_post_id );
+		Event_Setup::get_instance()->set_datetimes( $origin_post_id );
+		Occurrences::get_instance()->project( $origin_post_id );
+
+		foreach ( $this->revisions as $sibling_id => $value ) {
+			if ( null === $value ) {
+				delete_post_meta( (int) $sibling_id, Revision::META_KEY );
+
+				continue;
+			}
+
+			update_post_meta( (int) $sibling_id, Revision::META_KEY, $value );
+		}
+
+		Context::flush_resolved();
+		Series::get_instance()->flush_memo();
+		Rsvp_Cache::delete( $origin_post_id );
+	}
+
+	/**
+	 * Give a durable phase somewhere to fail from.
+	 *
+	 * Partial-failure behavior is not otherwise reachable from a test: every
+	 * store involved succeeds under ordinary conditions, and simulating a
+	 * broken one with DDL would commit the surrounding transaction and leak
+	 * fixtures into the rest of the run. The filter is a production extension
+	 * point as well -- an integration that must veto a split part-way through
+	 * gets a full rollback rather than a half-migrated series.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $phase           Name of the phase that just completed.
+	 * @param int    $origin_post_id  Post being split.
+	 * @param int    $forward_post_id Post the split created, when it exists yet.
+	 *
+	 * @return WP_Error|null The failure a listener reported, or null.
+	 */
+	protected function phase( string $phase, int $origin_post_id, int $forward_post_id ): ?WP_Error {
+		/**
+		 * Filters the outcome of one durable phase of a forward split.
+		 *
+		 * Returning a `WP_Error` aborts the split and rolls every completed
+		 * phase back, leaving posts, occurrence rows, RSVP comments, terms,
+		 * meta and caches as they were before the split began.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param WP_Error|null $outcome         Null to continue, a WP_Error to abort and roll back.
+		 * @param string        $phase           Name of the phase that just completed.
+		 * @param int           $origin_post_id  Post being split.
+		 * @param int           $forward_post_id Post the split created, or 0 before it exists.
+		 *
+		 * @return WP_Error|null The outcome.
+		 */
+		$outcome = apply_filters(
+			'gatherpress_split_phase_complete',
+			null,
+			$phase,
+			$origin_post_id,
+			$forward_post_id
+		);
+
+		return is_wp_error( $outcome ) ? $outcome : null;
 	}
 
 	/**
@@ -190,6 +862,7 @@ final class Splitter {
 			'forward_post_id'    => 0,
 			'moved'              => 0,
 			'renamed_rsvp_terms' => 0,
+			'migrated_rsvps'     => 0,
 			'origin_recurring'   => true,
 			'forward_recurring'  => false,
 		);
@@ -201,31 +874,46 @@ final class Splitter {
 	 * Inserted **without** a recurrence blob deliberately. `Occurrences` projects
 	 * on `wp_after_insert_post`, and a forward post that arrived already
 	 * recurring would have its own rows generated before the origin's rows could
-	 * be moved onto it — the moved rows would then collide with freshly generated
+	 * be moved onto it. The moved rows would then collide with freshly generated
 	 * ones on the composite primary key, and the recycling REQ-13 requires would
 	 * turn into a delete-and-regenerate after all. The rule is written afterwards,
 	 * once the rows are already there for the upsert to find.
+	 *
+	 * Nothing durable happens before the insert has answered with a real post
+	 * ID, so an insertion failure leaves every post, row, comment, term, meta
+	 * value and cache exactly as it found them.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param WP_Post $origin_post Post being split.
 	 * @param array   $row         Occurrence row the forward post is anchored at.
 	 *
-	 * @return int The new post ID.
+	 * @return int|WP_Error The new post ID, or the insertion failure.
 	 */
-	protected function create_forward_post( WP_Post $origin_post, array $row ): int {
-		$forward_post_id = (int) wp_insert_post(
-			array(
-				'post_author'  => (int) $origin_post->post_author,
-				'post_content' => $origin_post->post_content,
-				'post_excerpt' => $origin_post->post_excerpt,
-				'post_status'  => $origin_post->post_status,
-				'post_title'   => $origin_post->post_title,
-				'post_type'    => $origin_post->post_type,
-				'meta_input'   => $this->forward_meta_input( (int) $origin_post->ID, $row ),
-			)
+	protected function create_forward_post( WP_Post $origin_post, array $row ) {
+		$data = array(
+			'meta_input' => array( 'gatherpress_datetime' => $this->datetime_blob( $row ) ),
 		);
 
+		foreach ( self::COPIED_POST_FIELDS as $field ) {
+			$data[ $field ] = $origin_post->{$field};
+		}
+
+		// `true` is the whole point: in its default mode `wp_insert_post()`
+		// answers 0 for a rejected insert, an empty-content veto included, and
+		// the previous `(int)` cast of that answer let the split move four
+		// occurrence rows onto post 0 and report success. In error mode every
+		// one of those refusals is a `WP_Error` instead, so there is no zero
+		// left to mistake for an ID.
+		$inserted = wp_insert_post( $data, true );
+
+		if ( is_wp_error( $inserted ) ) {
+			return $inserted;
+		}
+
+		$forward_post_id = (int) $inserted;
+
+		$this->copy_meta( (int) $origin_post->ID, $forward_post_id );
 		$this->copy_terms( (int) $origin_post->ID, $forward_post_id, (string) $origin_post->post_type );
 
 		// The datetime blob arrived through `meta_input`, which lands before
@@ -236,42 +924,55 @@ final class Splitter {
 	}
 
 	/**
-	 * Build the forward post's `meta_input`, carrying the origin's meta forward.
-	 *
-	 * Everything the origin carries comes across — venue overrides, online-event
-	 * links, attendance limits, anything a companion plugin stored — except the
-	 * keys this class rewrites and the per-session edit lock.
+	 * Serialize one occurrence row as the event datetime blob.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param int   $origin_post_id Post being split.
-	 * @param array $row            Occurrence row the forward post is anchored at.
+	 * @param array $row Occurrence row.
 	 *
-	 * @return array<string, mixed> Meta to insert with the forward post.
+	 * @return string The JSON blob.
 	 */
-	protected function forward_meta_input( int $origin_post_id, array $row ): array {
-		$meta   = array();
-		$stored = get_post_meta( $origin_post_id );
-
-		foreach ( (array) $stored as $meta_key => $values ) {
-			if ( in_array( $meta_key, self::UNCOPIED_META_KEYS, true )
-				|| in_array( $meta_key, Meta::DERIVED_META_KEYS, true )
-			) {
-				continue;
-			}
-
-			$meta[ $meta_key ] = maybe_unserialize( $values[0] );
-		}
-
-		$meta['gatherpress_datetime'] = wp_json_encode(
+	protected function datetime_blob( array $row ): string {
+		return (string) wp_json_encode(
 			array(
 				'dateTimeStart' => (string) $row['datetime_start'],
 				'dateTimeEnd'   => (string) $row['datetime_end'],
 				'timezone'      => (string) $row['timezone'],
 			)
 		);
+	}
 
-		return $meta;
+	/**
+	 * Copy the origin's post meta onto the forward post, cardinality intact.
+	 *
+	 * Everything the origin carries comes across: venue overrides, online-event
+	 * links, attendance limits, anything a companion plugin stored. Only the
+	 * keys this class rewrites and the per-session edit lock are excluded.
+	 *
+	 * `add_post_meta()` per stored value rather than one `meta_input` entry per
+	 * key. `meta_input` takes a single value, so a key an extension had stored
+	 * twice arrived on the forward post once and the second value was gone with
+	 * no error anywhere.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $origin_post_id  Post being split.
+	 * @param int $forward_post_id Post the split created.
+	 *
+	 * @return void
+	 */
+	protected function copy_meta( int $origin_post_id, int $forward_post_id ): void {
+		foreach ( (array) get_post_meta( $origin_post_id ) as $meta_key => $values ) {
+			if ( in_array( $meta_key, self::UNCOPIED_META_KEYS, true )
+				|| in_array( $meta_key, Meta::DERIVED_META_KEYS, true )
+			) {
+				continue;
+			}
+
+			foreach ( (array) $values as $value ) {
+				add_post_meta( $forward_post_id, (string) $meta_key, maybe_unserialize( $value ) );
+			}
+		}
 	}
 
 	/**
@@ -440,17 +1141,7 @@ final class Splitter {
 		Occurrences::get_instance()->delete_for_post( $post_id );
 		Rsvp_Occurrence::get_instance()->detach_series( $post_id, array( (string) $row['recurrence_id'] ) );
 
-		update_post_meta(
-			$post_id,
-			'gatherpress_datetime',
-			wp_json_encode(
-				array(
-					'dateTimeStart' => (string) $row['datetime_start'],
-					'dateTimeEnd'   => (string) $row['datetime_end'],
-					'timezone'      => (string) $row['timezone'],
-				)
-			)
-		);
+		update_post_meta( $post_id, 'gatherpress_datetime', $this->datetime_blob( $row ) );
 
 		Event_Setup::get_instance()->set_datetimes( $post_id );
 

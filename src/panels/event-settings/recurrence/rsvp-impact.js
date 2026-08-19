@@ -3,7 +3,7 @@
  */
 import { _n, sprintf } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
-import { useEffect, useState } from '@wordpress/element';
+import { useEffect, useRef, useState } from '@wordpress/element';
 
 /**
  * Internal dependencies
@@ -36,8 +36,19 @@ import { EVENT_REST_API } from '../../../helpers/namespace';
 const RsvpImpact = ( { postId, rule } ) => {
 	const [ stranded, setStranded ] = useState( 0 );
 	const serialized = JSON.stringify( rule );
+	const latestRequest = useRef( 0 );
 
 	useEffect( () => {
+		// A monotonic token, not a boolean. Editing a rule issues one request
+		// per change and nothing cancels the previous one, so a slow answer for
+		// an abandoned rule could land after a fast answer for the rule on
+		// screen and overwrite the warning with the old rule's count. Only the
+		// most recently issued request may write state.
+		latestRequest.current += 1;
+
+		const generation = latestRequest.current;
+		const isCurrent = () => generation === latestRequest.current;
+
 		if ( ! postId ) {
 			setStranded( 0 );
 
@@ -49,8 +60,16 @@ const RsvpImpact = ( { postId, rule } ) => {
 				`${ EVENT_REST_API }/recurrence-impact?post_id=${ postId }` +
 				`&recurrence=${ encodeURIComponent( serialized ) }`,
 		} )
-			.then( ( impact ) => setStranded( impact?.rsvp_count ?? 0 ) )
-			.catch( () => setStranded( 0 ) );
+			.then( ( impact ) => {
+				if ( isCurrent() ) {
+					setStranded( impact?.rsvp_count ?? 0 );
+				}
+			} )
+			.catch( () => {
+				if ( isCurrent() ) {
+					setStranded( 0 );
+				}
+			} );
 	}, [ postId, serialized ] );
 
 	if ( 0 === stranded ) {

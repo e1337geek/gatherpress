@@ -253,7 +253,7 @@ class Test_Splitter extends Base {
 	 * @covers ::apply_capped_rule
 	 * @covers ::apply_forward_rule
 	 * @covers ::create_forward_post
-	 * @covers ::forward_meta_input
+	 * @covers ::copy_meta
 	 * @covers ::copy_terms
 	 * @covers ::write_rule
 	 *
@@ -709,18 +709,29 @@ class Test_Splitter extends Base {
 	 * An occurrence whose post no longer carries a rule cannot be split forward.
 	 *
 	 * The fixture keeps the occurrence rows and removes only the rule, so
-	 * `find_in_series()` succeeds and the refusal has to come from the rule
-	 * guard. Deleting the rows instead would take the 404 path and leave this
-	 * branch unexercised while the test still went green.
+	 * resolution succeeds and the refusal has to come from the rule guard.
+	 * Deleting the rows instead would take the 404 path and leave this branch
+	 * unexercised while the test still went green.
+	 *
+	 * A second recurring series is created first, and it is load-bearing rather
+	 * than scenery: removing the only rule on the site flips the
+	 * has-recurring-events flag, and every occurrence lookup short-circuits on
+	 * that flag (REQ-16). Without a second series the refusal would come from
+	 * the flag, not from the guard this test is about.
 	 *
 	 * @covers ::split_forward
+	 * @covers ::split_identity
 	 *
 	 * @return void
 	 */
 	public function test_an_event_without_a_rule_is_refused(): void {
 		$origin_id = $this->create_and_project();
 
+		$this->create_and_project();
+
 		Meta::get_instance()->remove_recurrence( $origin_id );
+		Recurrence_Query::refresh_has_recurring_events();
+		Context::flush_resolved();
 
 		$this->assertSame(
 			self::FULL_SET,
@@ -804,7 +815,7 @@ class Test_Splitter extends Base {
 	 * ones that moved to a second post.
 	 *
 	 * @covers ::copy_terms
-	 * @covers ::forward_meta_input
+	 * @covers ::copy_meta
 	 *
 	 * @return void
 	 */

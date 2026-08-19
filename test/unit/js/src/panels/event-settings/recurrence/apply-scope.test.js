@@ -1,7 +1,13 @@
 /**
  * External dependencies
  */
-import { render, fireEvent, screen, waitFor } from '@testing-library/react';
+import {
+	act,
+	render,
+	fireEvent,
+	screen,
+	waitFor,
+} from '@testing-library/react';
 import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 import '@testing-library/jest-dom';
 
@@ -507,6 +513,286 @@ describe( 'ApplyScope', () => {
 		);
 		expect(
 			screen.queryByText( 'Edit the new event' ),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'clears every post-scoped piece of state when the post changes', async () => {
+		// The panel survives navigation from event A to event B. Until B's list
+		// arrives, A's occurrences, A's split notice and A's "Edit the new
+		// event" link would otherwise stay on screen and stay actionable, and
+		// the enabled button would submit B's post with A's occurrence.
+		mockApiFetch.mockResolvedValueOnce( rows );
+
+		const { rerender } = render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( {
+			split: true,
+			moved: 1,
+			forward_post_id: 77,
+			forward_recurring: true,
+		} );
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Edit the new event' ) ).toBeInTheDocument(),
+		);
+
+		let resolveNext;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve ) => {
+				resolveNext = resolve;
+			} ),
+		);
+
+		rerender( <ApplyScope postId={ 99 } /> );
+
+		expect( screen.queryByText( 'Edit the new event' ) ).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				'1 occurrence moved to a new event. Make your change there.',
+			),
+		).not.toBeInTheDocument();
+		expect( screen.getByLabelText( 'Split from' ).children ).toHaveLength( 0 );
+		expect( screen.getByText( 'Split series' ) ).toBeDisabled();
+
+		await act( async () => {
+			resolveNext( [] );
+		} );
+	} );
+
+	test( 'ignores an occurrence list that arrives for a post it has left', async () => {
+		let resolveStale;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve ) => {
+				resolveStale = resolve;
+			} ),
+		);
+
+		const { rerender } = render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		rerender( <ApplyScope postId={ 99 } /> );
+
+		await act( async () => {
+			resolveStale( rows );
+		} );
+
+		expect( screen.getByLabelText( 'Split from' ).children ).toHaveLength( 0 );
+	} );
+
+	test( 'ignores a stale occurrence rejection for a post it has left', async () => {
+		let rejectStale;
+
+		const stale = new Promise( ( resolve, reject ) => {
+			rejectStale = reject;
+		} );
+
+		mockApiFetch.mockReturnValueOnce( stale );
+
+		const { rerender } = render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		mockApiFetch.mockResolvedValueOnce( rows );
+
+		rerender( <ApplyScope postId={ 99 } /> );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+
+		await act( async () => {
+			rejectStale( new Error( 'nope' ) );
+			await stale.catch( () => {} );
+		} );
+
+		expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+			'20260917T180000',
+		);
+	} );
+
+	test( 'ignores a split result that arrives for a post it has left', async () => {
+		mockApiFetch.mockResolvedValueOnce( rows );
+
+		const { rerender } = render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+
+		let resolveSplit;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve ) => {
+				resolveSplit = resolve;
+			} ),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		rerender( <ApplyScope postId={ 99 } /> );
+
+		await act( async () => {
+			resolveSplit( {
+				split: true,
+				moved: 4,
+				forward_post_id: 77,
+				forward_recurring: true,
+			} );
+		} );
+
+		expect( screen.queryByText( 'Edit the new event' ) ).not.toBeInTheDocument();
+	} );
+
+	test( 'submits the post that owns the chosen occurrence, not the post being edited', async () => {
+		// A series already split once holds later occurrences on a sibling post.
+		// Submitting the post open in the editor would ask the route to split a
+		// post that does not own the chosen date.
+		mockApiFetch.mockResolvedValueOnce( [
+			occurrence( '20260903T180000', '2026-09-03 18:00:00' ),
+			{
+				...occurrence( '20260917T180000', '2026-09-17 18:00:00' ),
+				series_post_id: 815,
+			},
+		] );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( {
+			split: true,
+			moved: 1,
+			forward_post_id: 77,
+			forward_recurring: true,
+		} );
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledWith( {
+				path: '/gatherpress/v1/event/split-series',
+				method: 'POST',
+				data: { post_id: 815, recurrence_id: '20260917T180000' },
+			} ),
+		);
+	} );
+
+	test( 'falls back to the post being edited when the row names no owner', async () => {
+		// A row from an older response, or from a filter that widened the series
+		// without stamping an owner. The post open in the editor is the only
+		// other answer available, and the route resolves the real owner anyway.
+		mockApiFetch.mockResolvedValueOnce( [
+			{
+				recurrence_id: '20260903T180000',
+				datetime_start: '2026-09-03 18:00:00',
+				status: 'scheduled',
+			},
+		] );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260903T180000',
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( {
+			split: false,
+			moved: 0,
+			forward_post_id: 0,
+		} );
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledWith( {
+				path: '/gatherpress/v1/event/split-series',
+				method: 'POST',
+				data: { post_id: 42, recurrence_id: '20260903T180000' },
+			} ),
+		);
+	} );
+
+	test( 'ignores a failed split that lands after the post has changed', async () => {
+		mockApiFetch.mockResolvedValueOnce( rows );
+
+		const { rerender } = render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+
+		let rejectSplit;
+
+		const pending = new Promise( ( resolve, reject ) => {
+			rejectSplit = reject;
+		} );
+
+		mockApiFetch.mockReturnValueOnce( pending );
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		rerender( <ApplyScope postId={ 99 } /> );
+
+		await act( async () => {
+			rejectSplit( new Error( 'nope' ) );
+			await pending.catch( () => {} );
+		} );
+
+		expect(
+			screen.queryByText( 'Could not split this series.' ),
 		).not.toBeInTheDocument();
 	} );
 } );

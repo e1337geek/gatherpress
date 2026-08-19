@@ -261,11 +261,12 @@ final class Series {
 	public function term_id_for_post( int $post_id ): int {
 		$terms = get_the_terms( $post_id, self::TAXONOMY );
 
-		// One test, not two: `get_the_terms()` answers `false` for a post with no
-		// terms and a `WP_Error` for an unregistered taxonomy, and neither of
-		// those has an offset 0 -- so a single `isset()` covers every shape
-		// without leaving an arm no fixture can reach.
-		return isset( $terms[0] ) ? (int) $terms[0]->term_id : 0;
+		// `get_the_terms()` answers `false` for a post with no terms and a
+		// `WP_Error` for an unregistered taxonomy. The array test has to come
+		// first: `isset()` on an offset of an object that is not `ArrayAccess`
+		// is a fatal `Error` in PHP 8, not a falsy read, so testing the offset
+		// alone crashed on the error shape rather than absorbing it.
+		return is_array( $terms ) && isset( $terms[0] ) ? (int) $terms[0]->term_id : 0;
 	}
 
 	/**

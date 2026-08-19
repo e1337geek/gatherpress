@@ -1,7 +1,7 @@
 /**
  * External dependencies
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 import '@testing-library/jest-dom';
 
@@ -150,5 +150,85 @@ describe( 'RsvpImpact', () => {
 
 		await waitFor( () => expect( mockApiFetch ).toHaveBeenCalled() );
 		expect( container ).toBeEmptyDOMElement();
+	} );
+
+	test( 'ignores a stale answer that lands after the rule on screen was answered', async () => {
+		// Rule A is slow and reports nothing stranded; rule B is fast and
+		// reports four. Accepting A's completion afterwards would hide the
+		// warning for the rule the organizer is actually looking at, moments
+		// before they commit a destructive change.
+		let resolveSlow;
+
+		const slow = new Promise( ( resolve ) => {
+			resolveSlow = resolve;
+		} );
+
+		mockApiFetch.mockReturnValueOnce( slow );
+		mockApiFetch.mockResolvedValueOnce( { removed: [ 'x' ], rsvp_count: 4 } );
+
+		const { rerender } = render(
+			<RsvpImpact postId={ 42 } rule={ RULE } />,
+		);
+
+		rerender(
+			<RsvpImpact postId={ 42 } rule={ { ...RULE, count: 2 } } />,
+		);
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'4 RSVPs are on dates this change removes. They stay where they are and are not moved to other dates.',
+				),
+			).toBeInTheDocument(),
+		);
+
+		await act( async () => {
+			resolveSlow( { removed: [], rsvp_count: 0 } );
+			await slow;
+		} );
+
+		expect(
+			screen.getByText(
+				'4 RSVPs are on dates this change removes. They stay where they are and are not moved to other dates.',
+			),
+		).toBeInTheDocument();
+	} );
+
+	test( 'ignores a stale rejection that lands after the rule on screen was answered', async () => {
+		let rejectSlow;
+
+		const slow = new Promise( ( resolve, reject ) => {
+			rejectSlow = reject;
+		} );
+
+		mockApiFetch.mockReturnValueOnce( slow );
+		mockApiFetch.mockResolvedValueOnce( { removed: [ 'x' ], rsvp_count: 2 } );
+
+		const { rerender } = render(
+			<RsvpImpact postId={ 42 } rule={ RULE } />,
+		);
+
+		rerender(
+			<RsvpImpact postId={ 42 } rule={ { ...RULE, count: 3 } } />,
+		);
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'2 RSVPs are on dates this change removes. They stay where they are and are not moved to other dates.',
+				),
+			).toBeInTheDocument(),
+		);
+
+		await act( async () => {
+			rejectSlow( new Error( 'network' ) );
+			await slow.catch( () => {} );
+		} );
+
+		expect(
+			screen.getByText(
+				'2 RSVPs are on dates this change removes. They stay where they are and are not moved to other dates.',
+			),
+		).toBeInTheDocument();
 	} );
 } );
