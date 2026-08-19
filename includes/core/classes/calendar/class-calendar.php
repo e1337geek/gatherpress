@@ -396,17 +396,17 @@ final class Calendar {
 	/**
 	 * The recurrence properties for this component, if it has any.
 	 *
-	 * Two shapes, per REQ-14. A component describing one named occurrence
+	 * Two shapes. A component describing one named occurrence
 	 * carries a `RECURRENCE-ID` referring back to the series and no rule of its
 	 * own. A component describing the series carries the rule and the
-	 * exclusions **derived** from its cancelled occurrence rows -- the stored
-	 * rule is never mutated to express a cancellation (PRD C-5).
+	 * exclusions **derived** from its canceled occurrence rows -- the stored
+	 * rule is never mutated to express a cancellation.
 	 *
 	 * Neither shape is emitted without a named timezone: an `RRULE` cannot be
 	 * correctly attached to a UTC-anchored start for anything but a
 	 * fixed-offset series, and a `RECURRENCE-ID` must match `DTSTART`'s value
-	 * type. REQ-3 keeps every recurring event on a named timezone, so this arm
-	 * is a guard rather than an authored case.
+	 * type. Every recurring event is kept on a named timezone, so this arm is
+	 * a guard rather than an authored case.
 	 *
 	 * @since 0.36.0
 	 *
@@ -428,7 +428,7 @@ final class Calendar {
 			);
 		}
 
-		// REQ-16 first: a site with no recurring events reads neither the rule
+		// A site with no recurring events reads neither the rule
 		// mirrors nor the occurrence table on any calendar request, so the flag
 		// short-circuits the lookup rather than filtering its result. An event
 		// with no rule of its own then contributes nothing either, however many
@@ -461,17 +461,16 @@ final class Calendar {
 	}
 
 	/**
-	 * The `EXDATE` property derived from this series' cancelled occurrences.
+	 * The `EXDATE` property derived from this series' canceled occurrences.
 	 *
-	 * Read through `Series::resolve_post_ids()` (PRD C-2), so a series a
-	 * forward split has spread across several posts still excludes every date
-	 * it cancelled.
+	 * Read through `Series::resolve_post_ids()`, so a series a forward split
+	 * has spread across several posts still excludes every date it canceled.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param string $timezone A named tz-database identifier.
 	 *
-	 * @return string The `EXDATE` line, or '' when nothing is cancelled.
+	 * @return string The `EXDATE` line, or '' when nothing is canceled.
 	 */
 	private function exdate_line( string $timezone ): string {
 		$rows = Occurrences::get_instance()->select_for_series(
@@ -523,16 +522,13 @@ final class Calendar {
 	 * showing its original date in a subscribed calendar.
 	 *
 	 * The floor is seconds since `SEQUENCE_EPOCH`, read from
-	 * `post_modified_gmt`. That field only moves forward, so the sequence is
-	 * strictly monotonic per event, which is the only thing the property
-	 * requires. It emits around 2.1e8 today and reaches the RFC's INTEGER
-	 * ceiling of 2147483647 in 2088.
+	 * `post_modified_gmt`. That field never moves backwards, so the floor is
+	 * non-decreasing per event, which is what the property requires. It emits
+	 * around 2.1e8 today and reaches the RFC's INTEGER ceiling of 2147483647
+	 * in 2088.
 	 *
-	 * Neither obvious alternative works. The gap between creation and
-	 * modification shrinks whenever `post_date_gmt` is corrected forward, and
-	 * a sequence that moves backwards is one clients may ignore. A raw
-	 * timestamp is monotonic but hits the same ceiling in January 2038; the
-	 * epoch is what buys the other sixty years at the same resolution.
+	 * The epoch offset is what buys the headroom: a raw Unix timestamp would
+	 * hit the same ceiling in January 2038 instead.
 	 *
 	 * That field alone is not sufficient, though, which is what `Revision`
 	 * exists for. Occurrence rows, rule mirrors and a forward split are all
@@ -703,7 +699,7 @@ final class Calendar {
 	 * octets of it before the first identifier, and an exclusion list grows
 	 * without bound as a series accumulates cancellations. Folding the value
 	 * alone measures the wrong string and emits over-length lines a strict
-	 * parser may reject or truncate -- which puts cancelled dates back on the
+	 * parser may reject or truncate -- which puts canceled dates back on the
 	 * subscriber's calendar.
 	 *
 	 * @since 0.34.0

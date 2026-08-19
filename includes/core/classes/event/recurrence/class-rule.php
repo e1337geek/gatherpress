@@ -8,7 +8,7 @@
  * string and never in a table of its own. `Rule::from_post()` reconstructs the value object from
  * the mirrors, which is what keeps the blob a pure write-boundary artifact.
  *
- * `to_rrule_string()` is the calendar export seam, consumed by
+ * `to_rrule_string()` is the export seam, consumed by
  * `Calendar\Calendar::get_ical_event_string()` to emit the `RRULE` property of
  * a recurring series' component.
  *
@@ -650,7 +650,7 @@ final class Rule {
 	/**
 	 * Serialize the rule as an RFC 5545 `RRULE` string.
 	 *
-	 * The calendar export seam. `WKST` is never emitted because `WEEK_START`
+	 * The export seam. `WKST` is never emitted because `WEEK_START`
 	 * (Monday) is already RFC 5545's default.
 	 *
 	 * `UNTIL` is emitted as a **UTC date-time**, which is why this method needs

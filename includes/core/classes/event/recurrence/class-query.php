@@ -350,7 +350,7 @@ final class Query {
 	 * for the rendered bodies and cheaper than reasoning about which queries an
 	 * occurrence appeared in.
 	 *
-	 * Measured, not assumed: without this, cancelling every occurrence of a
+	 * Measured, not assumed: without this, canceling every occurrence of a
 	 * series and re-running the identical query returns the series from cache
 	 * while the same SQL run directly does not.
 	 *
@@ -675,8 +675,8 @@ final class Query {
 	 * List both renderings one anchor datetime column can appear under.
 	 * Fold an `'ids'` event query onto the occurrence table without multiplying rows.
 	 *
-	 * REQ-14 requires that a recurring series appear in the aggregate site-wide,
-	 * archive, venue and taxonomy feeds. Those feeds are built by
+	 * A recurring series must appear in the aggregate site-wide, archive,
+	 * venue and taxonomy feeds. Those feeds are built by
 	 * `Calendar\Setup::get_ical_list()` from `Event\Query::get_events_list()`,
 	 * which asks for `'fields' => 'ids'` -- and left unexpanded, its
 	 * `upcoming` bucket is selected from each series' *anchor*. A series whose
@@ -786,7 +786,7 @@ final class Query {
 	 * Never an `INNER JOIN`, and `status` lives in the join condition rather
 	 * than the `WHERE`: either shape deletes every non-recurring event from
 	 * every list, and moving `status` to the `WHERE` additionally lets a
-	 * fully-cancelled series fall through the `NULL` branch and reappear at its
+	 * fully-canceled series fall through the `NULL` branch and reappear at its
 	 * anchor date.
 	 *
 	 * @since 0.36.0
@@ -810,7 +810,7 @@ final class Query {
 	/**
 	 * The predicate scoping the join's `NULL` fallback to posts with no occurrence rows.
 	 *
-	 * A series whose occurrences are all cancelled matches no join row, falls
+	 * A series whose occurrences are all canceled matches no join row, falls
 	 * through with `NULL` occurrence columns, and would reappear at its anchor
 	 * date as an ordinary event. This scopes that fallback to posts with **no
 	 * occurrence rows at all**, so a series with rows contributes only its

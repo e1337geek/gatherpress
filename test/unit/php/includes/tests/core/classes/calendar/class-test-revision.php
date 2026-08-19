@@ -153,7 +153,7 @@ class Test_Revision extends Base {
 	/**
 	 * A revision is read and written across the whole logical series.
 	 *
-	 * PRD C-2: a series is never assumed to be one post. A subscription held
+	 * A series is never assumed to be one post. A subscription held
 	 * against the origin fragment of a split series has to see a change made to
 	 * the fragment carrying the forward dates, which it only can if the
 	 * revision is a property of the series rather than of a post.

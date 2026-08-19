@@ -159,8 +159,8 @@ class Test_Occurrences extends Base {
 	/**
 	 * The preview reports what a candidate rule would produce, and writes nothing.
 	 *
-	 * REQ-13's last criterion: the organizer is shown how many RSVPs a rule
-	 * change would strand *before* it is applied, which means answering "what
+	 * The organizer is shown how many RSVPs a rule change would strand
+	 * *before* it is applied, which means answering "what
 	 * would this rule produce?" without the upsert or the stale-row delete
 	 * `project()` performs.
 	 *
@@ -811,17 +811,16 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Saving an ordinary, never-recurring event through the
-	 * real save-path hooks must issue zero queries against the occurrence
-	 * table, which is the "a site with no recurring events pays nothing"
-	 * guarantee. Checking only project()'s return value (the test above) is
-	 * not enough to guard this: the fix for orphaned rows made the
+	 * Saving an ordinary, never-recurring event through the real save-path
+	 * hooks must issue zero queries against the occurrence table -- the "a site
+	 * with no recurring events pays nothing" guarantee. Checking only
+	 * project()'s return value (the test above) is not enough to guard this: a
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
-	 * silently adds a DELETE query to this
-	 * exact, most-common save path. Such a regression passes a return-value-only
-	 * assertion; it only shows up in the query log, which is why this test
-	 * drives the real `wp_after_insert_post` / `shutdown` hooks rather than
-	 * calling project() directly.
+	 * that cleans up unconditionally silently adds a DELETE query to this
+	 * exact, most-common save path, and that shows up only in the query log,
+	 * never in a return value. Driving the real `wp_after_insert_post` /
+	 * `shutdown` hooks rather than calling project() directly is what catches
+	 * it.
 	 *
 	 * @covers ::maybe_project
 	 * @covers ::resolve_pending_projection

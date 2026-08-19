@@ -1,7 +1,6 @@
 <?php
 /**
- * Class handles unit tests for REQ-14, the recurrence half of the calendar
- * export.
+ * Class handles unit tests for the recurrence half of the calendar export.
  *
  * Every assertion here is driven through a real request: `go_to()` the endpoint
  * URL, then `Calendar\Setup::get_ics_body()`, which is what the `.ics` template
@@ -135,16 +134,15 @@ class Test_Calendar_Recurrence extends Base {
 	 * Deliberately **behind** now, with later occurrences ahead of it. That is
 	 * what makes the series assertions non-vacuous: `Rewrite::parse_request()`
 	 * injects the *next upcoming* occurrence into a bare series URL's query
-	 * vars (PRD D-4), so an anchor that is itself the next upcoming occurrence
+	 * vars, so an anchor that is itself the next upcoming occurrence
 	 * makes "DTSTART is the anchor" and "DTSTART is whatever the request
 	 * resolved to" the same string, and the test passes with the series feed
-	 * silently narrowed to one date (preamble rule 3a #8).
+	 * silently narrowed to one date.
 	 *
 	 * Relative to now rather than pinned for the same reason: that resolution
 	 * compares occurrence rows against the clock, so a pinned anchor would stop
 	 * being behind it, or its successors would stop being ahead of it, and the
-	 * distinction above would decay back into a coincidence (preamble rule 3a
-	 * #7).
+	 * distinction above would decay back into a coincidence.
 	 *
 	 * @since 0.36.0
 	 *
@@ -434,12 +432,12 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertSame(
 			array( 'RRULE:FREQ=WEEKLY;BYDAY=' . $this->byday() . ';COUNT=5' ),
 			$this->lines_for( $body, 'RRULE' ),
-			'Cancellation is occurrence state: the stored rule must be untouched by it (PRD C-5).'
+			'Cancellation is occurrence state: the stored rule must be untouched by it.'
 		);
 	}
 
 	/**
-	 * A series with no cancelled occurrences emits no `EXDATE` line at all.
+	 * A series with no canceled occurrences emits no `EXDATE` line at all.
 	 *
 	 * @covers ::exdate_line
 	 *
@@ -497,8 +495,8 @@ class Test_Calendar_Recurrence extends Base {
 	 * RFC 5545 section 3.8.4.7: the `UID` references the *entire* recurrence
 	 * set, and `RECURRENCE-ID` identifies one instance within it. A download of
 	 * one date is therefore an override of that instance, and its identity is
-	 * the `(UID, RECURRENCE-ID)` tuple -- which is what REQ-14 means when it
-	 * requires two individually downloaded occurrences to be distinguishable.
+	 * the `(UID, RECURRENCE-ID)` tuple, which is what makes two individually
+	 * downloaded occurrences distinguishable.
 	 *
 	 * Minting a per-occurrence `UID` instead satisfies the letter of "their
 	 * identifiers differ" and breaks the requirement it was written for: a
@@ -572,7 +570,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * before the first identifier and each identifier costs 16 more, so three
 	 * cancellations already exceed the limit and a series accumulates them
 	 * without bound. A strict parser is entitled to reject or truncate an
-	 * over-length line, which puts the cancelled dates back on the calendar.
+	 * over-length line, which puts the canceled dates back on the calendar.
 	 *
 	 * Three cancellations is the smallest number that crosses the ceiling, so it
 	 * is what the fixture uses: two would leave the assertion passing against an
@@ -746,7 +744,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * Synthetic rather than pinned to a real identifier, because which zones
 	 * exhibit this is a property of the host's tz database and changes with it:
 	 * a fixture naming one would silently stop testing the defect on the next
-	 * tzdata update (rule 3a #7).
+	 * tzdata update.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::is_regular
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::sub_component
@@ -861,7 +859,7 @@ class Test_Calendar_Recurrence extends Base {
 	/**
 	 * Moving occurrence rows between posts invalidates both sides.
 	 *
-	 * `move_to_post()` is the primitive REQ-18's forward split moves rows with.
+	 * `move_to_post()` is the primitive a forward split moves rows with.
 	 * It is bare SQL: no post row, no meta row and no term relationship changes,
 	 * so nothing the cache watches fires by itself. A move is a write on **two**
 	 * series -- the source stops carrying the dates and the destination starts --
@@ -1140,7 +1138,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * datetime lines, then the properties whose values are stable, so a silently
 	 * added or reordered property fails here.
 	 *
-	 * Scoped to the `VEVENT` deliberately. The component is what REQ-14 says is
+	 * Scoped to the `VEVENT` deliberately. The component is what stays
 	 * unchanged modulo the start; the enclosing `VCALENDAR` gains the
 	 * `VTIMEZONE` that start's `TZID` now refers to, which is asserted
 	 * separately -- and the shape of that definition is a property of the
@@ -1223,7 +1221,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * A `TZID` must name a tz-database identifier, and RFC 5545 forbids
 	 * attaching an `RRULE` to a start that carries no timezone reference for
-	 * anything but a fixed-offset series. REQ-3 keeps a recurring event on a
+	 * anything but a fixed-offset series. A recurring event is always kept on a
 	 * named timezone, so this is the defensive arm rather than an authored one.
 	 *
 	 * @covers ::get_ical_event_string
@@ -1257,9 +1255,8 @@ class Test_Calendar_Recurrence extends Base {
 	/**
 	 * Every aggregate feed carries the recurrence rule for a series.
 	 *
-	 * This is the point REQ-14 names as where GatherPress should exceed the
-	 * WordCamp.org implementation, whose aggregate feeds omit recurring series
-	 * entirely.
+	 * This is where GatherPress exceeds the WordCamp.org implementation, whose
+	 * aggregate feeds omit recurring series entirely.
 	 *
 	 * Runs on the file's default anchor, which sits **behind** now. That is not
 	 * an incidental fixture choice: a series whose anchor has passed is every
@@ -1399,7 +1396,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * timestamp is at or past it -- so a client revalidating with
 	 * `If-Modified-Since` and no stored entity tag gets a 304 for as long as the
 	 * stamp stays put. `Occurrences::set_status()` is a bare `UPDATE`; unless it
-	 * stamps the calendar, the cancelled date may never reach the subscriber.
+	 * stamps the calendar, the canceled date may never reach the subscriber.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::set_status
 	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
@@ -1427,7 +1424,7 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertSame(
 			array(),
 			$this->lines_for( $before, 'EXDATE' ),
-			'Nothing is cancelled yet, so the first response must carry no exclusions.'
+			'Nothing is canceled yet, so the first response must carry no exclusions.'
 		);
 
 		Occurrences::get_instance()->set_status(
@@ -1522,11 +1519,11 @@ class Test_Calendar_Recurrence extends Base {
 	/**
 	 * The exclusion list is read across every post the series spans.
 	 *
-	 * PRD C-2: a series is never assumed to be one post. Under REQ-18's forward
-	 * split a cancelled date living on a sibling post would otherwise drop
-	 * silently out of the feed. Proved the way the five other C-2 call sites in
-	 * this suite are proved -- by installing the `gatherpress_series_post_ids`
-	 * filter and cancelling the date on the post the filter adds.
+	 * A series is never assumed to be one post. Under a forward split a
+	 * canceled date living on a sibling post would otherwise drop silently out
+	 * of the feed. Proved the way the other series-wide read call sites in this
+	 * suite are proved -- by installing the `gatherpress_series_post_ids`
+	 * filter and canceling the date on the post the filter adds.
 	 *
 	 * @covers ::exdate_line
 	 *
@@ -1558,7 +1555,7 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertSame(
 			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),
 			$this->lines_for( $this->body_for( $this->series_ical_url( $post_id ) ), 'EXDATE' ),
-			'A date cancelled on a sibling post of the same series must still be excluded from the feed.'
+			'A date canceled on a sibling post of the same series must still be excluded from the feed.'
 		);
 	}
 
@@ -1833,7 +1830,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * Create a published, non-recurring event starting a month from now.
 	 *
 	 * Relative rather than pinned: every caller puts it in an aggregate feed,
-	 * whose `upcoming` bucket compares it against the clock (rule 3a #7).
+	 * whose `upcoming` bucket compares it against the clock.
 	 *
 	 * @since 0.36.0
 	 *
@@ -2041,7 +2038,7 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
-	 * REQ-16: every calendar entry point this change touches issues no query
+	 * Every calendar entry point this change touches issues no query
 	 * against the occurrence table, and writes no option, on a site whose
 	 * `gatherpress_has_recurring_events` flag is `'0'`.
 	 *
@@ -2131,7 +2128,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * The flag, not the absence of a rule, is what keeps a calendar request off
 	 * the occurrence table.
 	 *
-	 * The sibling REQ-16 test above drives a plain event, which has no rule
+	 * The sibling test above drives a plain event, which has no rule
 	 * mirrors -- so it stays off the occurrence table whether or not the guard
 	 * exists, and deleting the guard leaves it green. Removing that coincidence
 	 * takes an event that *does* carry rule mirrors while the flag says the

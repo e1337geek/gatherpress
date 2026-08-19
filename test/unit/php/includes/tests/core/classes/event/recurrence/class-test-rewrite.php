@@ -1816,7 +1816,7 @@ class Test_Rewrite extends Base {
 	 * A request for an `.ics` calendar endpoint is left alone by the bare-series
 	 * resolution, and every other request is not.
 	 *
-	 * The distinction is REQ-14's: a series' iCal export is one component
+	 * The distinction: a series' iCal export is one component
 	 * carrying the whole rule, so narrowing it to the next upcoming occurrence
 	 * would put a single date back in a subscriber's calendar. The Google and
 	 * Yahoo redirects are single-datetime by nature and keep the occurrence.

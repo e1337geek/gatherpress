@@ -447,8 +447,8 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for the regression an earlier revision shipped: an inner join
-	 * deletes every non-recurring event from every list.
+	 * Coverage for the regression an inner join causes: it deletes every
+	 * non-recurring event from every list.
 	 *
 	 * @covers ::expand_event_clauses
 	 * @covers ::attach_occurrences
@@ -785,7 +785,7 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * A fully cancelled series stays out of a folded ids list too.
+	 * A fully canceled series stays out of a folded ids list too.
 	 *
 	 * The `NOT EXISTS` guard is what stops a series with rows but no *scheduled*
 	 * rows falling through the join's `NULL` branch and reappearing at its
@@ -793,11 +793,11 @@ class Test_Query extends Base {
 	 * shape carries it for the same reason and needs its own case, because
 	 * dropping it there fails nothing else.
 	 *
-	 * The cancelled series is anchored **ahead** of now, unlike the shared
+	 * The canceled series is anchored **ahead** of now, unlike the shared
 	 * scenario's. That is the whole test: a series anchored behind now is kept
 	 * out of the upcoming bucket by the range predicate whether or not the
 	 * guard exists, so the two answers coincide and the guard could be deleted
-	 * with the assertion still green (rule 3a #8). Only a fully cancelled series
+	 * with the assertion still green. Only a fully canceled series
 	 * whose anchor would otherwise qualify can tell them apart.
 	 *
 	 * @covers ::fold_event_clauses
@@ -814,7 +814,7 @@ class Test_Query extends Base {
 		$this->assertContains(
 			(int) $series,
 			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
-			'Failed to assert the fixture series is in the bucket before anything is cancelled.'
+			'Failed to assert the fixture series is in the bucket before anything is canceled.'
 		);
 
 		for ( $index = 0; $index < 5; $index++ ) {
@@ -839,7 +839,7 @@ class Test_Query extends Base {
 		$this->assertSame(
 			array( (int) $upcoming ),
 			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
-			'Failed to assert a fully cancelled series does not reappear at its anchor date in an ids list.'
+			'Failed to assert a fully canceled series does not reappear at its anchor date in an ids list.'
 		);
 	}
 

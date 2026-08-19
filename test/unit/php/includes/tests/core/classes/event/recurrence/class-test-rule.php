@@ -383,7 +383,7 @@ class Test_Rule extends Base {
 	 *
 	 * Named, and not UTC: `UNTIL` is emitted as a UTC date-time derived from the
 	 * anchor's wall clock, so a fixture serialized in UTC could not tell a
-	 * correct conversion apart from no conversion at all (preamble rule 3a #8).
+	 * correct conversion apart from no conversion at all.
 	 *
 	 * @since 0.36.0
 	 *
@@ -399,7 +399,7 @@ class Test_Rule extends Base {
 	 *
 	 * Pinned, deliberately: these are pure input-to-output fixtures whose
 	 * expected text is the specification, and nothing here is compared against
-	 * the clock (preamble rule 3a #7).
+	 * the clock.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1427,8 +1427,7 @@ class Test_Rule extends Base {
 	 * and takes an arbitrary `DateTimeImmutable`, though, and an anchor typed in
 	 * UTC carries a different wall clock for the same instant -- which is the
 	 * value `UNTIL` is built from. A UTC-typed anchor is therefore the fixture
-	 * where "normalized" and "not normalized" give different answers (rule 3a
-	 * #8).
+	 * where "normalized" and "not normalized" give different answers.
 	 *
 	 * @covers ::until_as_utc_datetime
 	 * @covers ::to_rrule_string

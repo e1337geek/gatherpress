@@ -57,7 +57,7 @@ final class Setup {
 	 * both here and by `Recurrence\Rewrite::maybe_resolve_bare_series()`, which
 	 * must not narrow a series export to one date. The Google and Yahoo
 	 * redirects are deliberately absent: they are single-datetime query strings
-	 * that cannot express recurrence, and REQ-14 accepts them carrying whatever
+	 * that cannot express recurrence, and they are accepted carrying whatever
 	 * occurrence the request resolved to.
 	 *
 	 * @since 0.36.0

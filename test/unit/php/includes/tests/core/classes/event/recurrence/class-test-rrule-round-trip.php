@@ -1,6 +1,6 @@
 <?php
 /**
- * Class handles the REQ-14 `RRULE` round-trip: serialize a rule, re-parse the
+ * Class handles the `RRULE` round-trip: serialize a rule, re-parse the
  * serialized text with an independent reader, and prove both produce the same
  * occurrence set.
  *

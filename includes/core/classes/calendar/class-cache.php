@@ -129,7 +129,7 @@ final class Cache {
 		add_action( 'set_object_terms', array( $this, 'mark_changed_for_terms' ), 10, 4 );
 		// Occurrence rows are written by bare SQL that touches none of the
 		// above, yet an `.ics` body is built from them: the aggregate feeds
-		// select their bucket from the rows, and a cancelled row becomes an
+		// select their bucket from the rows, and a canceled row becomes an
 		// `EXDATE`.
 		add_action( 'gatherpress_occurrences_changed', array( $this, 'mark_changed_for_occurrences' ) );
 	}
@@ -282,7 +282,7 @@ final class Cache {
 	 *
 	 * The stamp is what moves both halves of the response cache at once: the
 	 * stored bodies are namespaced by it, and it is what `Last-Modified` reports
-	 * to a revalidating subscriber. Without it a cancelled date is held behind a
+	 * to a revalidating subscriber. Without it a canceled date is held behind a
 	 * `304` until some unrelated write on the site happens to stamp the
 	 * calendar, which may be never.
 	 *
@@ -292,7 +292,7 @@ final class Cache {
 	 * *server's* copy, but a subscriber already holding the old component decides
 	 * whether to replace it by comparing `SEQUENCE`, and an occurrence write
 	 * leaves `post_modified_gmt` -- which that number is otherwise derived from
-	 * -- exactly where it was. Without the advance a cancelled date is correctly
+	 * -- exactly where it was. Without the advance a canceled date is correctly
 	 * absent from the body and still on the subscriber's calendar.
 	 *
 	 * @param int|string $post_id The series post whose occurrence rows changed.

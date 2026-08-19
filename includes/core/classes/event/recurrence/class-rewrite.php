@@ -387,13 +387,13 @@ final class Rewrite {
 	/**
 	 * Report whether the request is asking for an iCalendar body.
 	 *
-	 * PRD D-4 resolves a bare series URL to the next upcoming occurrence, which
-	 * is what a page render wants and what the single-datetime Google and Yahoo
-	 * redirects want. It is the wrong answer for `.ics`: REQ-14 makes a series'
-	 * export **one** component carrying the whole rule, so narrowing it to one
-	 * date here would silently reintroduce the very limitation the requirement
-	 * exists to beat -- an attendee subscribing to a recurring meetup would get
-	 * a single entry again, just on a different date than before.
+	 * A bare series URL resolves to the next upcoming occurrence, which is what
+	 * a page render wants and what the single-datetime Google and Yahoo
+	 * redirects want. It is the wrong answer for `.ics`: a series' export is
+	 * **one** component carrying the whole rule, so narrowing it to one date
+	 * here would silently reintroduce the very limitation that shape exists to
+	 * beat -- an attendee subscribing to a recurring meetup would get a single
+	 * entry again, just on a different date than before.
 	 *
 	 * A request that names an occurrence explicitly never reaches this method:
 	 * `parse_request()` sends it down the occurrence-segment branch instead, so
@@ -520,9 +520,9 @@ final class Rewrite {
 	 * The segment is the occurrence's canonical `recurrence_id`, built by
 	 * `Occurrences::recurrence_id()` and never re-derived here.
 	 *
-	 * There is deliberately no filter over the segment. One shipped in an
-	 * earlier revision of this class as `gatherpress_recurrence_id_format`,
-	 * and it was one-way: the emitted segment was filterable, but
+	 * There is deliberately no filter over the segment. An earlier revision of
+	 * this class carried one -- `gatherpress_recurrence_id_format` -- and it
+	 * was one-way: the emitted segment was filterable, but
 	 * `add_rewrite_rule_for_post_type()` registers a single fixed
 	 * `RECURRENCE_ID_REGEX` and `parse_request()` matches the raw segment
 	 * against the canonical `recurrence_id` column, so any value the filter
