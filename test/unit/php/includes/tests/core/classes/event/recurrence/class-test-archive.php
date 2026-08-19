@@ -203,8 +203,7 @@ class Test_Archive extends Base {
 	 * plain event on the very first page. The answer the archive produced
 	 * before this fixture existed, `wp_posts.post_date DESC`, orders strictly
 	 * by creation: it groups each series together and puts the *last*-created
-	 * post first. The two orderings share no prefix, which is the point
-	 * (rule 3a #8).
+	 * post first. The two orderings share no prefix, which is the point.
 	 *
 	 * @since 0.36.0
 	 *
@@ -242,7 +241,7 @@ class Test_Archive extends Base {
 	 *
 	 * Built from the fixture's own arithmetic rather than from a run of the
 	 * code under test, so the expectation is the requirement and not a
-	 * transcript of current behavior (rule 3a #5).
+	 * transcript of current behavior.
 	 *
 	 * @since 0.36.0
 	 *
@@ -529,7 +528,7 @@ class Test_Archive extends Base {
 
 			// Created newest-first, so the required reading order is the
 			// creation order and the `wp_posts.post_date DESC` fallback is its
-			// exact reverse (rule 3a #8).
+			// exact reverse.
 			$expected[] = $this->create_event_at( $start, $start->modify( '+30 minutes' ) ) . '|';
 		}
 
@@ -637,8 +636,8 @@ class Test_Archive extends Base {
 	 * `404` without the deferral.
 	 *
 	 * The `<!--nextpage-->` half of the fixture is what makes the assertion
-	 * about the required bound rather than about "anything past page one"
-	 * (rule 3a #8): a flat "paged is a 404" rule and core's rule agree on the
+	 * about the required bound rather than about "anything past page one": a
+	 * flat "paged is a 404" rule and core's rule agree on the
 	 * unsplit page and disagree on the split one, so the split page is asserted
 	 * in both directions.
 	 *
@@ -897,7 +896,7 @@ class Test_Archive extends Base {
 	 * The twelve events are created earliest-first, so the required ordering —
 	 * ascending by event datetime — is the exact reverse of the
 	 * `wp_posts.post_date DESC` the archive produced before, and no page of
-	 * the required answer can coincide with a page of the old one (rule 3a #8).
+	 * the required answer can coincide with a page of the old one.
 	 *
 	 * @covers ::handle_event_archive_redirect
 	 *
@@ -934,7 +933,8 @@ class Test_Archive extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 through the real archive entry point.
+	 * Coverage for the no-recurring-events guarantee through the real archive
+	 * entry point.
 	 *
 	 * Captures every statement a full page-one and page-two archive request
 	 * runs on a site whose `gatherpress_has_recurring_events` option is `'0'`,

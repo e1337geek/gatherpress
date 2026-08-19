@@ -479,9 +479,9 @@ final class Setup {
 	 * request whose page number exceeds the split count.
 	 *
 	 * Without it the events slug answers `200` at every page number,
-	 * unboundedly, with identical content — measured on a real site as
-	 * `/event/page/2/` and `/event/page/50/` both serving the landing page
-	 * where both had been `404` before the deferral existed.
+	 * unboundedly, with identical content: `/event/page/2/` and
+	 * `/event/page/50/` both serve the landing page instead of the `404` they
+	 * answer when core's decision is not deferred.
 	 *
 	 * @since 0.36.0
 	 *
@@ -546,9 +546,9 @@ final class Setup {
 	 * measured symptom is a 404 at `/event/page/2/` while `/event/` reports
 	 * nine pages.
 	 *
-	 * `pre_handle_404` exists for exactly this: deferring the judgement to
+	 * `pre_handle_404` exists for exactly this: deferring the judgment to
 	 * something that knows more about the request than core does. Every branch
-	 * `handle_event_archive_redirect()` can take then makes the judgement once
+	 * `handle_event_archive_redirect()` can take then makes the judgment once
 	 * its real query has run — `substitute_archive_query()` for the two archive
 	 * rewrites, `maybe_404_paged_page()` for the page-as-regular-page branch.
 	 *

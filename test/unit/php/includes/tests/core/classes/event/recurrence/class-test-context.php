@@ -2,8 +2,8 @@
 /**
  * Class handles unit tests for GatherPress\Core\Event\Recurrence\Context.
  *
- * REQ-9's claim is that an occurrence's datetime reaches every existing block
- * without a single block file changing. A test that calls the filter callback
+ * The claim under test is that an occurrence's datetime reaches every existing
+ * block without a single block file changing. A test that calls the filter callback
  * directly cannot prove that, so the block tests here go through `go_to()` and
  * `do_blocks()` -- the real request, the real block, the real wiring.
  *
@@ -173,7 +173,7 @@ class Test_Context extends Base {
 	 * The reference fixture's anchor is a fixed 2026 date, which is fine for
 	 * assertions about a *named* occurrence but a date bomb for anything about
 	 * the *next upcoming* one — once real time passes the last occurrence, the
-	 * series has lapsed and D-4 resolves to nothing.
+	 * series has lapsed and the bare-series resolution finds nothing.
 	 *
 	 * The anchor is placed in the past and the interval chosen so exactly one
 	 * occurrence is behind "now" and two are ahead. That makes the next upcoming
@@ -792,12 +792,11 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for a bare series request composing with PRD D-4.
+	 * Coverage for a bare series request composing with bare-URL resolution.
 	 *
 	 * `Rewrite` resolves a bare series URL to the next upcoming occurrence and
 	 * sets the query var during `parse_request`; `Context` then establishes that
-	 * occurrence on `wp`. Before D-4 existed this asserted the context stayed
-	 * unset, which is now wrong.
+	 * occurrence on `wp`.
 	 *
 	 * It asserts the *specific* occurrence rather than merely a non-null
 	 * context. The fixture straddles "now", so the next upcoming occurrence is
@@ -820,7 +819,7 @@ class Test_Context extends Base {
 
 		$this->assertIsArray(
 			$current,
-			'A bare series request must establish occurrence context under PRD D-4.'
+			'A bare series request must establish occurrence context.'
 		);
 		$this->assertSame(
 			$next_id,
@@ -859,7 +858,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16: a request naming no occurrence queries no occurrence.
+	 * A request naming no occurrence queries no occurrence.
 	 *
 	 * Both guards in `maybe_set_from_request()` exist for this. Neither changes
 	 * the resulting context — `Occurrences::get()` would return null for an
@@ -891,8 +890,8 @@ class Test_Context extends Base {
 
 		// A request that identifies no post at all cannot name an occurrence,
 		// whatever the query string claims -- this pins the post ID guard. It
-		// remains a hard zero after D-4, because the bare-series resolution has
-		// no post to resolve either.
+		// remains a hard zero even with bare-series resolution, which has no
+		// post to resolve either.
 		$this->go_to( add_query_arg( Context::QUERY_VAR, self::SECOND_ID, home_url( '/' ) ) );
 
 		$this->assertSame(
@@ -1054,7 +1053,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 on the read path: no recurring events, no query.
+	 * Coverage on the read path: no recurring events, no query.
 	 *
 	 * `Occurrences::get()` is a raw uncached `$wpdb->get_row()`, so without a
 	 * guard any crawler appending the occurrence query string to an ordinary
@@ -1108,7 +1107,7 @@ class Test_Context extends Base {
 	/**
 	 * Coverage for the `Event` datetime cache not colliding across series.
 	 *
-	 * PRD C-1 — identity is the composite `(series_post_id, recurrence_id)`. A
+	 * Identity is the composite `(series_post_id, recurrence_id)`. A
 	 * cache keyed on the recurrence identifier alone lets an `Event` for one
 	 * series cache its series datetime under an identifier that belongs to
 	 * another series' occurrence, and serve it back once context moves to its
@@ -1371,11 +1370,11 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-12's visitor-facing half, on all four arms.
+	 * Coverage for the visitor-facing half of cancellation, on all four arms.
 	 *
-	 * `Rewrite::parse_request()` lets a cancelled occurrence's URL resolve
+	 * `Rewrite::parse_request()` lets a canceled occurrence's URL resolve
 	 * instead of 404ing; this is what tells the visitor once it does. The
-	 * notice must appear on the cancelled occurrence's own content and on
+	 * notice must appear on the canceled occurrence's own content and on
 	 * nothing else -- not outside occurrence context, not for a scheduled
 	 * occurrence, and not for another post rendering full content on the same
 	 * response.
@@ -1403,7 +1402,7 @@ class Test_Context extends Base {
 
 		$this->assertTrue(
 			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
-			'Fixture is inert: the occurrence row was not cancelled.'
+			'Fixture is inert: the occurrence row was not canceled.'
 		);
 
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
@@ -1438,7 +1437,7 @@ class Test_Context extends Base {
 		$this->assertStringContainsString(
 			$notice,
 			$cancelled,
-			'Failed to assert a cancelled occurrence\'s own content carries the notice.'
+			'Failed to assert a canceled occurrence\'s own content carries the notice.'
 		);
 		$this->assertStringContainsString(
 			'Body.',
@@ -1579,7 +1578,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-9: the unmodified event-date block renders the occurrence's date.
+	 * The unmodified event-date block renders the occurrence's date.
 	 *
 	 * No block file is modified anywhere in this task. The block is rendered
 	 * through `do_blocks()` on a real occurrence request, so what this asserts
@@ -1612,7 +1611,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-9 on the add-to-calendar block.
+	 * Coverage on the add-to-calendar block.
 	 *
 	 * The block's hrefs are on-site endpoint URLs; the datetime lives in what
 	 * those endpoints serve. So the block is rendered for real, and the two
@@ -1666,8 +1665,8 @@ class Test_Context extends Base {
 	/**
 	 * Coverage for teardown leaving no stale occurrence value behind.
 	 *
-	 * Teardown is still a real requirement after PRD D-4, but "context is null"
-	 * is no longer how it shows: a later bare-series request legitimately
+	 * Teardown is still a real requirement once a bare series URL resolves to
+	 * an occurrence, but "context is null" is not how it shows: a later bare-series request legitimately
 	 * re-establishes context. So the test distinguishes *re-derived from this
 	 * request* from *survived from the previous one*.
 	 *
@@ -1727,7 +1726,7 @@ class Test_Context extends Base {
 		);
 
 		// Leaving for a URL that names no event at all must drop context
-		// outright -- there is nothing for D-4 to re-derive.
+		// outright -- there is nothing to re-derive.
 		$this->go_to( home_url( '/' ) );
 
 		$this->assertNull(
@@ -1737,7 +1736,7 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage for PRD C-3: an occurrence's time of day comes from its record.
+	 * An occurrence's time of day comes from its record.
 	 *
 	 * The row's time of day is moved away from the anchor's, which the current
 	 * rule set cannot produce. The test exists so the read path can never

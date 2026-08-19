@@ -2,13 +2,12 @@
 /**
  * Class handles unit tests for the occurrence read path inside a Query Loop.
  *
- * The 2045-test suite that preceded this file asserted that
- * `Recurrence\Query` returns the right rows and never once asserted that a
- * block renders the right date from those rows. That gap is exactly the shape
- * of CF-8: the query layer expanded a series correctly, `attach_occurrences()`
- * stamped identity onto every result object, and nothing in the render path
- * read the stamp -- so every row of a series showed the anchor's date and the
- * bare series permalink.
+ * Asserting that `Recurrence\Query` returns the right rows says nothing about
+ * whether a block renders the right date from those rows. That gap is exactly
+ * the shape of the regression this file covers: the query layer expands a
+ * series correctly, `attach_occurrences()` stamps identity onto every result
+ * object, and nothing in the render path reads the stamp -- so every row of a
+ * series shows the anchor's date and the bare series permalink.
  *
  * Every test here drives a real `WP_Query` loop through `the_post()` and
  * asserts the *rendered output* of a block, never an intermediate value.
@@ -260,13 +259,13 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for CF-8's first half: the event date block renders the
-	 * occurrence's datetime, not the series anchor's.
+	 * Coverage for the render path's first half: the event date block renders
+	 * the occurrence's datetime, not the series anchor's.
 	 *
 	 * The series anchor started an hour ago, so the loop contains its four
-	 * upcoming occurrences. Every rendered row must carry its own day. Before
-	 * the fix all four rendered the anchor's date and this collapses to one
-	 * distinct string.
+	 * upcoming occurrences. Every rendered row must carry its own day. A render
+	 * path that reads the anchor instead collapses all four to one distinct
+	 * string.
 	 *
 	 * @covers ::metadata
 	 * @covers ::occurrence_value
@@ -293,7 +292,7 @@ class Test_Loop_Render extends Base {
 			4,
 			array_unique( $html ),
 			'Failed to assert each occurrence row rendered a distinct date -- every row showing the same'
-				. ' string is the CF-8 defect: the query expanded, the render path read the anchor.'
+				. ' string means the query expanded and the render path read the anchor.'
 		);
 
 		foreach ( array( 1, 2, 3, 4 ) as $offset => $index ) {
@@ -307,14 +306,14 @@ class Test_Loop_Render extends Base {
 			$this->assertStringContainsString(
 				$expected,
 				$html[ $offset ],
-				'Failed to assert row ' . $offset . ' rendered the occurrence record\'s own time of day (PRD C-3).'
+				'Failed to assert row ' . $offset . ' rendered the occurrence record\'s own time of day.'
 			);
 		}
 	}
 
 	/**
-	 * Coverage for CF-8's second half: the permalink of a loop row is the
-	 * occurrence URL, not the bare series URL.
+	 * Coverage for the render path's second half: the permalink of a loop row
+	 * is the occurrence URL, not the bare series URL.
 	 *
 	 * Asserted through the block's own `isLink` markup rather than by calling
 	 * `get_permalink()` in the test, so the assertion covers what a visitor
@@ -343,7 +342,7 @@ class Test_Loop_Render extends Base {
 			4,
 			array_unique( $hrefs ),
 			'Failed to assert each occurrence row linked to its own occurrence URL -- four identical bare'
-				. ' series permalinks is the CF-8 defect a browser measured.'
+				. ' series permalinks is what a visitor sees when the render path reads the series.'
 		);
 
 		$expected = array();
@@ -355,7 +354,7 @@ class Test_Loop_Render extends Base {
 		$this->assertSame(
 			$expected,
 			$hrefs,
-			'Failed to assert every row linked to the REQ-8 occurrence URL shape for its own occurrence.'
+			'Failed to assert every row linked to the occurrence URL shape for its own occurrence.'
 		);
 	}
 
@@ -495,16 +494,16 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 on every entry point this read path adds.
+	 * Coverage for the no-recurring-events guarantee on every entry point this
+	 * read path adds.
 	 *
 	 * Drives the real entry points -- a full `WP_Query` loop plus a block
 	 * render plus a `get_permalink()` call -- on a site whose
 	 * `gatherpress_has_recurring_events` option is `'0'`, and asserts no query
 	 * touches the occurrence table and no option is written. Naming the test
-	 * after the loop rather than after the callbacks is deliberate: the two
-	 * REQ-16 defects this build already shipped both had a passing "performs
-	 * no writes" test that drove the body of the work and never the entry
-	 * point.
+	 * after the loop rather than after the callbacks is deliberate: a "performs
+	 * no writes" test that drives the body of the work and never the entry
+	 * point passes while the entry point still queries the table.
 	 *
 	 * @covers ::metadata
 	 *
@@ -696,8 +695,8 @@ class Test_Loop_Render extends Base {
 	 *
 	 * The row's own stamp wins while a loop iteration is set up, and the
 	 * request's occurrence applies where there is no stamp. Both are asserted
-	 * here on purpose. The precedence shipped the other way round first, which
-	 * gave every same-series Query Loop row the outer page's occurrence; the
+	 * here on purpose. The precedence the other way round gives every
+	 * same-series Query Loop row the outer page's occurrence; the
 	 * obvious correction -- "the stamp is authoritative, drop the request arm"
 	 * -- breaks every singular occurrence page instead, because a singular
 	 * request's own post carries a null stamp. Only a test that pins both

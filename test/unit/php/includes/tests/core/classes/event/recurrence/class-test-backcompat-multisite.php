@@ -3,8 +3,8 @@
  * Class handles multisite unit tests for the occurrence table's lazy,
  * per-blog creation hazard.
  *
- * THE CONTRACT (stated explicitly, per this task's brief, so it is a decision
- * rather than an accident): `Setup::create_tables()` runs per-blog on network
+ * THE CONTRACT (stated explicitly, so it is a decision rather than an
+ * accident): `Setup::create_tables()` runs per-blog on network
  * activation (`activate_gatherpress_plugin()`) and on a new site's creation
  * while the plugin is network-active (`on_site_create()`), and otherwise only
  * via `check_plugin_version()`, which is hooked on `admin_init` for the
@@ -13,8 +13,8 @@
  * table until someone visits its wp-admin (or a network activation /
  * new-site event runs). A blog without the table must therefore show exactly
  * what it would show with no recurrence code present at all -- not fatal, and
- * equally not an empty list. "Does not fatal" is the weaker property and was
- * all that held before CF-9; see
+ * equally not an empty list. "Does not fatal" is the weaker property and is
+ * not sufficient on its own; see
  * `test_occurrence_query_degrades_gracefully_when_table_is_absent()` below.
  *
  * Per AGENTS.md: never remove `@group multisite` from this class, and never
@@ -157,17 +157,17 @@ class Test_Backcompat_Multisite extends Base {
 	}
 
 	/**
-	 * (b) CF-9: a blog whose occurrence table is absent must show exactly what
-	 * it would show with no recurrence code present at all.
+	 * (b) A blog whose occurrence table is absent must show exactly what it
+	 * would show with no recurrence code present at all.
 	 *
 	 * The stated contract is graceful degradation, and "does not fatal" is not
-	 * the same thing. What was measured before this test existed in this shape:
-	 * `$wpdb` swallows the missing-table error and never throws, so nothing is
-	 * reported anywhere -- but the missing table is named in both the outer
-	 * `LEFT JOIN` and the `NOT EXISTS` subquery, so the whole statement fails
-	 * and the upcoming-events list came back EMPTY. An ordinary, non-recurring,
-	 * published event vanished from the site with no error surfaced. That is
-	 * worse than a crash, because a crash gets reported.
+	 * the same thing. `$wpdb` swallows the missing-table error and never
+	 * throws, so nothing is reported anywhere -- but the missing table is named
+	 * in both the outer `LEFT JOIN` and the `NOT EXISTS` subquery, so without
+	 * the guard the whole statement fails and the upcoming-events list comes
+	 * back EMPTY. An ordinary, non-recurring, published event then vanishes
+	 * from the site with no error surfaced. That is worse than a crash, because
+	 * a crash gets reported.
 	 *
 	 * Note also that `get_results()` returns `array()` rather than `null` on a
 	 * failed query, so `select_for_series()`'s `null === $rows` arm is
@@ -198,8 +198,8 @@ class Test_Backcompat_Multisite extends Base {
 		// The hazard is specific to a blog whose HAS_RECURRING_OPTION is
 		// true but whose own table is missing -- e.g. carried over from a
 		// site-meta sync, or a recurring post saved before the table
-		// existed. On an ordinary subsite REQ-16's guard means this whole
-		// code path is never reached at all, which is the safe case.
+		// existed. On an ordinary subsite the no-recurring-events guard means
+		// this whole code path is never reached at all, which is the safe case.
 		update_option( Query::HAS_RECURRING_OPTION, '1', true );
 
 		$exception = null;
@@ -278,8 +278,8 @@ class Test_Backcompat_Multisite extends Base {
 			$baseline_posts,
 			$query_posts,
 			'Failed to assert a subsite missing the occurrence table shows exactly what it would show with no'
-				. ' recurrence code present -- an empty list here is CF-9: an ordinary published event silently'
-				. ' vanishing with no error surfaced anywhere.'
+				. ' recurrence code present -- an empty list here is the regression: an ordinary published event'
+				. ' silently vanishing with no error surfaced anywhere.'
 		);
 		$this->assertSame(
 			$without_recurrence,
@@ -292,7 +292,7 @@ class Test_Backcompat_Multisite extends Base {
 	 * (b2) Coverage for the table-existence memo across a blog that gains the
 	 * table mid-request.
 	 *
-	 * The memo is what keeps CF-9's guard from costing a schema probe per
+	 * The memo is what keeps that guard from costing a schema probe per
 	 * query, and `Setup::create_tables()` is the one path that can turn its
 	 * answer from false to true inside one request. A memo that outlived that
 	 * would leave a blog permanently un-expanded after its table appeared.

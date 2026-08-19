@@ -235,7 +235,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for the actual correctness claim of REQ-8: an occurrence URL
+	 * Coverage for the actual correctness claim: an occurrence URL
 	 * under a *non-default* `events_url` slug actually ROUTES -- drives a
 	 * real request through `add_rewrite_rule_for_post_type()`'s runtime
 	 * slug read at `class-rewrite.php:138`, the line that matters, rather
@@ -547,7 +547,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-8: a well-formed `Ymd\THis` segment that is not an
+	 * A well-formed `Ymd\THis` segment that is not an
 	 * actual occurrence of that series 404s rather than silently rendering
 	 * the series at its anchor date.
 	 *
@@ -578,7 +578,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for D-4: visiting a recurring series at its bare permalink
+	 * Visiting a recurring series at its bare permalink
 	 * (no occurrence segment) resolves to the next upcoming occurrence.
 	 *
 	 * @covers ::parse_request
@@ -609,8 +609,8 @@ class Test_Rewrite extends Base {
 	/**
 	 * Coverage for `next_upcoming_recurrence_id`'s `series_post_id === $post_id`
 	 * check: `select_for_series()` can legitimately return rows from more
-	 * than one post (PRD C-2 / REQ-18's forward split, reachable today via
-	 * the `gatherpress_series_post_ids` filter), interleaved by start time
+	 * than one post (the forward split, reachable today via the
+	 * `gatherpress_series_post_ids` filter), interleaved by start time
 	 * across posts. A sibling post's row that sorts earlier than this
 	 * post's own next occurrence must not be mistaken for it.
 	 *
@@ -704,7 +704,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16: a plain event permalink request on a site with no
+	 * A plain event permalink request on a site with no
 	 * recurring events at all must never query the occurrence table.
 	 * `Query::site_has_recurring_events()` is the authoritative, cheap
 	 * (single autoloaded option read) guard `maybe_resolve_bare_series()`
@@ -756,14 +756,15 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 on the occurrence-segment branch of `parse_request()`.
+	 * Coverage for the same guarantee on the occurrence-segment branch of
+	 * `parse_request()`.
 	 *
 	 * The sibling of the bare-series test above. That one probes the branch
 	 * taken when a URL carries no occurrence segment; this one drives a real
 	 * occurrence URL, which takes the other branch and reaches
-	 * `Occurrences::get()` -- a raw, uncached `$wpdb->get_row()`. The two
-	 * branches shipped with different guarding precisely because only the
-	 * first was ever probed, so both are pinned here.
+	 * `Occurrences::get()` -- a raw, uncached `$wpdb->get_row()`. Probing only
+	 * one branch leaves the other free to lose its guard, so both are pinned
+	 * here.
 	 *
 	 * @covers ::parse_request
 	 *
@@ -805,9 +806,8 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-12: a cancelled occurrence's URL resolves rather
-	 * than 404s, so an attendee holding the link is told it was cancelled
-	 * instead of hitting a dead end.
+	 * A canceled occurrence's URL resolves rather than 404s, so an attendee
+	 * holding the link is told it was canceled instead of hitting a dead end.
 	 *
 	 * @covers ::parse_request
 	 *
@@ -824,11 +824,11 @@ class Test_Rewrite extends Base {
 
 		$this->go_to( Rewrite::get_occurrence_url( $post_id, $recurrence_id ) );
 
-		$this->assertFalse( is_404(), 'A cancelled occurrence URL must resolve, not 404.' );
+		$this->assertFalse( is_404(), 'A canceled occurrence URL must resolve, not 404.' );
 		$this->assertSame(
 			$recurrence_id,
 			get_query_var( Context::QUERY_VAR ),
-			'The occurrence query var should still carry the cancelled occurrence\'s recurrence ID.'
+			'The occurrence query var should still carry the canceled occurrence\'s recurrence ID.'
 		);
 	}
 
@@ -1055,7 +1055,8 @@ class Test_Rewrite extends Base {
 	 * @return void
 	 */
 	public function test_parse_request_bails_when_no_post_resolves(): void {
-		// The site must genuinely have a recurring event, or REQ-16's guard on
+		// The site must genuinely have a recurring event, or the
+		// no-recurring-events guard on
 		// `parse_request()` returns before the post-resolution branch this test
 		// exists to reach -- the assertion below would then hold for a reason
 		// that has nothing to do with post resolution.

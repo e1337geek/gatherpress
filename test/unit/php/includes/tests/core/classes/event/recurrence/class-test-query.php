@@ -244,7 +244,7 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16: a site with no recurring events runs byte-identical SQL.
+	 * A site with no recurring events runs byte-identical SQL.
 	 *
 	 * Captures the clause array a real event query produces with the filter
 	 * registered and with it removed, and asserts the two are identical. The
@@ -280,7 +280,7 @@ class Test_Query extends Base {
 	 * The clause filter runs on every `posts_clauses`, so on a site that does
 	 * have recurring events the only thing keeping the occurrence join off
 	 * posts, pages, search and REST collections is the events-table check.
-	 * Same shape as the REQ-16 assertion above, on the other guard arm.
+	 * Same shape as the byte-identical assertion above, on the other guard arm.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -316,7 +316,7 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 at the callback boundary: the clause array is returned unchanged.
+	 * Coverage at the callback boundary: the clause array is returned unchanged.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -543,7 +543,7 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for a cancelled occurrence dropping out without the anchor row returning.
+	 * Coverage for a canceled occurrence dropping out without the anchor row returning.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -565,7 +565,7 @@ class Test_Query extends Base {
 		$this->assertNotContains(
 			$series . '|' . $this->occurrence_id( $anchor, 2 ),
 			$upcoming,
-			'Failed to assert the cancelled occurrence is absent from the list.'
+			'Failed to assert the canceled occurrence is absent from the list.'
 		);
 		$this->assertSame(
 			array(
@@ -592,11 +592,11 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for the cancelled-series guard: a fully cancelled series is absent.
+	 * Coverage for the canceled-series guard: a fully canceled series is absent.
 	 *
 	 * Without the guard the `LEFT JOIN` matches nothing, the row falls through
 	 * with `NULL` occurrence columns, `COALESCE` reaches the anchor date, and
-	 * the cancelled series reappears as an ordinary event.
+	 * the canceled series reappears as an ordinary event.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -623,7 +623,7 @@ class Test_Query extends Base {
 		$this->assertNotContains(
 			$series . '|',
 			$combined,
-			'Failed to assert a fully cancelled series does not reappear at its anchor date.'
+			'Failed to assert a fully canceled series does not reappear at its anchor date.'
 		);
 		$this->assertSame(
 			array(),
@@ -635,7 +635,7 @@ class Test_Query extends Base {
 					}
 				)
 			),
-			'Failed to assert a fully cancelled series contributes no list entries at all.'
+			'Failed to assert a fully canceled series contributes no list entries at all.'
 		);
 	}
 

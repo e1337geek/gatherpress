@@ -1,6 +1,6 @@
 <?php
 /**
- * Class handles unit tests proving REQ-16's back-compat guarantee: a site with
+ * Class handles unit tests proving the back-compat guarantee: a site with
  * no recurring events pays nothing, and converting a plain event to/from a
  * recurring one never disturbs its identity, permalink, or RSVPs.
  *
@@ -194,7 +194,7 @@ class Test_Backcompat extends Base {
 
 	/**
 	 * Build the arguments for an "upcoming events" list query, the read this
-	 * whole file's REQ-16 guarantee is measured against.
+	 * whole file's back-compat guarantee is measured against.
 	 *
 	 * @since 0.36.0
 	 *
@@ -211,17 +211,16 @@ class Test_Backcompat extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16 / PRD success metric 5: rendering the upcoming-events
-	 * list on a site with no recurring events produces byte-identical SQL and
-	 * an identical query count to a baseline with the recurrence hooks removed
-	 * entirely.
+	 * Rendering the upcoming-events list on a site with no recurring events
+	 * produces byte-identical SQL and an identical query count to a baseline
+	 * with the recurrence hooks removed entirely.
 	 *
 	 * The baseline is produced by removing `Query::expand_event_clauses()` from
 	 * `posts_clauses` and `Query::attach_occurrences()` from `the_posts` for the
 	 * duration of one query, then re-adding them -- the "hooks not registered
-	 * at all" side of the comparison the task brief offers as an alternative to
-	 * removing every recurrence hook process-wide, which would also tear down
-	 * hooks this file's other tests depend on.
+	 * at all" side of the comparison, rather than removing every recurrence
+	 * hook process-wide, which would also tear down hooks this file's other
+	 * tests depend on.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::attach_occurrences
@@ -473,9 +472,8 @@ class Test_Backcompat extends Base {
 	 * visiting a plain event's permalink, and running the cron scheduler
 	 * together write no option at all when the site has no recurring events.
 	 *
-	 * Diffs `wp_load_alloptions()` before and after, per the task brief's own
-	 * suggested technique, rather than asserting against one option in
-	 * isolation.
+	 * Diffs `wp_load_alloptions()` before and after, rather than asserting
+	 * against one option in isolation.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
 	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
@@ -579,7 +577,7 @@ class Test_Backcompat extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-16's identity guarantee going forward: converting a
+	 * Coverage for the identity guarantee going forward: converting a
 	 * plain event to a recurring one preserves its post ID, permalink, and
 	 * RSVPs.
 	 *

@@ -2,7 +2,7 @@
 /**
  * Occurrence URLs: rewrite rule registration and request resolution.
  *
- * REQ-8 gives every occurrence of a series its own URL, so an attendee can
+ * Every occurrence of a series gets its own URL, so an attendee can
  * link a friend to the specific date they are attending. The URL is the
  * event's own permalink plus a segment identifying the occurrence's start:
  * `/{event-slug}/{postname}/{Ymd\THis}/`.
@@ -22,8 +22,8 @@
  * feed/ical endpoints) is registered into `$wp_rewrite->extra_rules_top`,
  * which is merged into `$wp_rewrite->rules` strictly before every
  * post-type-generated rule, including that catch-all. See
- * `test/unit/php/.../class-test-rewrite.php` for the regression coverage
- * that pins this down.
+ * `test/unit/php/includes/tests/core/classes/event/recurrence/class-test-rewrite.php`
+ * for the regression coverage that pins this down.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -210,19 +210,21 @@ final class Rewrite {
 	 *
 	 * A well-formed occurrence segment that does not resolve to a real row
 	 * through `Occurrences::get()` 404s -- a stale or hand-typed link must
-	 * not silently render the series at its anchor date. A cancelled
-	 * occurrence resolves rather than 404s (REQ-12): `Occurrences::get()`
-	 * does not filter by status, so a cancelled row is returned like any
-	 * other and this method never inspects `status` itself.
+	 * not silently render the series at its anchor date. A canceled
+	 * occurrence resolves rather than 404s, so an attendee holding the link is
+	 * told it was canceled: `Occurrences::get()` does not filter by status, so
+	 * a canceled row is returned like any other and this method never inspects
+	 * `status` itself.
 	 *
-	 * REQ-16 is enforced here, at the single entry point, rather than inside
-	 * each branch. Both branches reach the occurrence table -- the bare-series
+	 * The "a site with no recurring events pays nothing" guarantee is enforced
+	 * here, at the single entry point, rather than inside each branch. Both
+	 * branches reach the occurrence table -- the bare-series
 	 * one through `next_upcoming_recurrence_id()`, the occurrence-segment one
 	 * through `Occurrences::get()` -- and `Occurrences::get()` is a raw,
 	 * uncached `$wpdb->get_row()`. A guard placed per branch is one a later
-	 * branch can be added without, which is exactly how the occurrence-segment
-	 * path shipped unguarded while the bare-series path was correct. Guarding
-	 * the method instead of the path means a new branch inherits it.
+	 * branch can be added without, leaving that branch to query the table on a
+	 * site with no recurring events. Guarding the method instead of the path
+	 * means a new branch inherits it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -266,7 +268,7 @@ final class Rewrite {
 	/**
 	 * Resolve a bare series URL's query var to its next upcoming occurrence.
 	 *
-	 * PRD D-4: visiting a recurring series at its own permalink, with no
+	 * Visiting a recurring series at its own permalink, with no
 	 * occurrence segment, resolves to the next upcoming occurrence rather
 	 * than the series anchor. A post with no scheduled upcoming occurrence
 	 * rows -- a non-recurring event, or a series that has run out -- is left
@@ -284,7 +286,7 @@ final class Rewrite {
 	 * of a multi-post series -- and then narrows the result back to rows whose
 	 * `series_post_id` is the requested post. Today those two steps cancel out,
 	 * because `resolve_post_ids()` returns `array( $post_id )` and one post is
-	 * the whole series. They stop cancelling the moment REQ-18's forward split
+	 * the whole series. They stop canceling the moment the forward split
 	 * makes a series span several posts, and the narrowing is what decides the
 	 * behavior then:
 	 *
@@ -301,7 +303,8 @@ final class Rewrite {
 	 * placeholder: nothing in this stack can produce a second fragment yet, so
 	 * the two are indistinguishable at runtime, and the narrower rule is the
 	 * one that cannot silently redirect a request to a post the visitor did not
-	 * ask for. Two invariants this PR does guarantee, which W7 must preserve:
+	 * ask for. Two invariants this PR does guarantee, which later work on the
+	 * split must preserve:
 	 *
 	 * 1. A pre-split occurrence URL keeps resolving to the same occurrence
 	 *    after the split, whichever fragment ends up owning that row.
@@ -309,20 +312,20 @@ final class Rewrite {
 	 *    so the canonical URL a bare request produces always sits under the
 	 *    requested post's slug.
 	 *
-	 * **W7 owns the completion** (it depends on W6's split orchestration). What
-	 * it has to decide and cover is: whether a lapsed fragment's bare URL
-	 * forwards to the live fragment or stays put; if it forwards, whether that
+	 * **Later work owns the completion**, since it depends on the split
+	 * orchestration. What it has to decide and cover is: whether a lapsed
+	 * fragment's bare URL forwards to the live fragment or stays put; if it forwards, whether that
 	 * is a resolution or a `301` and what `rel="canonical"` then says; and
 	 * which post a logical series' "the series' URL" means for calendar
 	 * subscriptions and revisions once more than one post can answer to it. The
 	 * narrowing comparison below is the single line those decisions land on.
 	 *
-	 * REQ-16 is handled by `parse_request()` before this method is reached, so
-	 * the `get_page_by_path()` lookup below is never paid on a site with no
-	 * recurring events. The guard deliberately does not live here: this is the
+	 * The no-recurring-events guard is handled by `parse_request()` before this
+	 * method is reached, so the `get_page_by_path()` lookup below is never paid
+	 * on a site with no recurring events. The guard deliberately does not live here: this is the
 	 * branch every non-occurrence request falls through to, and guarding a
-	 * branch rather than the entry point is what let the sibling
-	 * occurrence-segment branch ship without one.
+	 * branch rather than the entry point leaves every sibling branch to
+	 * remember the guard for itself.
 	 *
 	 * @since 0.36.0
 	 *
@@ -384,7 +387,7 @@ final class Rewrite {
 	 * Reads across every post of the series and then answers only with a row
 	 * belonging to the requested post. That narrowing is the bare-URL contract
 	 * documented on `maybe_resolve_bare_series()` -- fragment semantics -- and
-	 * it is the line W7 revisits once a series can span more than one post.
+	 * it is the line to revisit once a series can span more than one post.
 	 *
 	 * @since 0.36.0
 	 *
@@ -402,7 +405,7 @@ final class Rewrite {
 
 		foreach ( $rows as $row ) {
 			// The `series_post_id` comparison is the fragment-semantics
-			// narrowing; see this method's docblock and W7.
+			// narrowing; see this method's docblock.
 			if ( (int) $row['series_post_id'] === $post_id && $row['datetime_start_gmt'] >= $now ) {
 				return (string) $row['recurrence_id'];
 			}
@@ -432,8 +435,8 @@ final class Rewrite {
 	 * `parse_request()`, and rewrite-option invalidation keyed off the filtered
 	 * regex so a changed pattern reaches the persisted `rewrite_rules` -- and
 	 * every one of them has to agree or the site 404s its own links. Against
-	 * that, the segment *is* the composite identity (PRD C-1): an invertible
-	 * transform is a re-encoding with no product behind it, and a
+	 * that, the segment *is* the composite identity: an invertible transform is
+	 * a re-encoding with no product behind it, and a
 	 * non-invertible one is the defect above. The filter is unreleased, has no
 	 * known consumer, and nothing outside this class ever composed the segment,
 	 * so removing it costs no compatibility. If a real requirement appears

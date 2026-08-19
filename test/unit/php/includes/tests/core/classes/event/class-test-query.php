@@ -64,7 +64,7 @@ class Test_Query extends Base {
 	 * rather than on a result order, because only the stated `orderby` can
 	 * produce that clause, while a result order coincides with the
 	 * `post_date` fallback whenever the fixture happens to be authored in
-	 * chronological order (rule 3a #8).
+	 * chronological order.
 	 *
 	 * @covers ::get_events_list
 	 * @covers ::adjust_sorting_for_upcoming_events

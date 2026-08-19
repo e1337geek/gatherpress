@@ -1,10 +1,10 @@
 <?php
 /**
- * Class handles unit tests for REQ-15: an occurrence inherits its series'
- * venue, and occurrence-aware event queries stay filterable by venue.
+ * Class handles unit tests for venue inheritance: an occurrence inherits its
+ * series' venue, and occurrence-aware event queries stay filterable by venue.
  *
- * `Recurrence\Context` (see `class-context.php`) is a T0 skeleton in this
- * baseline -- `set()`, `clear()`, `current()`, `metadata()`, and
+ * `Recurrence\Context` (see `class-context.php`) is an unwired skeleton in
+ * this baseline -- `set()`, `clear()`, `current()`, `metadata()`, and
  * `occurrence_url()` are all unwired no-op stubs, so there is no frozen
  * `Context` read API to test venue resolution against. Venue rendering is
  * exercised through actual page requests instead: `Rewrite::parse_request()`
@@ -161,7 +161,7 @@ class Test_Venue_Inheritance extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-15: the series' venue resolves identically no matter
+	 * The series' venue resolves identically no matter
 	 * which of its occurrence pages a visitor lands on.
 	 *
 	 * @covers \GatherPress\Core\Venue\Setup::get_venue_post_from_event_post_id
@@ -209,7 +209,7 @@ class Test_Venue_Inheritance extends Base {
 	}
 
 	/**
-	 * Coverage for REQ-15: an occurrence-aware event query filtered by venue
+	 * An occurrence-aware event query filtered by venue
 	 * returns only the occurrences of series tagged with that venue.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses

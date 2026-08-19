@@ -17,10 +17,10 @@
  * term is the authoritative source.
  *
  * **Every assertion here names an exact URL**, and every fixture puts the
- * occurrence under test somewhere other than first. PRD D-4 makes the bare
- * series URL resolve to the *next upcoming* occurrence, so a test that asserted
- * only "the URL contains an occurrence segment", or that pointed at the first
- * occurrence, would stay green with both fixes reverted (rule 3a #8).
+ * occurrence under test somewhere other than first. A bare series URL resolves
+ * to the *next upcoming* occurrence, so a test that asserted only "the URL
+ * contains an occurrence segment", or that pointed at the first occurrence,
+ * would stay green with both fixes reverted.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -154,7 +154,7 @@ class Test_Permalink extends Base {
 	 * Thirty days out, so nothing is ever in the past: `Rsvp\Form::process_rsvp()`
 	 * bails 400 on `has_event_past()`, reading the *series* meta, and against a
 	 * pinned anchor the email tests would silently stop writing anything once
-	 * real time crossed it (rule 3a #7).
+	 * real time crossed it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -280,14 +280,13 @@ class Test_Permalink extends Base {
 	 * The permalink of a singular occurrence page is the occurrence's own URL.
 	 *
 	 * The requested occurrence is the series' **second**, so the bare-series
-	 * fallback — which PRD D-4 resolves to the next upcoming occurrence, the
+	 * fallback — which resolves to the next upcoming occurrence, the
 	 * first — produces a different answer. Both are asserted: the exact URL the
 	 * requirement specifies, and the explicit absence of the fallback's answer,
 	 * so the test cannot pass with `permalink()` dead.
 	 *
 	 * Context is established by `go_to()` rather than by hand, so the `wp`
-	 * action that binds it in production is part of what is under test
-	 * (rule 3a #3).
+	 * action that binds it in production is part of what is under test.
 	 *
 	 * @covers ::permalink
 	 * @covers ::resolve

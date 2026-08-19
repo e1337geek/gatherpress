@@ -3745,7 +3745,8 @@ class Test_Occurrences extends Base {
 		global $wpdb;
 
 		// State the precondition rather than inheriting it. The occurrence read
-		// path is REQ-16 gated -- on a site with no recurring events it is
+		// path is gated on the site having recurring events -- on a site with
+		// none it is
 		// entitled to answer without naming the occurrence table at all -- so a
 		// test that pins the occurrence-joined statement has to say that this
 		// site has them.

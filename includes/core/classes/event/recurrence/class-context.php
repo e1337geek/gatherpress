@@ -2,13 +2,14 @@
 /**
  * Request-scoped occurrence context, and the read path that feeds unmodified blocks.
  *
- * `Event::get_datetime()` reads from post meta rather than from the events
- * table, so filtering `get_post_metadata` is enough to make
+ * This class is what lets an occurrence's date reach every existing block.
+ * `Event::get_datetime()` reads from post meta rather
+ * than from the events table, so filtering `get_post_metadata` is enough to make
  * every existing date-aware block render an occurrence's date without a single
  * block file changing.
  *
- * An occurrence's time of day comes from the occurrence record. It is
- * never computed by applying the series anchor's time to the occurrence's date.
+ * An occurrence's time of day comes from the occurrence record. It is never
+ * computed by applying the series anchor's time to the occurrence's date.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -161,7 +162,8 @@ final class Context {
 	 * Isolation in both cases comes from the same rule the pre-existing
 	 * `metadata()` and `maybe_prepend_cancelled_notice()` already follow: an
 	 * occurrence is served only for the post it belongs to. That is scoping by
-	 * identity rather than by loop position, which is what PRD C-1 asks for.
+	 * identity rather than by loop position, so identity is always the
+	 * composite `(series_post_id, recurrence_id)` and never a list index.
 	 *
 	 * @since 0.36.0
 	 *
@@ -244,10 +246,11 @@ final class Context {
 	/**
 	 * Enter occurrence context when the request asks for one on this post.
 	 *
-	 * The `site_has_recurring_events()` check is REQ-16 on the read path, and it
-	 * is evaluated here at callback time rather than at `setup_hooks()` so a
-	 * mid-request flip of the option is honored. Without it, any crawler or
-	 * referrer-spam bot appending the occurrence query string to an ordinary
+	 * The `site_has_recurring_events()` check keeps a site with no recurring
+	 * events off this read path, and it is evaluated here at callback time
+	 * rather than at `setup_hooks()` so a mid-request flip of the option is
+	 * honored. Without it, any crawler or referrer-spam bot appending the
+	 * occurrence query string to an ordinary
 	 * event permalink would reach `Occurrences::get()` — a raw, uncached
 	 * `$wpdb->get_row()` — on a site that has never authored a recurring event.
 	 *
@@ -329,22 +332,21 @@ final class Context {
 	 * the singular occurrence page answers with the occurrence the request
 	 * named.
 	 *
-	 * That second arm used to be withheld, on the theory that rewriting
-	 * `get_permalink()` on a singular occurrence request would disturb core's
-	 * canonical-redirect machinery. Measured against
-	 * `wp-includes/canonical.php`, it does not: on a resolved singular request
+	 * Rewriting `get_permalink()` on a singular occurrence request does not
+	 * disturb core's canonical-redirect machinery. In
+	 * `wp-includes/canonical.php`, on a resolved singular request
 	 * `redirect_canonical()` reaches `get_permalink()` only through branches
 	 * this request cannot be in — `is_singular() && $wp_query->post_count < 1`,
 	 * the `is_404()` recovery, the query-string `?name=`/`?p=` forms, and the
 	 * paginated `get_query_var( 'page' )` arm, none of which a matched
 	 * occurrence rewrite rule produces. It ends at
 	 * `if ( ! $redirect_url || $redirect_url === $requested_url ) { return; }`
-	 * with `$redirect_url` still `false`, before and after this change alike.
+	 * with `$redirect_url` still `false`.
 	 *
-	 * Withholding it, meanwhile, was a live defect rather than a neutral
+	 * Withholding that arm, meanwhile, is a live defect rather than a neutral
 	 * choice: every link emitted from an occurrence page — the iCal `URL:`
 	 * field, `rel="canonical"`, share links, the RSVP confirmation email —
-	 * pointed at the bare series URL, which PRD D-4 resolves to the *next
+	 * would point at the bare series URL, which resolves to the *next
 	 * upcoming* occurrence rather than the one being viewed.
 	 *
 	 * The `$post` core hands this filter is `get_post()`'s cached object, not
@@ -410,7 +412,7 @@ final class Context {
 	 * Resolve which occurrence, if any, applies to one post right now.
 	 *
 	 * The row's own stamp wins over the request's occurrence, and the ordering
-	 * is the whole point of the method. The reverse order shipped once, on the
+	 * is the whole point of the method. The reverse order is tempting, on the
 	 * reasoning that "a loop rendered on that same response can still only
 	 * reach this arm for the requested post itself, and for that post the two
 	 * agree." Occurrences are exactly what breaks that assumption: a Query Loop
@@ -456,9 +458,9 @@ final class Context {
 	 * `Query::attach_occurrences()` stamps identity *and* the occurrence's own
 	 * datetime columns onto a clone of every result row, so this is pure
 	 * property access -- no query, and nothing keyed by list position or by
-	 * index (PRD C-1, and preamble rule 6). The values are the occurrence
-	 * record's own columns rather than the anchor's time applied to the
-	 * occurrence's date (PRD C-3).
+	 * index. Identity is the composite `(series_post_id, recurrence_id)`. The
+	 * values are the occurrence record's own columns rather than the anchor's
+	 * time applied to the occurrence's date.
 	 *
 	 * The `$post_id` comparison is the isolation rule: the stamp is served
 	 * only for the post it was stamped onto, so a consumer reading a different
@@ -510,12 +512,12 @@ final class Context {
 	}
 
 	/**
-	 * Prepend a cancellation notice to a cancelled occurrence's content.
+	 * Prepend a cancellation notice to a canceled occurrence's content.
 	 *
-	 * REQ-12 is explicit that "an attendee holding the link deserves to be
-	 * told it was cancelled." `Rewrite::parse_request()` already lets a
-	 * cancelled occurrence's URL resolve instead of 404ing; this is what
-	 * tells the visitor once it does. Scoped to the post the occurrence
+	 * An attendee holding the link deserves to be told the occurrence was
+	 * canceled. `Rewrite::parse_request()` already lets a canceled
+	 * occurrence's URL resolve instead of 404ing; this is what tells the
+	 * visitor once it does. Scoped to the post the occurrence
 	 * context belongs to via `get_the_ID()`, matching how `metadata()` scopes
 	 * its own substitution, so an unrelated loop rendering full content
 	 * elsewhere on the same response (a Query Loop, a widget) does not pick
@@ -526,7 +528,7 @@ final class Context {
 	 * @param string $content The post content.
 	 *
 	 * @return string The content, with a cancellation notice prepended when
-	 *                this is a cancelled occurrence's own content.
+	 *                this is a canceled occurrence's own content.
 	 */
 	public function maybe_prepend_cancelled_notice( string $content ): string {
 		if (
@@ -539,7 +541,7 @@ final class Context {
 
 		$notice = sprintf(
 			'<p class="gatherpress-occurrence-cancelled-notice">%s</p>',
-			esc_html__( 'This occurrence has been cancelled.', 'gatherpress' )
+			esc_html__( 'This occurrence has been canceled.', 'gatherpress' )
 		);
 
 		return $notice . $content;
@@ -595,10 +597,9 @@ final class Context {
 	/**
 	 * Read one derived datetime value from the occurrence record.
 	 *
-	 * PRD C-3 lives here: every value comes from the occurrence row's own
-	 * column. Nothing recombines the occurrence's date with the series anchor's
-	 * time of day, which is what would foreclose multiple-times-per-day rules
-	 * later.
+	 * Every value comes from the occurrence row's own column. Nothing
+	 * recombines the occurrence's date with the series anchor's time of day,
+	 * which is what would foreclose multiple-times-per-day rules later.
 	 *
 	 * The occurrence table's `timezone` column is nullable, so an empty column
 	 * falls back to the series post's own timezone meta rather than to the site
@@ -660,7 +661,8 @@ final class Context {
 	 * The post ID is part of the decision because a `recurrence_id` is
 	 * `Ymd\THis`, so two series share one whenever they occur at the same
 	 * moment. Keying on the identifier alone would let one series' `Event` serve
-	 * another series' cached entry — PRD C-1, identity is the composite.
+	 * another series' cached entry, when identity is the composite
+	 * `(series_post_id, recurrence_id)`.
 	 *
 	 * @since 0.36.0
 	 *

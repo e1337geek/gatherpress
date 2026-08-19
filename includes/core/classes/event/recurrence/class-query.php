@@ -132,8 +132,8 @@ final class Query {
 	/**
 	 * Property carrying occurrence identity on each result object.
 	 *
-	 * Identity travels on the object, never by list position (PRD C-1). A null
-	 * value means the entry is a non-recurring event.
+	 * Identity travels on the object, never by list position. A null value
+	 * means the entry is a non-recurring event.
 	 *
 	 * @since 0.36.0
 	 * @var string
@@ -149,9 +149,9 @@ final class Query {
 	 * values ride along on the same object the identity does, so
 	 * `Context::loop_occurrence()` is pure property access.
 	 *
-	 * PRD C-3 is why the *columns* travel rather than just the date: an
-	 * occurrence's time of day is read from the occurrence record, never
-	 * recomposed from the anchor's time.
+	 * The *columns* travel rather than just the date because an occurrence's
+	 * time of day is read from the occurrence record, never recomposed from the
+	 * anchor's time.
 	 *
 	 * A null value means the entry is a non-recurring event.
 	 *
@@ -301,7 +301,7 @@ final class Query {
 	 * The join is a `LEFT JOIN` with `status` in the join condition, never an
 	 * `INNER JOIN` and never `status` in the `WHERE`: either shape deletes
 	 * every non-recurring event from every list. That alone is not sufficient
-	 * though -- a series whose occurrences are all cancelled matches no join
+	 * though -- a series whose occurrences are all canceled matches no join
 	 * row, falls through with `NULL` occurrence columns, and would reappear at
 	 * its anchor date as an ordinary event. The `NOT EXISTS` guard scopes that
 	 * `NULL` fallback to posts with **no occurrence rows at all**, so a series
@@ -323,7 +323,7 @@ final class Query {
 	 *
 	 * Ordering and range predicates are rewritten to
 	 * `COALESCE( occurrence, anchor )`, which is not sargable and will
-	 * filesort. That is measured and accepted.
+	 * filesort. That is an accepted trade.
 	 *
 	 * @since 0.36.0
 	 *
@@ -337,7 +337,7 @@ final class Query {
 
 		$events_table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
 
-		// Arm 1 is REQ-16: a site that never authors a recurring event runs
+		// Arm 1: a site that never authors a recurring event runs
 		// byte-identical SQL and pays nothing.
 		//
 		// Arm 2 exempts an `'ids'` result set from expansion entirely, not
@@ -384,7 +384,7 @@ final class Query {
 		// reported. Not expanding at all is what makes the stated contract
 		// true: a blog without the table shows exactly what it would show with
 		// no recurrence code present. It is deliberately the last arm, so a
-		// site with no recurring events never pays for the check and REQ-16's
+		// site with no recurring events never pays for the check and its
 		// byte-identical SQL is unaffected.
 		if (
 			! self::site_has_recurring_events()
