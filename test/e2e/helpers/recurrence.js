@@ -67,10 +67,10 @@ async function dismissEditorModals( page ) {
  *
  * `apiFetch` rejects with a plain object (`{ code, message, data }`), not an
  * `Error`. Playwright serializes a thrown non-`Error` out of `page.evaluate`
- * as the bare string `Object`, so every REST failure in this suite -- a
- * missing route, a permissions refusal, a rejected meta value -- arrives as
+ * as the bare string `Object`, so every REST failure in this suite arrives as
  * `Error: page.evaluate: Object` with the entire reason discarded, pointing
- * only at the helper's line number. That turns a one-line diagnosis into an
+ * only at the helper's line number. A missing route, a permissions refusal and
+ * a rejected meta value all land the same way. That turns a one-line diagnosis into an
  * investigation. Normalize the rejection inside the page, then raise a real
  * Error on the Node side naming the route, the status and the message.
  *
@@ -105,7 +105,7 @@ async function restRequest( page, options ) {
 
 		throw new Error(
 			`REST ${ options.method ?? 'GET' } ${ options.path } failed: ` +
-				`${ code } (HTTP ${ status ?? 'unknown' }) — ${ message }`
+				`${ code } (HTTP ${ status ?? 'unknown' }): ${ message }`
 		);
 	}
 
@@ -118,8 +118,8 @@ async function restRequest( page, options ) {
  * Every spec in this suite starts by loading an admin page so
  * `window.wp.apiFetch` exists with a valid REST nonce. If that load ever
  * comes back without the admin's script bundle, the very next `page.evaluate`
- * dies on `Cannot read properties of undefined (reading 'apiFetch')` — a
- * broken test rather than a red one, reported against whichever seeding call
+ * dies on `Cannot read properties of undefined (reading 'apiFetch')`. That is
+ * a broken test rather than a red one, reported against whichever seeding call
  * happened to run first. Asserting the precondition here turns that into a
  * named failure at the point the precondition was violated.
  *
@@ -448,8 +448,8 @@ async function setEndCondition( page, { endType, until, count } = {} ) {
 
 /**
  * Save the currently open event (works for both "Publish" a draft and
- * "Save"/"Update" an already-published post — the block editor's header
- * button carries whichever label matches the post's current status).
+ * "Save"/"Update" an already-published post, because the block editor's
+ * header button carries whichever label matches the post's current status).
  *
  * @since 0.36.0
  *
@@ -555,20 +555,20 @@ async function createUpcomingEventsListPage(
 	title,
 	{ perPage = 20, withPostContent = false, search = '' } = {}
 ) {
-	// `core/post-content` is what pulls each row's own blocks -- the RSVP
-	// block and the online-event link among them -- into the loop, which is
-	// the surface beat 5 needs: one post rendered many times, each row
-	// carrying its own occurrence identity.
+	// `core/post-content` is what pulls each row's own blocks into the loop,
+	// the RSVP block and the online-event link among them. That is the surface
+	// beat 5 needs: one post rendered many times, each row carrying its own
+	// occurrence identity.
 	// The event's own content already opens with an `event-date` block, so the
-	// row adds one only when it is not pulling the content in -- two of them in
-	// one row would leave every date lookup ambiguous.
+	// row adds one only when it is not pulling the content in, because two of
+	// them in one row would leave every date lookup ambiguous.
 	const rowBlocks = '<!-- wp:post-title {"isLink":true} /-->' +
 		( withPostContent ? '<!-- wp:post-content /-->' : '<!-- wp:gatherpress/event-date {"isLink":true} /-->' );
 
 	// A `search` term scopes the loop to one series. Without it the list is
 	// every upcoming event on the site, so a spec asserting the *exact* row
 	// vector of one series is at the mercy of how many rows other events push
-	// past `perPage` -- which makes it fail for a reason that has nothing to do
+	// past `perPage`, which makes it fail for a reason that has nothing to do
 	// with what it is named for.
 	const content = `<!-- wp:query {"queryId":1,"query":{"perPage":${ perPage },"pages":0,"offset":0,` +
 		`"search":${ JSON.stringify( search ) },` +
@@ -613,7 +613,7 @@ function getSeriesRows( page, title ) {
  *
  * The vector, not one row, is the point. A single-row assertion about an
  * occurrence's RSVP state passes just as happily when *every* row is
- * attending — which is precisely the collapsed-store defect beat 5 exists to
+ * attending, which is precisely the collapsed-store defect beat 5 exists to
  * catch. Reading every row lets a spec assert "this one, and not the
  * others."
  *
@@ -638,7 +638,7 @@ async function readSeriesRowVector( rows ) {
 			const rawContext = wrapper ? wrapper.getAttribute( 'data-wp-context' ) : null;
 			// The RSVP block renders every status' inner blocks and hides all
 			// but the current one, so the visible `data-rsvp-status` wrapper is
-			// this row's RSVP state -- server-rendered on load, and swapped by
+			// this row's RSVP state, server-rendered on load and swapped by
 			// `callbacks.renderRsvpBlock` after an in-page RSVP.
 			const activeStatus = Array.from( row.querySelectorAll( '[data-rsvp-status]' ) ).find(
 				( node ) => ! node.classList.contains( 'gatherpress--is-hidden' )
@@ -766,7 +766,7 @@ async function setSiteTimezone( page, tz ) {
  * endpoint, so a spec that changes it can put it back.
  *
  * Several specs in this suite must run under a named timezone, and
- * other e2e files share this WordPress install — leaving the site on
+ * other e2e files share this WordPress install. Leaving the site on
  * whatever the last recurrence spec set is a cross-file side effect.
  *
  * @since 0.36.0
@@ -800,7 +800,7 @@ function dateOnly( date ) {
  *
  * A spec that seeds an anchor date and then asserts a *different*, later
  * occurrence's date needs the anchor itself to fall outside the rule's own
- * weekdays — otherwise the anchor and the first occurrence coincide by
+ * weekdays. Otherwise the anchor and the first occurrence coincide by
  * chance on any day the test happens to run, and a broken resolution path
  * would go uncaught. Picking the offset dynamically (never a pinned
  * calendar date) keeps the guarantee true on every run.

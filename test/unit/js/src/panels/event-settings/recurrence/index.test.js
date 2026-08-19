@@ -271,9 +271,9 @@ describe( 'RecurrencePanel', () => {
 			target: { value: 'weekly' },
 		} );
 
-		// Switching back to weekly with no weekday selected yet is withheld —
-		// the last persisted blob is still the monthly one until a weekday is
-		// chosen, proving no leak either way once that happens.
+		// Switching back to weekly with no weekday selected yet is withheld. The
+		// last persisted blob is still the monthly one until a weekday is chosen,
+		// proving no leak either way once that happens.
 		expect( lastPersistedBlob().monthly_day ).toBe( 20 );
 
 		fireEvent.click( screen.getByLabelText( 'Monday' ) );
@@ -353,7 +353,7 @@ describe( 'RecurrencePanel', () => {
 
 		// Switching back to "On date" with no date chosen yet leaves the rule
 		// incomplete (`end_type: 'until'` with an empty `until`, which
-		// `Rule::is_valid_end_shape()` rejects) — the panel withholds the
+		// `Rule::is_valid_end_shape()` rejects). The panel withholds the
 		// write rather than persisting it, so the last known-good blob (the
 		// count-10 shape) is still what is on the post, and a message tells
 		// the organizer why.
@@ -793,8 +793,8 @@ describe( 'RecurrencePanel', () => {
 			count: 0,
 		} );
 
-		// The entity resolves after mount — e.g. a slow fetch, or the site
-		// editor mounting the panel before `core/editor` has the post.
+		// The entity resolves after mount, for example on a slow fetch, or when
+		// the site editor mounts the panel before `core/editor` has the post.
 		useSelect.mockImplementation( ( selector ) =>
 			selector( makeSelect( existingBlob ) ),
 		);

@@ -321,7 +321,7 @@ class Test_Rest_Api extends Base {
 	 * The `status` arg's `enum` schema is enforced by WordPress's own
 	 * `rest_parse_request_arg` default (triggered by declaring `type` with no
 	 * explicit `sanitize_callback`), so the route needs no redundant
-	 * `validate_callback` of its own -- driven through the real dispatch
+	 * `validate_callback` of its own. This is driven through the real dispatch
 	 * path, since that is where the schema actually gets applied
 	 * (`sanitize_params()`, not `has_valid_params()`).
 	 *
@@ -375,7 +375,7 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * A subscriber, who cannot edit the series post, gets a 403 -- driven
+	 * A subscriber, who cannot edit the series post, gets a 403. This is driven
 	 * through the real REST server, not a direct callback call.
 	 *
 	 * @covers ::has_edit_permission
@@ -400,13 +400,13 @@ class Test_Rest_Api extends Base {
 	/**
 	 * A bad `X-WP-Nonce` on an otherwise-authorized cookie session is
 	 * rejected by WordPress's own cookie-auth nonce check before the route's
-	 * own permission callback -- or `update_occurrence_status()` itself --
+	 * own permission callback, and before `update_occurrence_status()` itself,
 	 * ever runs. This is not a property of our route: `rest_cookie_check_errors()`
 	 * gates every REST request the same way, so this test would pass even
 	 * against a completely unregistered route. It stays because the brief
 	 * asks for it and it does drive real dispatch machinery, but it proves
-	 * the inherited protection holds, not something specific to this class --
-	 * hence no `@covers` claim on our own callback.
+	 * the inherited protection holds rather than something specific to this
+	 * class, so it makes no `@covers` claim on our own callback.
 	 *
 	 * @return void
 	 */
@@ -443,7 +443,7 @@ class Test_Rest_Api extends Base {
 	public function test_cancel_route_rejects_a_recurrence_id_belonging_to_another_post(): void {
 		list( $post_a, $recurrence_a ) = $this->create_event_with_occurrence();
 		// Offset by 10 days so post B's five daily occurrences (days 11-15)
-		// never overlap post A's (days 1-5) -- an overlapping date would
+		// never overlap post A's (days 1-5). An overlapping date would
 		// coincidentally also exist as a row for post A, defeating the point
 		// of this test.
 		list( $post_b, $recurrence_b ) = $this->create_event_with_occurrence( 10 );
@@ -467,7 +467,7 @@ class Test_Rest_Api extends Base {
 		);
 		// Pin the specific rejection reason so this test cannot pass merely
 		// because the route itself is unregistered (which also 404s, as
-		// `rest_no_route`) -- it must be *our* callback reporting the
+		// `rest_no_route`). It must be *our* callback reporting the
 		// composite-key mismatch.
 		$this->assertSame(
 			'gatherpress_occurrence_not_found',
@@ -507,8 +507,8 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
-	 * Canceling sets the status column and the front-end upcoming list --
-	 * driven through a real `WP_Query`, not just a column read -- drops it.
+	 * Canceling sets the status column, and the front-end upcoming list drops
+	 * it. That half is driven through a real `WP_Query`, not just a column read.
 	 *
 	 * @covers ::update_occurrence_status
 	 *
@@ -567,7 +567,7 @@ class Test_Rest_Api extends Base {
 	 * Scope note: `Rsvp_Occurrence` (the comment taxonomy that ties an RSVP
 	 * to the specific occurrence it was made for) does not register its
 	 * hooks yet, so `save()` here does not tag the comment with an
-	 * occurrence identifier -- it proves "canceling an occurrence does not
+	 * occurrence identifier. It proves "canceling an occurrence does not
 	 * delete the event's comments" rather than the fully occurrence-scoped
 	 * claim in the method name. `Rsvp_Occurrence::assign()` is being wired up
 	 * in another lane; tighten this test to assert the specific occurrence's
@@ -612,8 +612,8 @@ class Test_Rest_Api extends Base {
 
 	/**
 	 * Cancellation is occurrence state, never expressed by mutating
-	 * the rule. Re-projecting the rule after a cancellation -- exactly what
-	 * happens when the series is re-saved -- must not clear the cancellation.
+	 * the rule. Re-projecting the rule after a cancellation must not clear the
+	 * cancellation, and re-saving the series is exactly what does that.
 	 * Pinned from the REST side: the cancellation itself is set through the
 	 * real route, not through `Occurrences::set_status()` directly.
 	 *
@@ -644,7 +644,7 @@ class Test_Rest_Api extends Base {
 
 	/**
 	 * The occurrences-list route requires `edit_post`, matching the write
-	 * route -- driven through the real server, not a direct callback call.
+	 * route. This is driven through the real server, not a direct callback call.
 	 *
 	 * @covers ::get_occurrences
 	 *
@@ -702,7 +702,7 @@ class Test_Rest_Api extends Base {
 	 * Unlike the write route, this one runs from every ordinary event's
 	 * editor screen, so the guard belongs on the read path specifically.
 	 * Driven through the real server with the query count captured from the
-	 * actual SQL WordPress executes -- calling `get_occurrences()` directly
+	 * actual SQL WordPress executes. Calling `get_occurrences()` directly
 	 * would prove the method's body runs, not that the real entry point
 	 * short-circuits before it reaches the database.
 	 *
@@ -796,7 +796,7 @@ class Test_Rest_Api extends Base {
 		$this->assertContains(
 			$sibling_recurrence_id,
 			$recurrence_ids,
-			'A sibling post the resolver returns must also be listed -- this is what breaks without resolve_post_ids().'
+			'A sibling post the resolver returns must also be listed. This is what breaks without resolve_post_ids().'
 		);
 	}
 
@@ -823,7 +823,7 @@ class Test_Rest_Api extends Base {
 	 * The list route authorizes every sibling it returns, not only the post
 	 * the request named. `has_edit_permission()` runs one capability check on
 	 * the request's `post_id`, while `Series::resolve_post_ids()` can widen
-	 * the read to sibling posts the caller was never authorized for -- so a
+	 * the read to sibling posts the caller was never authorized for, so a
 	 * user who can edit A but not B must not learn B's occurrence dates or
 	 * statuses from A's panel.
 	 *

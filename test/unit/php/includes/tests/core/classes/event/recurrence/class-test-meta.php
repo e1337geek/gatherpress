@@ -33,8 +33,8 @@ class Test_Meta extends Base {
 	 * it that way afterwards.
 	 *
 	 * The timezone-transition tests assert on projected rows, not only on the
-	 * derived mirrors, so the table has to exist -- the bootstrap creates it --
-	 * and it has to be empty in both directions. Occurrence rows that outlive
+	 * derived mirrors, so the table has to exist, and the bootstrap creates it.
+	 * It also has to be empty in both directions. Occurrence rows that outlive
 	 * the test that projected them, while post IDs restart from the rollback,
 	 * let a later test's brand-new post inherit an earlier series' ID and
 	 * resolve occurrences it never had.
@@ -668,11 +668,11 @@ class Test_Meta extends Base {
 	/**
 	 * `set_recurrence()` clears the mirrors, rather than writing them, when
 	 * the series carries a fixed UTC-offset timezone rather than a named
-	 * tz-database identifier -- `Timezone_Guard::assert_named()` throws, and
+	 * tz-database identifier. `Timezone_Guard::assert_named()` throws, and
 	 * `write_recurrence()`'s catch clears the mirrors instead of letting a
 	 * DST-unsafe rule reach the expander. GatherPress normalizes WordPress's
 	 * manual-offset option (e.g. `UTC+5.5`) into `+05:30`, and a site left on
-	 * a manual UTC offset is a common configuration -- this is the live path
+	 * a manual UTC offset is a common configuration. This is the live path
 	 * the guard exists to close, not a synthetic one.
 	 *
 	 * @covers ::set_recurrence
@@ -735,9 +735,9 @@ class Test_Meta extends Base {
 
 	/**
 	 * `resolve_pending_recurrence()` clears the mirrors, rather than deferring
-	 * again, when the timezone is still unknown at `shutdown` -- the terminal
-	 * case of the same race: the datetime blob genuinely never arrived this
-	 * request.
+	 * again, when the timezone is still unknown at `shutdown`. That is the
+	 * terminal case of the same race: the datetime blob genuinely never arrived
+	 * this request.
 	 *
 	 * @covers ::resolve_pending_recurrence
 	 * @covers ::write_recurrence
@@ -763,8 +763,8 @@ class Test_Meta extends Base {
 
 	/**
 	 * Rewrite a post's `gatherpress_datetime` blob, keeping the anchor and
-	 * changing only the timezone -- the exact edit an organizer makes in the
-	 * Date & Time panel.
+	 * changing only the timezone, which is the exact edit an organizer makes in
+	 * the Date & Time panel.
 	 *
 	 * @since 0.36.0
 	 *
@@ -792,13 +792,13 @@ class Test_Meta extends Base {
 	 * not leave the recurrence active.
 	 *
 	 * `set_recurrence()` runs on `wp_after_insert_post`, which fires from
-	 * inside `wp_insert_post()` -- before the request's meta writes land. The
+	 * inside `wp_insert_post()`, before the request's meta writes land. The
 	 * recurrence blob is already stored on an existing series, so
 	 * `write_recurrence()` validates immediately, against the timezone the
 	 * post had *before* this save. Nothing revisited that decision: the
 	 * mirrors and the projected rows stayed active in a state the guard refuses,
-	 * while the editor disabled the Repeat control -- the stored series and
-	 * the visible UI disagreeing about whether the event repeats.
+	 * while the editor disabled the Repeat control. The stored series and
+	 * the visible UI then disagreed about whether the event repeats.
 	 *
 	 * @covers ::maybe_revalidate_for_datetime
 	 * @covers ::resolve_pending_revalidation
@@ -854,7 +854,7 @@ class Test_Meta extends Base {
 		$this->assertSame(
 			array(),
 			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
-			'Clearing the mirrors is only half of disabling a series -- the projected rows must go too.'
+			'Clearing the mirrors is only half of disabling a series. The projected rows must go too.'
 		);
 	}
 

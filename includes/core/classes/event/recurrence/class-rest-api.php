@@ -102,7 +102,7 @@ final class Rest_Api {
 	/**
 	 * Get the occurrences-list route definition.
 	 *
-	 * Backs the editor sidebar's occurrence list -- read access is gated the
+	 * Backs the editor sidebar's occurrence list. Read access is gated the
 	 * same as the write route (`edit_post` on the series), since the list
 	 * exists to drive the cancel/restore action, not for public consumption.
 	 *
@@ -136,7 +136,7 @@ final class Rest_Api {
 	 * submit A's ID alongside a `recurrence_id` belonging to post B. The
 	 * composite-key scoping that closes that hole lives in
 	 * `Occurrences::set_status()`, which this route's callback must treat as
-	 * authoritative -- a `false` return there means "no such occurrence for
+	 * authoritative. A `false` return there means "no such occurrence for
 	 * this post," and is reported as a 404, never silently as success.
 	 *
 	 * @since 0.36.0
@@ -177,7 +177,7 @@ final class Rest_Api {
 	/**
 	 * List a series' upcoming occurrences, canceled and scheduled alike.
 	 *
-	 * Canceled occurrences are included deliberately -- the whole point of
+	 * Canceled occurrences are included deliberately. The whole point of
 	 * the sidebar list is to offer a restore action, and a canceled
 	 * occurrence that dropped out of the list would have no way back.
 	 *
@@ -193,7 +193,7 @@ final class Rest_Api {
 	 * (the `gatherpress_series_post_ids` seam) still lists every
 	 * sibling post's occurrences here. The permission callback authorizes the
 	 * *requested* post only, so every resolved sibling is authorized
-	 * separately before it is selected -- see
+	 * separately before it is selected. See
 	 * `authorized_series_post_ids()`.
 	 *
 	 * @since 0.36.0
@@ -227,10 +227,10 @@ final class Rest_Api {
 	 * Set an occurrence's status.
 	 *
 	 * `Occurrences::set_status()` scopes its update by both `post_id` and
-	 * `recurrence_id`; a `false` return means the composite key matched no
-	 * row -- either the recurrence ID does not belong to this post, or it
-	 * does not exist at all -- and is reported as a 404 rather than as
-	 * success.
+	 * `recurrence_id`. A `false` return means the composite key matched no
+	 * row, either because the recurrence ID does not belong to this post or
+	 * because it does not exist at all, and it is reported as a 404 rather
+	 * than as success.
 	 *
 	 * @since 0.36.0
 	 *
@@ -261,8 +261,8 @@ final class Rest_Api {
 	 *
 	 * `has_edit_permission()` authorizes exactly one post: the `post_id` the
 	 * request named. `Series::resolve_post_ids()` can return more than that
-	 * post -- that is the whole point of the `gatherpress_series_post_ids`
-	 * seam -- so selecting straight from its result would return occurrence
+	 * post, which is the whole point of the `gatherpress_series_post_ids`
+	 * seam, so selecting straight from its result would return occurrence
 	 * dates and statuses for siblings no capability check ever covered. A
 	 * caller who can edit A but not B must not learn anything about B.
 	 *
@@ -300,8 +300,8 @@ final class Rest_Api {
 	/**
 	 * Report whether the current user may change this occurrence's status.
 	 *
-	 * `current_user_can( 'edit_post', $post_id )` -- never
-	 * `is_user_logged_in()`, never the RSVP subsystem's `moderate_comments`.
+	 * `current_user_can( 'edit_post', $post_id )`, never
+	 * `is_user_logged_in()` and never the RSVP subsystem's `moderate_comments`.
 	 *
 	 * The `post_id` this authorizes is the post that owns the occurrence being
 	 * mutated, not necessarily the post open in the editor: the client submits

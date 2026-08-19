@@ -6,18 +6,18 @@
  * on the row and a consumer does not read it.** An RSVP resolver that reads
  * only the request's occurrence; an interactivity block context keyed on the
  * post ID alone; a paged archive query that never receives the join that
- * triggers expansion. None of these live inside a single unit -- they live in
+ * triggers expansion. None of these live inside a single unit. They live in
  * the seam where two units meet.
  *
- * This class is the census of those seams. Every test drives a **real request**
- * -- `go_to()`, a real `WP_Query` walked through `the_post()`, real
- * `render_block()` -- and asserts the **whole per-row vector** rather than one
+ * This class is the census of those seams. Every test drives a **real request**,
+ * meaning `go_to()`, a real `WP_Query` walked through `the_post()` and real
+ * `render_block()`, and asserts the **whole per-row vector** rather than one
  * row. That distinction is the point rather than a stylistic preference: all
  * these defects produce *uniform* wrong output, which a single-row assertion
  * accepts. A vector assertion cannot be satisfied by a collapse.
  *
  * The fixture is built so that the right answer and the fallback answer differ
- * on every axis the census asserts -- see
+ * on every axis the census asserts. See
  * `build_census_fixture()` for the four separations and why each one is needed.
  *
  * @package GatherPress\Core\Event\Recurrence
@@ -61,7 +61,7 @@ class Test_Surface_Census extends Base {
 	/**
 	 * Number of occurrences the companion series projects.
 	 *
-	 * Chosen so the archive's upcoming vector runs to thirteen rows -- more
+	 * Chosen so the archive's upcoming vector runs to thirteen rows, more
 	 * than one page at WordPress's ten-per-page default, which is what makes
 	 * the page-two surface a real surface rather than a duplicate of page one.
 	 *
@@ -117,7 +117,7 @@ class Test_Surface_Census extends Base {
 	 * be real: the occurrence URL is a rewrite rule, and `/event/page/2/` is the
 	 * pretty archive pagination rule. The post type's own permastruct is built
 	 * at `register_post_type()` time and only when `permalink_structure` is
-	 * already non-empty, so the type is re-registered here -- without that,
+	 * already non-empty, so the type is re-registered here. Without that,
 	 * `get_permalink()` keeps handing back the plain `?p=` form and no request
 	 * in this file exercises a rule at all.
 	 *
@@ -166,12 +166,12 @@ class Test_Surface_Census extends Base {
 	 * re-appends the archive rules at the **end** of the array while the earlier
 	 * generated single-post rules keep their original slots. `/event/page/2/`
 	 * then matches `event/([^/]+)(?:/([0-9]+))?/?$` instead and parses to
-	 * `gatherpress_event=page&page=2` -- a genuine 404 for a post that does not
+	 * `gatherpress_event=page&page=2`, a genuine 404 for a post that does not
 	 * exist, produced entirely by test-process ordering.
 	 *
 	 * This is worth stating plainly because `class-test-archive.php` reaches the
-	 * opposite conclusion in its own `setUp()` docblock -- that no rule maps to
-	 * `post_type=gatherpress_event` under pretty permalinks, so the plain
+	 * opposite conclusion in its own `setUp()` docblock, that no rule maps to
+	 * `post_type=gatherpress_event` under pretty permalinks so the plain
 	 * query-string form must be used. The rule is present; what is wrong is its
 	 * position, and only after a re-registration.
 	 *
@@ -225,8 +225,8 @@ class Test_Surface_Census extends Base {
 	 * `current_time()` on every surface, so a pinned anchor would be a date bomb
 	 * `class-test-loop-render.php` is the model.
 	 *
-	 * The series timezone is UTC throughout, so an occurrence's identifier -- a
-	 * *local* start in `Ymd\THis` -- and its GMT columns read identically, and a
+	 * The series timezone is UTC throughout, so an occurrence's identifier, a
+	 * *local* start in `Ymd\THis`, reads identically to its GMT columns, and a
 	 * rendered wall clock can be compared against the fixture's own arithmetic
 	 * with no offset bookkeeping.
 	 *
@@ -276,9 +276,9 @@ class Test_Surface_Census extends Base {
 	/**
 	 * Create a daily series and project its occurrence rows.
 	 *
-	 * Fixtures are arranged in production order -- the datetime blob and its
+	 * Fixtures are arranged in production order: the datetime blob and its
 	 * derived row first, then the recurrence blob, then the mirrors, then the
-	 * projection -- which is the sequence a real save produces.
+	 * projection. That is the sequence a real save produces.
 	 *
 	 * @since 0.36.0
 	 *
@@ -339,18 +339,18 @@ class Test_Surface_Census extends Base {
 	 *    started, so the bare-series URL's "next upcoming occurrence" is the
 	 *    *second* one. Anchoring in the future would make the anchor and the
 	 *    next-upcoming occurrence the same row, and the bare-series surface
-	 *    would pass with the resolver removed entirely -- a vacuous assertion.
+	 *    would pass with the resolver removed entirely, which is vacuous.
 	 * 2. **One occurrence's stored datetime is rewritten.** The expander holds
 	 *    the wall-clock time constant across a series, so for a rule-generated
 	 *    row "the record's datetime" and "the anchor's time applied to the
 	 *    record's date" are the same value and no rendered clock can separate
 	 *    them. Rewriting one row's own columns makes the two answers
 	 *    differ. Its *identifier* is deliberately left alone, so the moved row's
-	 *    URL segment and its rendered date disagree -- which additionally kills
+	 *    URL segment and its rendered date disagree, which additionally kills
 	 *    any implementation that derives the date back out of the URL.
 	 * 3. **A second series interleaves with the first.** Ordering by
-	 *    `post_date` -- the archive's behavior before it was fixed -- groups one
-	 *    series' occurrences together, and shares no prefix with ordering by
+	 *    `post_date`, the archive's behavior before it was fixed, groups one
+	 *    series' occurrences together and shares no prefix with ordering by
 	 *    occurrence datetime. The two orderings are separated on page one.
 	 * 4. **Exactly one occurrence carries an RSVP, and it is neither the first
 	 *    nor the anchor's.** A series-wide read shows it on every row; a read
@@ -531,12 +531,12 @@ class Test_Surface_Census extends Base {
 	 *
 	 * **The contract is uniform: wherever an occurrence is in play, that post's
 	 * permalink is the occurrence's URL.** This census originally carried an
-	 * `$occurrence_link` flag because it was not -- `Context::permalink()` stood
+	 * `$occurrence_link` flag because it was not. `Context::permalink()` stood
 	 * down on a *singular* occurrence request, on the reasoning that the
 	 * requested URL already was the occurrence URL and rewriting
 	 * `get_permalink()` would disturb core's canonical-redirect comparison. That
 	 * left `get_permalink()` returning the *bare series* URL on an occurrence
-	 * page, which resolves to the **next upcoming** occurrence -- so the iCal
+	 * page, which resolves to the **next upcoming** occurrence, so the iCal
 	 * `URL:` field and every link on the page named a different date.
 	 *
 	 * The stand-down is gone: `redirect_canonical()` never reaches
@@ -854,7 +854,7 @@ class Test_Surface_Census extends Base {
 		);
 
 		// The URLs themselves, because on this surface the *requested* URL is
-		// the occurrence permalink -- the rendered one deliberately is not.
+		// the occurrence permalink, while the rendered one deliberately is not.
 		$this->assertSame(
 			count( $expected ),
 			count( array_unique( $requested ) ),
@@ -917,7 +917,7 @@ class Test_Surface_Census extends Base {
 	 * join, four event posts at `LIMIT 10, 10` yield nothing and the request
 	 * 404s, making most events unreachable. Both pages are asserted
 	 * here, and the two pages' rows concatenated must equal the whole required
-	 * vector -- a page-one-only assertion is satisfied by exactly the broken
+	 * vector. A page-one-only assertion is satisfied by exactly the broken
 	 * state.
 	 *
 	 * @covers \GatherPress\Core\Event\Setup::defer_event_archive_404
@@ -990,7 +990,7 @@ class Test_Surface_Census extends Base {
 	 *
 	 * The series' first occurrence is the only row that has already run, so the
 	 * past bucket is the surface that proves the buckets are not the same list
-	 * with a different label -- and it is the one place the anchor's own
+	 * with a different label. It is also the one place the anchor's own
 	 * occurrence appears, with its own identity rather than a bare post ID.
 	 *
 	 * @covers ::loop_occurrence
@@ -1124,8 +1124,8 @@ class Test_Surface_Census extends Base {
 	 * Census of a site with no recurring events being untouched.
 	 *
 	 * The capture is taken from `$wpdb->queries` across the **real** entry
-	 * points -- the singular event URL, both archive pages and a bucket loop --
-	 * rather than from inside any one filter, because a filter-level capture
+	 * points, meaning the singular event URL, both archive pages and a bucket
+	 * loop, rather than from inside any one filter, because a filter-level capture
 	 * only observes the queries that already reach that filter, which lets a
 	 * "performs no writes" test pass over an unguarded entry point.
 	 *
@@ -1223,7 +1223,7 @@ class Test_Surface_Census extends Base {
 	 * Two details make the capture comparable rather than merely repeatable. The
 	 * whole sequence is run once and thrown away before the capture starts,
 	 * because the first run of any request primes the object cache and the
-	 * second therefore issues fewer statements -- comparing a cold capture
+	 * second therefore issues fewer statements. Comparing a cold capture
 	 * against a warm one measures the cache, not the hooks. And the current GMT
 	 * timestamp `Event\Query::adjust_event_sql()` interpolates is normalized
 	 * away, because two captures taken microseconds apart can straddle a second

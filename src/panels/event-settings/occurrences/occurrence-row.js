@@ -10,8 +10,8 @@ import { dateI18n, getSettings } from '@wordpress/date';
  * cancel/restore action.
  *
  * An organizer skips a holiday without touching the rest of the series. This
- * row is the per-occurrence surface that action lives on -- canceling writes
- * the occurrence's `status` column via the `occurrence-status` REST route; it
+ * row is the per-occurrence surface that action lives on. Canceling writes
+ * the occurrence's `status` column via the `occurrence-status` REST route, and
  * never touches the rule.
  *
  * @since 0.36.0

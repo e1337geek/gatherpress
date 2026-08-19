@@ -9,8 +9,8 @@
  * tree shows the current one, so edits to a block's `render.php` under `src/`
  * are silently invisible to the suite until `build/` is regenerated.
  *
- * It is a purely local hazard -- CI builds before both the PHPUnit job
- * (`phpunit-tests.yml:67`) and the e2e job (`e2e-tests.yml:119`) -- which is why
+ * It is a purely local hazard, because CI builds before both the PHPUnit job
+ * (`phpunit-tests.yml:67`) and the e2e job (`e2e-tests.yml:119`). That is why
  * the guard lives at the PHPUnit bootstrap rather than in a workflow. The
  * bootstrap is the only place that runs on *every* local invocation: an
  * `npm run pretest:*` hook is skipped by the `wp-env run … phpunit` form that
@@ -70,8 +70,8 @@ function gatherpress_newest_mtime( string $directory, string $skip = '' ): int {
  * includes them. A directory's mtime only moves when an entry is added or
  * removed, so a rebuild that rewrites file contents without changing the file
  * list would leave old directory timestamps behind and fail the guard for no
- * reason. On the source side the same property is the point -- it is how a
- * deletion registers -- which is why only this side drops them.
+ * reason. On the source side that same property is the point, since it is how
+ * a deletion registers, which is why only this side drops them.
  *
  * @since 0.36.0
  *
@@ -110,7 +110,7 @@ function gatherpress_oldest_file_mtime( string $directory, string $skip = '' ): 
  */
 function gatherpress_fail_stale_build( string $reason ): void {
 	// STDERR is a stream, not a file, and WordPress is not loaded yet at
-	// bootstrap time -- WP_Filesystem does not exist to be used here.
+	// bootstrap time, so WP_Filesystem does not exist to be used here.
 	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
 	fwrite(
 		STDERR,
@@ -135,8 +135,8 @@ function gatherpress_fail_stale_build( string $reason ): void {
  * satisfies `max(build) > max(src)` while PHPUnit goes on loading A's previous
  * output. Requiring every artifact to be newer than every source is the
  * per-pair statement expressed without having to model which source emits
- * which artifact -- a mapping that webpack owns, that changes with the entry
- * configuration, and that this file has no honest way to reproduce.
+ * which artifact. That mapping is webpack's, it changes with the entry
+ * configuration, and this file has no honest way to reproduce it.
  *
  * `npm run build` rewrites the whole tree on every invocation, so the
  * conservative direction costs nothing on a complete build and fails exactly
@@ -147,8 +147,8 @@ function gatherpress_fail_stale_build( string $reason ): void {
  * because `npm run test:unit:php` writes its HTML coverage report there. Left
  * in, it would make `build/` look newer than anything under the old
  * newest-versus-newest rule, and under this one it would instead be the only
- * genuinely fresh tree while the artifacts stayed stale -- wrong in both
- * directions, and silently so, which is the failure mode this guard exists to
+ * genuinely fresh tree while the artifacts stayed stale. Both directions are
+ * wrong, and silently so, which is the failure mode this guard exists to
  * prevent.
  *
  * @since 0.36.0

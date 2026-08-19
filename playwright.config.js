@@ -13,10 +13,10 @@ require( 'dotenv' ).config();
  * port) and is deliberately not tracked, so hard-coding a port here means the
  * config silently disagrees with the environment the npm script just started.
  *
- * When that happens Playwright still finds *a* WordPress on the stale port —
- * another worktree's, or a leftover container — authenticates against it
- * successfully, and then fails deep inside the specs with REST errors that
- * look like application bugs. Deriving the port from the same files wp-env
+ * When that happens Playwright still finds *a* WordPress on the stale port,
+ * either another worktree's or a leftover container. It authenticates against
+ * that one successfully, and then fails deep inside the specs with REST errors
+ * that look like application bugs. Deriving the port from the same files wp-env
  * reads keeps the two in step by construction. `WP_BASE_URL` still wins, for
  * pointing the suite at something else entirely.
  *

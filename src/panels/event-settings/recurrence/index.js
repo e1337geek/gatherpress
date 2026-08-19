@@ -43,7 +43,7 @@ const DEFAULT_RULE = {
  * both ends rather than letting an over-range value round-trip into a
  * rejected save). Callers always pass an already-coerced `Number(...)` value
  * from a `type="number"` control, whose own sanitization keeps a non-numeric
- * entry from ever reaching here as `NaN` -- there is no separate not-a-number
+ * entry from ever reaching here as `NaN`. There is no separate not-a-number
  * guard because there is no reachable path that would exercise it.
  *
  * @since 0.36.0
@@ -73,9 +73,9 @@ function clampInt( value, min, max ) {
  * reach here.
  *
  * Numeric input is normalized (truncated toward zero, then clamped into
- * range); input with no numeric value at all -- a blank field mid-edit, or
- * pasted text -- is rejected as `null`, which `isPersistable()` treats as an
- * incomplete rule so the last known-good blob stays on the post.
+ * range). Input with no numeric value at all is rejected as `null`, which
+ * `isPersistable()` treats as an incomplete rule so the last known-good blob
+ * stays on the post. That covers a blank field mid-edit and pasted text.
  *
  * @since 0.36.0
  *
@@ -99,7 +99,7 @@ function normalizeMonthlyDay( value ) {
  * Coerce a decoded `weekdays` value to an array of in-range weekday numbers.
  *
  * A REST write or import can carry a non-array (or an array with
- * out-of-range values) for `weekdays` -- `weekdays.includes()` downstream
+ * out-of-range values) for `weekdays`. `weekdays.includes()` downstream
  * would throw on anything that is not an array at all, and an out-of-range
  * number would corrupt the rule server-side (`Rule::is_valid()` requires
  * every weekday within 0 through 6).
@@ -124,12 +124,12 @@ function sanitizeWeekdays( weekdays ) {
  * Parse the `gatherpress_recurrence` blob into panel state.
  *
  * A missing, empty, or malformed blob is treated as "no recurrence" rather
- * than surfacing a parse error — the panel falls back to `DEFAULT_RULE` with
+ * than surfacing a parse error. The panel falls back to `DEFAULT_RULE` with
  * the "Repeat" toggle off. A valid blob is merged onto `DEFAULT_RULE` so a
  * blob written by an older shape (missing a field this panel added later)
  * still renders every control with a sane value. `weekdays` is coerced field
- * by field rather than trusted wholesale — a REST write or import can carry
- * a non-array (or an array with out-of-range values), and `weekdays.includes()`
+ * by field rather than trusted wholesale. A REST write or import can carry
+ * a non-array, or an array with out-of-range values, and `weekdays.includes()`
  * downstream would throw on anything that is not an array at all.
  *
  * @since 0.36.0
@@ -206,12 +206,12 @@ function isPersistable( rule ) {
  * `core/editor` post meta (see `Rule::from_array()` and `Meta::META_KEY` for
  * the authoritative shape). The ten derived `gatherpress_recurrence_*`
  * mirrors are server-computed and read-only, so this panel never reads or
- * writes them — its source of truth is the blob itself, kept in local state
+ * writes them. Its source of truth is the blob itself, kept in local state
  * so edits round-trip within a single editing session.
  *
  * Recurrence is refused outright on a fixed-offset timezone (e.g.
  * `UTC+5:30`), detected by the presence of a `:` in the
- * `gatherpress/datetime` store's timezone value — a named tz-database
+ * `gatherpress/datetime` store's timezone value. A named tz-database
  * identifier such as `America/New_York` never contains one.
  *
  * @since 0.36.0
@@ -281,7 +281,7 @@ const RecurrencePanel = () => {
 	 * clamped interval/count, `until`/`count` mutual exclusivity, no stale
 	 * weekday or monthly state left over from a previous frequency, and no
 	 * write at all while the edit leaves the rule momentarily incomplete
-	 * (see `isPersistable()`) -- local state still updates so the control
+	 * (see `isPersistable()`). Local state still updates so the control
 	 * reflects the choice and the validation message it earns, but the last
 	 * known-good blob stays on the post until the rule is complete again.
 	 *
@@ -337,7 +337,7 @@ const RecurrencePanel = () => {
 
 	/**
 	 * Handle the "Repeat" toggle. Turning recurrence on always starts from
-	 * `DEFAULT_RULE` — there is no separate "save" step, so the default
+	 * `DEFAULT_RULE`. There is no separate "save" step, so the default
 	 * blob is written immediately, matching every other control in this
 	 * panel writing straight to `core/editor` meta on change.
 	 *

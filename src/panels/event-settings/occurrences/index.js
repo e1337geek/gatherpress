@@ -17,8 +17,8 @@ import OccurrenceRow from './occurrence-row';
 /**
  * Build the composite identity of an occurrence row.
  *
- * An occurrence is identified by `(series_post_id, recurrence_id)` — the
- * occurrence table's composite primary key — and never by either half alone.
+ * An occurrence is identified by `(series_post_id, recurrence_id)`, the
+ * occurrence table's composite primary key, and never by either half alone.
  * The list route deliberately returns every sibling post's rows
  * (`Series::resolve_post_ids()`), so two rows can share a `recurrence_id`
  * while belonging to different posts: keying on `recurrence_id` alone gives
@@ -69,7 +69,7 @@ function normalizeOccurrences( rows ) {
  * series. The front-end drop of a canceled occurrence is already handled by
  * the occurrence-aware query filter (`Recurrence\Query::expand_event_clauses()`),
  * so this panel's only job is to read the list and flip one row's status via
- * the `occurrence-status` REST route -- it never reaches into the recurrence
+ * the `occurrence-status` REST route. It never reaches into the recurrence
  * rule itself.
  *
  * Every request the panel issues carries the row's own composite identity:

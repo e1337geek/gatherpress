@@ -352,7 +352,7 @@ final class Meta {
 	 *
 	 * An empty timezone read is ambiguous on a non-final pass: it can mean
 	 * "fixed offset" just as easily as "the `gatherpress_datetime` blob has
-	 * not been written yet this request" -- `wp_insert_post()` with
+	 * not been written yet this request". `wp_insert_post()` with
 	 * `meta_input`, a WXR import, or a duplication plugin can all write the
 	 * recurrence blob before the datetime blob lands. Treating an empty read
 	 * as unnamed on the first pass would drop the rule on exactly the same
@@ -365,8 +365,8 @@ final class Meta {
 	 *
 	 * @param int    $post_id  Post the blob belongs to.
 	 * @param string $data     Raw `gatherpress_recurrence` JSON blob.
-	 * @param bool   $is_final Whether this is the final, `shutdown` pass -- an empty
-	 *                         timezone read is cleared rather than deferred again.
+	 * @param bool   $is_final Whether this is the final, `shutdown` pass, on which an
+	 *                         empty timezone read is cleared rather than deferred again.
 	 *
 	 * @return void
 	 */
@@ -421,7 +421,7 @@ final class Meta {
 	 * Re-validate a recurring series after its datetime blob is rewritten.
 	 *
 	 * `set_recurrence()` runs on `wp_after_insert_post`, which fires from
-	 * inside `wp_insert_post()` -- before the request's meta writes land. When
+	 * inside `wp_insert_post()`, before the request's meta writes land. When
 	 * the recurrence blob is already stored, `write_recurrence()` validates
 	 * immediately, and the timezone it reads is the one the post had *before*
 	 * this save. An organizer who changes an existing recurring event's
@@ -477,7 +477,7 @@ final class Meta {
 	 * Re-decide every queued series once the request's writes are all in.
 	 *
 	 * Runs the final validation pass and then reprojects, because clearing the
-	 * mirrors is only half of disabling a series -- `Occurrences::project()`
+	 * mirrors is only half of disabling a series. `Occurrences::project()`
 	 * is the only thing that deletes the rows those mirrors implied, and it
 	 * already ran this request against the pre-change timezone.
 	 *
@@ -490,8 +490,8 @@ final class Meta {
 		$this->pending_revalidation = array();
 
 		foreach ( array_keys( $pending ) as $post_id ) {
-			// The post can be gone by shutdown -- a duplicate that failed, or
-			// an insert rolled back after this hook ran.
+			// The post can be gone by shutdown, after a duplicate that failed
+			// or an insert rolled back once this hook had run.
 			if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
 				continue;
 			}

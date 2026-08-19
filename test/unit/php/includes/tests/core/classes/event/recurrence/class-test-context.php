@@ -870,7 +870,7 @@ class Test_Context extends Base {
 	/**
 	 * An inner loop rendering a different post's content while the main
 	 * request's occurrence context is a canceled occurrence must not
-	 * inherit that notice -- matching how `metadata()` scopes substitution to
+	 * inherit that notice, matching how `metadata()` scopes substitution to
 	 * the post the context belongs to, not to whatever post a loop reaches.
 	 *
 	 * @covers ::maybe_prepend_cancelled_notice

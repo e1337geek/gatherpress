@@ -20,7 +20,7 @@ import {
  * The day-of-month value is handed to `onChange` exactly as the control
  * produced it, without a `Number()` cast: a native number input accepts typed
  * and pasted values its `min`/`max` never constrain, and `Number( '31abc' )`
- * is `NaN` while `Number( '' )` is `0` -- both of which would silently become
+ * is `NaN` while `Number( '' )` is `0`, and both would silently become
  * a rule the server rejects. Normalization is the panel's job
  * (`normalizeMonthlyDay()`), which is also where the reject-versus-clamp
  * decision belongs.

@@ -8,15 +8,15 @@ This directory contains end-to-end tests for GatherPress using Playwright. These
 npm run test:e2e
 ```
 
-`pretest:e2e` starts the WordPress instance with `wp-env start --config .wp-env.test.json`, and `playwright.config.js` derives its `baseURL` from that same pair of files — `.wp-env.test.override.json` first (wp-env applies it last), then `.wp-env.test.json`. **Do not hard-code the port anywhere.** The override file is local, untracked, per-checkout state: it is how parallel git worktrees keep off each other's ports, so its value differs between checkouts and is not in git.
+`pretest:e2e` starts the WordPress instance with `wp-env start --config .wp-env.test.json`, and `playwright.config.js` derives its `baseURL` from that same pair of files, reading `.wp-env.test.override.json` first (wp-env applies it last) and then `.wp-env.test.json`. **Do not hard-code the port anywhere.** The override file is local, untracked, per-checkout state: it is how parallel git worktrees keep off each other's ports, so its value differs between checkouts and is not in git.
 
-This matters more than it looks. If the config and the running environment disagree on the port, Playwright does not fail fast — it finds *a* WordPress on the stale port (another worktree's, or a leftover container), authenticates against it, and then fails deep in the specs with REST errors that read like application bugs.
+This matters more than it looks. If the config and the running environment disagree on the port, Playwright does not fail fast. It finds *a* WordPress on the stale port, either another worktree's or a leftover container, authenticates against it, and then fails deep in the specs with REST errors that read like application bugs.
 
-**A green authentication step is not evidence that you are on the right site.** `global-setup.js` logging `Authentication successful - storage state saved` only proves that *some* WordPress accepted the admin credentials — and every wp-env instance on the machine shares those credentials, so it succeeds just as happily against the wrong one. Screenshots showing a fully rendered admin menu prove the same nothing.
+**A green authentication step is not evidence that you are on the right site.** `global-setup.js` logging `Authentication successful - storage state saved` only proves that *some* WordPress accepted the admin credentials. Every wp-env instance on the machine shares those credentials, so it succeeds just as happily against the wrong one. Screenshots showing a fully rendered admin menu prove the same nothing.
 
-The tell is `rest_no_route` or `rest_type_invalid` on a GatherPress route: that is a WordPress without this plugin active, i.e. the wrong site, not a broken feature. Note also that `wp-env run` / `docker exec` diagnostics resolve the container by *name*, not by the port Playwright is using — so it is entirely possible to confirm the plugin is active, the post type exists and the route responds, all against a container the browser never touched. Establish the port first, then diagnose.
+The tell is `rest_no_route` or `rest_type_invalid` on a GatherPress route: that is a WordPress without this plugin active, i.e. the wrong site, not a broken feature. Note also that `wp-env run` / `docker exec` diagnostics resolve the container by *name*, not by the port Playwright is using. It is therefore entirely possible to confirm the plugin is active, the post type exists and the route responds, all against a container the browser never touched. Establish the port first, then diagnose.
 
-To point the suite somewhere else, set `WP_BASE_URL` — it takes precedence over the derived value:
+To point the suite somewhere else, set `WP_BASE_URL`, which takes precedence over the derived value:
 
 ```bash
 WP_BASE_URL=http://localhost:8891 npx playwright test
