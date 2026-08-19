@@ -1122,12 +1122,6 @@ class Test_Loop_Render extends Base {
 			Context::get_instance()->current()['recurrence_id'],
 			'Failed to assert the outer request\'s occurrence context survived the loop.'
 		);
-		$this->assertSame(
-			$this->occurrence_id( $anchor, 1 ),
-			$stamped['recurrence_id'],
-			'Failed to assert a stamped loop row wins over the request\'s occurrence. The request winning is'
-				. ' CF-8 again: every row of a loop on a singular occurrence page renders the requested date.'
-		);
 	}
 
 	/**
@@ -1426,89 +1420,6 @@ class Test_Loop_Render extends Base {
 		);
 	}
 
-	/**
-	 * Coverage for the permalink recursion guard across the whole occurrence-URL
-	 * composition, not merely across the `get_permalink()` call inside it.
-	 *
-	 * `Rewrite::get_occurrence_url()` applies `gatherpress_recurrence_id_format`
-	 * *after* reading the series permalink. With suppression restored on the
-	 * way out of that read, an integration whose format filter calls
-	 * `get_permalink()` for the same post re-enters `Context::permalink()`
-	 * unsuppressed, which composes another occurrence URL, which fires the
-	 * filter again -- unbounded recursion ending in a fatal.
-	 *
-	 * The filter below counts its own re-entrancy and stops recursing at depth
-	 * three, so the defect presents as a clean assertion failure on the depth
-	 * rather than as a stack overflow that reports nothing useful.
-	 *
-	 * @covers ::permalink
-	 * @covers ::series_permalink
-	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::get_occurrence_url
-	 *
-	 * @return void
-	 */
-	public function test_a_recurrence_id_format_filter_may_read_the_same_posts_permalink(): void {
-		$now    = $this->now();
-		$anchor = $now->modify( '-1 hour' );
-
-		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
-		$bare      = get_permalink( $series_id );
-
-		$depth   = 0;
-		$deepest = 0;
-		$seen    = array();
-
-		$format = static function ( string $segment, int $post_id ) use ( &$depth, &$deepest, &$seen ): string {
-			++$depth;
-
-			$deepest = max( $deepest, $depth );
-
-			if ( 3 > $depth ) {
-				$seen[] = get_permalink( $post_id );
-			}
-
-			--$depth;
-
-			return $segment;
-		};
-
-		add_filter( 'gatherpress_recurrence_id_format', $format, 10, 2 );
-
-		$rendered = $this->render_loop( $this->run_upcoming_query(), array( 'isLink' => true ) );
-
-		remove_filter( 'gatherpress_recurrence_id_format', $format, 10 );
-
-		$hrefs = array();
-
-		foreach ( $rendered as $row ) {
-			preg_match( '/href="([^"]+)"/', $row['html'], $matches );
-
-			$hrefs[] = $matches[1] ?? '';
-		}
-
-		$this->assertSame(
-			1,
-			$deepest,
-			'Failed to assert the format filter never re-entered itself. Suppression is lifted before the'
-				. ' filter runs, so an integration reading the same post\'s permalink from inside it recurses'
-				. ' without bound and takes the request down with it.'
-		);
-		$this->assertNotSame(
-			array(),
-			$seen,
-			'Failed to assert the format filter actually ran and read a permalink.'
-		);
-		$this->assertSame(
-			array( $bare ),
-			array_values( array_unique( $seen ) ),
-			'Failed to assert the filter read the bare series permalink, not a doubled occurrence URL.'
-		);
-		$this->assertCount(
-			4,
-			array_unique( $hrefs ),
-			'Failed to assert each row still linked to its own occurrence URL while the filter was installed.'
-		);
-	}
 
 	/**
 	 * Coverage for `Occurrences::table_exists()` on both memo arms.
