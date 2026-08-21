@@ -555,6 +555,57 @@ class Test_Series extends Base {
 	}
 
 	/**
+	 * A failed forward relationship write reports zero from an existing term.
+	 *
+	 * The other arm of the join failure: the origin already carries its series
+	 * term (a series split before), so only the forward post's relationship
+	 * write runs, and its failure alone must be enough to report zero.
+	 *
+	 * @covers ::join
+	 *
+	 * @return void
+	 */
+	public function test_join_reports_zero_when_the_forward_relationship_write_fails(): void {
+		$origin_id = $this->create_and_project();
+		$first     = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+		$forward   = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		$this->assertGreaterThan( 0, $first, 'Fixture setup: the first split should have produced a post.' );
+
+		$suppress = static function ( $terms, $query ) {
+			$taxonomies = (array) ( $query->query_vars['taxonomy'] ?? array() );
+
+			if ( in_array( Series::TAXONOMY, $taxonomies, true )
+				&& ! empty( $query->query_vars['include'] )
+			) {
+				return array();
+			}
+
+			return $terms;
+		};
+
+		add_filter( 'terms_pre_query', $suppress, 10, 2 );
+
+		$term_id = Series::get_instance()->join( $origin_id, $forward );
+
+		remove_filter( 'terms_pre_query', $suppress, 10 );
+
+		$this->assertSame(
+			0,
+			$term_id,
+			'A forward relationship write that fails must report zero so the split rolls back.'
+		);
+
+		Series::get_instance()->flush_memo();
+
+		$this->assertSame(
+			array( $forward ),
+			Series::get_instance()->resolve_post_ids( $forward ),
+			'The forward post must not resolve into a series it was never actually attached to.'
+		);
+	}
+
+	/**
 	 * Membership resolution survives a term whose relationship rows are missing.
 	 *
 	 * @covers ::resolve_from_taxonomy

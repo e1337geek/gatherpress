@@ -1053,6 +1053,65 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * A series relationship write that fails aborts the split and rolls it back.
+	 *
+	 * `wp_set_object_terms()` reports failure as a `WP_Error`, or as an empty
+	 * array after silently skipping a numeric term it could not confirm.
+	 * `Series::join()` used to check only whether the *term* could be created,
+	 * so a failed relationship write still returned a non-zero term ID,
+	 * `join_series()` treated the phase complete, and the split finished with
+	 * the forward post outside the series: pre-split permalinks to the moved
+	 * rows then 404 with no error reported anywhere.
+	 *
+	 * The failure is injected by short-circuiting the `term_exists()` lookup
+	 * `wp_set_object_terms()` performs for a numeric term, scoped to the
+	 * series taxonomy's include queries so every other term operation in the
+	 * split runs untouched.
+	 *
+	 * @covers ::run_phases
+	 * @covers ::join_series
+	 * @covers \GatherPress\Core\Event\Recurrence\Series::join
+	 *
+	 * @return void
+	 */
+	public function test_a_failed_series_relationship_write_aborts_the_split(): void {
+		$origin_id = $this->create_and_project();
+		$suppress  = static function ( $terms, $query ) {
+			$taxonomies = (array) ( $query->query_vars['taxonomy'] ?? array() );
+
+			if ( in_array( Series::TAXONOMY, $taxonomies, true )
+				&& ! empty( $query->query_vars['include'] )
+			) {
+				return array();
+			}
+
+			return $terms;
+		};
+
+		add_filter( 'terms_pre_query', $suppress, 10, 2 );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' );
+
+		remove_filter( 'terms_pre_query', $suppress, 10 );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'A split whose series relationship write failed must abort rather than report success.'
+		);
+		$this->assertSame(
+			'gatherpress_split_series_not_joined',
+			$result->get_error_code(),
+			'The abort must name the join phase as the failure.'
+		);
+		$this->assertSame(
+			self::FULL_SET,
+			$this->identifiers_for( $origin_id ),
+			'The rollback must leave the origin owning its full occurrence set again.'
+		);
+	}
+
+	/**
 	 * A stale rule re-persisted after a split cannot resurrect moved occurrences.
 	 *
 	 * The still-open origin editor holds the pre-split rule after a successful
