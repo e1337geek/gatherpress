@@ -2592,7 +2592,9 @@ class Test_Rsvp_Rest extends Base {
 	 *
 	 * @covers ::requested_occurrence
 	 * @covers ::request_token_string
+	 * @covers ::request_post_id
 	 * @covers ::can_access_occurrence_owner
+	 * @covers ::occurrence_not_found
 	 *
 	 * @return void
 	 */
@@ -2621,6 +2623,35 @@ class Test_Rsvp_Rest extends Base {
 			$post_id,
 			$identity->owner_post_id,
 			'Failed to assert the resolved identity names the owning post.'
+		);
+
+		$fallback = new WP_REST_Request( 'POST', '/gatherpress/v1/event/rsvp-form' );
+
+		$fallback->set_param( 'post_id', 0 );
+		$fallback->set_param( 'comment_post_ID', $post_id );
+
+		$this->assertSame(
+			$post_id,
+			Utility::invoke_hidden_method( $instance, 'request_post_id', array( $fallback ) ),
+			'Failed to assert a post_id naming no post falls back to comment_post_ID.'
+		);
+		$this->assertSame(
+			$post_id,
+			Utility::invoke_hidden_method( $instance, 'request_post_id', array( $named ) ),
+			'Failed to assert a post_id naming a post is read as given.'
+		);
+
+		$refusal = Utility::invoke_hidden_method( $instance, 'occurrence_not_found', array() );
+
+		$this->assertSame(
+			'gatherpress_occurrence_not_found',
+			$refusal->get_error_code(),
+			'Failed to assert the shared refusal carries the not-found code.'
+		);
+		$this->assertSame(
+			404,
+			$refusal->get_error_data()['status'],
+			'Failed to assert the shared refusal carries the not-found status.'
 		);
 
 		$this->assertNull(
