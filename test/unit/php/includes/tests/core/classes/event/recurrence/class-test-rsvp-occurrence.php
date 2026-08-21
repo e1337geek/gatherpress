@@ -902,8 +902,16 @@ class Test_Rsvp_Occurrence extends Base {
 	 * than deletes, and a cleanup test written against it passes without ever
 	 * deleting anything.
 	 *
+	 * The delete must also drop both warm RSVP cache keys. The list table and
+	 * the cleanup cron are the only real hard-delete paths, neither reaches
+	 * `Rsvp\Storage::save()` where every other write invalidates, so without
+	 * invalidation here the deleted responder stays on every cached roster for
+	 * the length of `Cache::CACHE_EXPIRATION`, shared across all visitors under
+	 * a persistent object cache.
+	 *
 	 * @covers ::assign
 	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cache::delete
 	 *
 	 * @return void
 	 */
@@ -922,6 +930,27 @@ class Test_Rsvp_Occurrence extends Base {
 			'Failed to assert a saved occurrence RSVP holds one relationship in each taxonomy.'
 		);
 
+		// The delete runs with no ambient occurrence context, exactly like the
+		// admin list table and the cleanup cron, so the invalidation under test
+		// can only find the occurrence through the comment's own term.
+		Context::get_instance()->clear();
+
+		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ) );
+		Cache::set( $post_id, array( 'all' => array( 'count' => 42 ) ), self::OCCURRENCE_A );
+
+		// Both keys must be warm and distinct before the delete, or "both were
+		// invalidated" is satisfied by there having been nothing to invalidate.
+		$this->assertSame(
+			array( 'all' => array( 'count' => 99 ) ),
+			Cache::get( $post_id ),
+			'Failed to warm the series-wide cache entry the delete must invalidate.'
+		);
+		$this->assertSame(
+			array( 'all' => array( 'count' => 42 ) ),
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to warm the occurrence cache entry the delete must invalidate.'
+		);
+
 		wp_delete_comment( $comment_id, true );
 
 		$this->assertSame(
@@ -933,13 +962,26 @@ class Test_Rsvp_Occurrence extends Base {
 			$this->all_relationship_counts( $comment_id ),
 			'Failed to assert a hard delete removed every RSVP term relationship.'
 		);
+		$this->assertNull(
+			Cache::get( $post_id ),
+			'Failed to assert a hard delete invalidated the series-wide RSVP cache.'
+		);
+		$this->assertNull(
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to assert a hard delete invalidated the occurrence-scoped RSVP cache.'
+		);
 	}
 
 	/**
 	 * The RSVP cleanup cron's hard delete leaves no orphaned term relationships.
 	 *
+	 * The cron's delete must also drop both warm RSVP cache keys, for the same
+	 * reason the direct hard-delete test asserts it: this path never reaches
+	 * `Rsvp\Storage::save()`, so nothing else invalidates for it.
+	 *
 	 * @covers ::assign
 	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cache::delete
 	 *
 	 * @return void
 	 */
@@ -958,6 +1000,26 @@ class Test_Rsvp_Occurrence extends Base {
 			)
 		);
 
+		// Cron runs with no ambient occurrence context, so the invalidation can
+		// only find the occurrence through the comment's own term.
+		Context::get_instance()->clear();
+
+		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ) );
+		Cache::set( $post_id, array( 'all' => array( 'count' => 42 ) ), self::OCCURRENCE_A );
+
+		// Both keys must be warm and distinct before the sweep, or "both were
+		// invalidated" is satisfied by there having been nothing to invalidate.
+		$this->assertSame(
+			array( 'all' => array( 'count' => 99 ) ),
+			Cache::get( $post_id ),
+			'Failed to warm the series-wide cache entry the cron must invalidate.'
+		);
+		$this->assertSame(
+			array( 'all' => array( 'count' => 42 ) ),
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to warm the occurrence cache entry the cron must invalidate.'
+		);
+
 		Cleanup::get_instance()->rsvp_cleanup();
 
 		$this->assertNull(
@@ -972,6 +1034,14 @@ class Test_Rsvp_Occurrence extends Base {
 			),
 			$this->all_relationship_counts( $comment_id ),
 			'Failed to assert the cleanup cron removed every RSVP term relationship.'
+		);
+		$this->assertNull(
+			Cache::get( $post_id ),
+			'Failed to assert the cleanup cron invalidated the series-wide RSVP cache.'
+		);
+		$this->assertNull(
+			Cache::get( $post_id, self::OCCURRENCE_A ),
+			'Failed to assert the cleanup cron invalidated the occurrence-scoped RSVP cache.'
 		);
 	}
 
