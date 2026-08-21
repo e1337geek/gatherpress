@@ -509,6 +509,12 @@ final class Rewrite {
 	 * visitor, a series with nothing upcoming, and any other answer would make
 	 * the bare URL an existence oracle for unpublished posts.
 	 *
+	 * Upcoming is inclusive of an occurrence in progress: rows are bounded on
+	 * `datetime_end_gmt >= now`, matching
+	 * `Occurrences::select_bounded_occurrence()`, never on the start. A
+	 * start-bounded skip sends the visitor holding the lapsed fragment's URL
+	 * to next week while the event they are on their way to is happening.
+	 *
 	 * A single-post series returns before any of that, and so does a request on
 	 * a post whose own rows are the ones that are upcoming. The caller only
 	 * reaches here once the narrowing read has come back empty.
@@ -533,7 +539,9 @@ final class Rewrite {
 		$now  = current_time( 'mysql', true );
 
 		foreach ( $rows as $row ) {
-			if ( $row['datetime_start_gmt'] < $now ) {
+			// Inclusive of a row in progress: only a row that has already
+			// ended is behind the visitor. Ordering stays on the start.
+			if ( $row['datetime_end_gmt'] < $now ) {
 				continue;
 			}
 
