@@ -16,8 +16,8 @@
  * `Venue\Map\Prewarm`): WP-Cron is the always-available default, and a
  * `null`-passthrough filter is the entire seam by which a companion plugin
  * can route the sweep through Action Scheduler instead. Neither existing
- * class calls an `as_*` function directly, so this class does not either --
- * there is no in-repo precedent for a `function_exists( 'as_enqueue_async_action' )`
+ * class calls an `as_*` function directly, so this class does not either.
+ * There is no in-repo precedent for a `function_exists( 'as_enqueue_async_action' )`
  * check, only for the filter short-circuit.
  *
  * @package GatherPress\Core\Event\Recurrence

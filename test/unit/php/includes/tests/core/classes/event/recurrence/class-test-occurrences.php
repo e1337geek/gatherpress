@@ -738,8 +738,8 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * The same clearing, replayed through the real lifecycle wiring --
-	 * the actual `wp_after_insert_post` and `shutdown` hooks are fired, not a
+	 * The same clearing, replayed through the real lifecycle wiring.
+	 * The actual `wp_after_insert_post` and `shutdown` hooks are fired, not a
 	 * hand-called sequence of the methods those hooks invoke. A
 	 * hand-called sequence cannot fail even when the wiring it claims to test
 	 * is broken. Inverting `maybe_project()`'s `wp_after_insert_post`
@@ -808,7 +808,7 @@ class Test_Occurrences extends Base {
 	 * Coverage for the real production path when a series' timezone becomes a
 	 * fixed UTC offset: `Meta::set_recurrence()` re-runs with the new,
 	 * genuinely-invalid raw timezone, its own `Timezone_Guard::assert_named()`
-	 * check rejects it, and `clear_mirrors()` removes the rule mirrors --
+	 * check rejects it, and `clear_mirrors()` removes the rule mirrors.
 	 * `Rule::from_post()` then returns null and `project()` clears the rows
 	 * through the no-rule branch, never reaching
 	 * `expand_or_clear()`'s own catch at all. An earlier version of this test
@@ -1853,8 +1853,8 @@ class Test_Occurrences extends Base {
 	/**
 	 * Coverage for the horizon top-up: a scheduled sweep re-runs `project()` for a
 	 * long-running series whose projected horizon is running short,
-	 * extending it, while every occurrence already in the past survives --
-	 * attendees' RSVPs hang off past occurrences.
+	 * extending it, while every occurrence already in the past survives.
+	 * Attendees' RSVPs hang off past occurrences.
 	 *
 	 * @covers ::top_up
 	 * @covers ::select_series_needing_top_up

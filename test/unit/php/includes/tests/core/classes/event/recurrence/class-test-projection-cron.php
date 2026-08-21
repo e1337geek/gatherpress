@@ -309,8 +309,8 @@ class Test_Projection_Cron extends Base {
 	public function test_deactivation_unschedules_the_sweep(): void {
 		$instance = Projection_Cron::get_instance();
 
-		// Scheduled directly rather than through maybe_schedule_sweep() --
-		// this test is about deactivate(), not about the scheduling guard,
+		// Scheduled directly rather than through maybe_schedule_sweep().
+		// This test is about deactivate(), not about the scheduling guard,
 		// which has its own coverage above.
 		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
 
@@ -349,8 +349,8 @@ class Test_Projection_Cron extends Base {
 	/**
 	 * Coverage for `setup_hooks()`'s `register_deactivation_hook()` call.
 	 * Both deactivation tests above call `deactivate()` directly, so neither
-	 * would fail if the `register_deactivation_hook()` line were removed --
-	 * this asserts the registration itself, the same shape as the
+	 * would fail if the `register_deactivation_hook()` line were removed.
+	 * This asserts the registration itself, the same shape as the
 	 * cron-wiring gap that would leave `run_sweep()` unregistered.
 	 *
 	 * @covers ::setup_hooks
@@ -373,8 +373,8 @@ class Test_Projection_Cron extends Base {
 	/**
 	 * Coverage for the horizon top-up: a site that removes its last recurrence must lose
 	 * the hourly sweep, not keep dispatching an early-returning callback for
-	 * the life of the plugin. The `1 -> 0` transition is the whole point --
-	 * a never-recurring site has nothing to unschedule, so the existing
+	 * the life of the plugin. The `1 -> 0` transition is the whole point.
+	 * A never-recurring site has nothing to unschedule, so the existing
 	 * "does nothing on a site with no recurring events" test stays green
 	 * whether or not the unscheduling branch exists at all.
 	 *

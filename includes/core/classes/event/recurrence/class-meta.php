@@ -295,8 +295,8 @@ final class Meta {
 			// value could reach the expander. A fixed UTC offset carries no
 			// DST rules and would silently drift a recurring series. Read from
 			// the same `gatherpress_datetime` blob `Event\Setup::set_datetimes()`
-			// reads, rather than the `gatherpress_timezone` mirror it derives --
-			// depending on that mirror would make this depend on that class
+			// reads, rather than the `gatherpress_timezone` mirror it derives.
+			// Depending on that mirror would make this depend on that class
 			// having already run on this pass.
 			Timezone_Guard::assert_named( $this->read_timezone( $post_id ) );
 		} catch ( InvalidArgumentException $e ) {

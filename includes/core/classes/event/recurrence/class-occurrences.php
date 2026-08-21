@@ -84,8 +84,8 @@ final class Occurrences {
 	 *
 	 * A `never`-ending rule has no natural horizon, so one is imposed here
 	 * rather than expanding toward `Expander::MAX_ITERATIONS`. The horizon is
-	 * measured from `max( $anchor_start, now )`, not from the anchor alone --
-	 * an anchor-relative horizon computes the same fixed window every time
+	 * measured from `max( $anchor_start, now )`, not from the anchor alone. An
+	 * anchor-relative horizon computes the same fixed window every time
 	 * `project()` runs, so a long-running series eventually projects entirely
 	 * into the past and a top-up re-run is a guaranteed no-op. `until`
 	 * is not bounded by this constant either: `Expander::expand()` treats a
@@ -950,7 +950,7 @@ final class Occurrences {
 	 * this method's own frozen "deletes rows the rule no longer produces"
 	 * contract. The deferred path instead passes whether the post *was*
 	 * recurring at the moment it was deferred, so an ordinary, never-recurring
-	 * event resolves without ever touching the occurrence table --
+	 * event resolves without ever touching the occurrence table.
 	 * `Rule::from_post()` returning null looks identical whether a post never
 	 * had a rule or just lost one, so that distinction has to be captured
 	 * earlier, in `maybe_project()`, and threaded through.
@@ -1070,7 +1070,7 @@ final class Occurrences {
 	 *              The anchor start, anchor end, and timezone, or null when the
 	 *              timezone string cannot construct a `DateTimeZone` at all, or
 	 *              the stored datetime cannot be parsed. Whether the timezone is
-	 *              a *named* tz-database identifier is not checked here --
+	 *              a *named* tz-database identifier is not checked here.
 	 *              `expand_or_clear()` is the single source of truth for that,
 	 *              via `Expander::expand()`'s own `Timezone_Guard::assert_named()`
 	 *              call.
@@ -1158,8 +1158,8 @@ final class Occurrences {
 	 *
 	 * Measured from `max( $anchor_start, now )` rather than from the anchor
 	 * alone, so a long-running series' horizon rolls forward on every
-	 * projection instead of staying pinned to its original anchor date --
-	 * an anchor-relative horizon would eventually leave a years-old series
+	 * projection instead of staying pinned to its original anchor date. An
+	 * anchor-relative horizon would eventually leave a years-old series
 	 * projected entirely into the past, with no upcoming occurrences and no
 	 * way for a re-save to fix it, since `project()` is a pure function of
 	 * rule and anchor. Filterable so a future top-up task is not
@@ -1197,7 +1197,7 @@ final class Occurrences {
 	 * `DateTimeImmutable::add()`. A nominal 2-hour span starting just before a
 	 * fall-back transition must still read "2 hours later" on the clock, even
 	 * though 10,800 real seconds elapse. Note that `$span` is *not*
-	 * `$anchor_start->diff( $anchor_end )` on the zoned anchors directly --
+	 * `$anchor_start->diff( $anchor_end )` on the zoned anchors directly.
 	 * `diff()` between two zoned datetimes returns their *elapsed* real time,
 	 * not their wall-clock difference, and reintroduces the exact inflation
 	 * this method exists to avoid whenever the anchor itself spans a

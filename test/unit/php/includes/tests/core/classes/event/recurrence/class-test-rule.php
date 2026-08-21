@@ -922,8 +922,8 @@ class Test_Rule extends Base {
 	 *
 	 * `is_valid()` already exercises both helpers black-box through
 	 * `from_array()` above, but xdebug does not reliably trace a private
-	 * same-class helper invoked from a short delegation like `is_valid()` --
-	 * see the "Extracted same-class helpers and xdebug coverage tracing" rule
+	 * same-class helper invoked from a short delegation like `is_valid()`.
+	 * See the "Extracted same-class helpers and xdebug coverage tracing" rule
 	 * in AGENTS.md. Invoking each helper directly is the documented fix.
 	 *
 	 * @covers ::is_valid_monthly_shape

@@ -215,8 +215,8 @@ class Test_Meta extends Base {
 
 	/**
 	 * The deferred `wp_after_insert_post` → `shutdown` path resolves correctly
-	 * when the blob arrives after `set_recurrence()` ran but before shutdown --
-	 * the exact ordering a first publish produces when this class's hook
+	 * when the blob arrives after `set_recurrence()` ran but before shutdown.
+	 * That is the exact ordering a first publish produces when this class's hook
 	 * happens to run before the blob-writing caller. The fix is robust to hook
 	 * order because it never decides from a mid-request read, only from the
 	 * state at shutdown.
