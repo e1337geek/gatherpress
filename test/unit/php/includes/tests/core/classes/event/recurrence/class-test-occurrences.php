@@ -1756,6 +1756,108 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A running non-recurring event is upcoming, never past.
+	 *
+	 * The repository defines "upcoming" inclusively, the way
+	 * `Event\Query::get_datetime_comparison_column()` does for the admin
+	 * list: the buckets split at `datetime_end_gmt`, so an event that has
+	 * started but not finished is still the one an upcoming list should be
+	 * showing, and it appears in exactly one bucket. Bounding on the start
+	 * instead demotes every running event into the past bucket the moment it
+	 * begins.
+	 *
+	 * @covers ::select_upcoming
+	 * @covers ::select_past
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_running_event_is_upcoming_not_past(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$start    = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-1 hour' );
+
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'America/New_York',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		$upcoming_ids = wp_list_pluck( Occurrences::get_instance()->select_upcoming( 50 ), 'post_id' );
+		$past_ids     = wp_list_pluck( Occurrences::get_instance()->select_past( 50 ), 'post_id' );
+
+		$this->assertContains(
+			$post_id,
+			$upcoming_ids,
+			'Failed to assert that a running event still counts as upcoming.'
+		);
+		$this->assertNotContains(
+			$post_id,
+			$past_ids,
+			'Failed to assert that a running event is not classified as past.'
+		);
+	}
+
+	/**
+	 * A running occurrence of a recurring series is upcoming, never past.
+	 *
+	 * Same inclusive-upcoming boundary as the non-recurring case, on the
+	 * occurrence branch of the `COALESCE`: the bucket split reads the
+	 * occurrence row's own end, so the series' in-progress occurrence stays
+	 * in the upcoming list alongside its future siblings.
+	 *
+	 * @covers ::select_upcoming
+	 * @covers ::select_past
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_running_occurrence_is_upcoming_not_past(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-1 hour' );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => 3,
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$running_id = Occurrences::recurrence_id( $anchor );
+
+		$in_upcoming = array_filter(
+			Occurrences::get_instance()->select_upcoming( 50 ),
+			static fn( Occurrence_Ref $ref ) => $post_id === $ref->post_id && $running_id === $ref->recurrence_id
+		);
+		$in_past     = array_filter(
+			Occurrences::get_instance()->select_past( 50 ),
+			static fn( Occurrence_Ref $ref ) => $post_id === $ref->post_id && $running_id === $ref->recurrence_id
+		);
+
+		$this->assertNotEmpty(
+			$in_upcoming,
+			'Failed to assert that the running occurrence still counts as upcoming.'
+		);
+		$this->assertEmpty(
+			$in_past,
+			'Failed to assert that the running occurrence is not classified as past.'
+		);
+	}
+
+	/**
 	 * Create a "never"-ending weekly series anchored a few weeks in the past,
 	 * projected with a short horizon so it starts out needing a top-up once
 	 * the horizon filter is restored to its default.
