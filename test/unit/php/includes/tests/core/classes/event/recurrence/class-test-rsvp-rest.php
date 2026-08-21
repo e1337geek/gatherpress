@@ -2205,6 +2205,55 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
+	 * A readable owner's roster is still served through a sibling, and it is the owner's.
+	 *
+	 * The counterpart that keeps the owner guard a guard rather than a wall:
+	 * when the resolved owner is readable, a read naming the sibling must
+	 * succeed and must carry the owner's records. The sibling itself has no
+	 * responses, so the roster returned can only have come from the owner, and
+	 * asserting the stored comment pins that rather than a shape both posts
+	 * could produce.
+	 *
+	 * @covers ::can_read_event_rsvps
+	 * @covers ::rsvp_responses
+	 *
+	 * @return void
+	 */
+	public function test_a_readable_owners_roster_is_served_through_a_sibling(): void {
+		$owner_post_id = $this->create_and_project();
+		$issued        = $this->issue_token( $owner_post_id, 'ada@example.test', $this->occurrence_a );
+
+		$sibling_post_id = $this->create_plain_event();
+
+		$this->widen_series( $sibling_post_id, $owner_post_id );
+
+		wp_set_current_user( 0 );
+
+		$response = $this->dispatch(
+			'GET',
+			'rsvp-responses',
+			array(
+				'post_id'       => $sibling_post_id,
+				'recurrence_id' => $this->occurrence_a,
+			)
+		);
+
+		$this->assertSame(
+			200,
+			$response->get_status(),
+			'Failed to assert a readable owner\'s occurrence is served through a sibling.'
+		);
+		$this->assertSame(
+			array( $issued['comment_id'] ),
+			array_map(
+				'intval',
+				wp_list_pluck( $response->get_data()['data']['attending']['records'], 'comment_id' )
+			),
+			'Failed to assert the roster served through the sibling is the owner\'s own.'
+		);
+	}
+
+	/**
 	 * A logged-in write naming a private owner's occurrence is refused as not found.
 	 *
 	 * The write route already refused this cross-owner write, but with a
@@ -2494,7 +2543,7 @@ class Test_Rsvp_Rest extends Base {
 	 *
 	 * @covers ::requested_occurrence
 	 * @covers ::request_token_string
-	 * @covers ::can_write_occurrence_owner
+	 * @covers ::can_access_occurrence_owner
 	 *
 	 * @return void
 	 */
@@ -2553,7 +2602,7 @@ class Test_Rsvp_Rest extends Base {
 		$this->assertTrue(
 			Utility::invoke_hidden_method(
 				$instance,
-				'can_write_occurrence_owner',
+				'can_access_occurrence_owner',
 				array( null, $post_id )
 			),
 			'Failed to assert a series-wide request needs no owner check.'
@@ -2561,7 +2610,7 @@ class Test_Rsvp_Rest extends Base {
 		$this->assertTrue(
 			Utility::invoke_hidden_method(
 				$instance,
-				'can_write_occurrence_owner',
+				'can_access_occurrence_owner',
 				array( $identity, $post_id )
 			),
 			'Failed to assert a request naming the owning post needs no second check.'
@@ -2585,7 +2634,7 @@ class Test_Rsvp_Rest extends Base {
 		$this->assertFalse(
 			Utility::invoke_hidden_method(
 				$instance,
-				'can_write_occurrence_owner',
+				'can_access_occurrence_owner',
 				array( $identity, $named_post_id )
 			),
 			'Failed to assert a caller with no read access to the owning post is refused.'

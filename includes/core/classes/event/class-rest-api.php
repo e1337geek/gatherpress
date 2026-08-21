@@ -551,11 +551,7 @@ final class Rest_Api {
 			// inner dispatch failing must not widen the outer route's scope.
 			Context::get_instance()->restore( $previous );
 
-			return new WP_Error(
-				'gatherpress_occurrence_not_found',
-				__( 'The requested occurrence no longer exists.', 'gatherpress' ),
-				array( 'status' => 404 )
-			);
+			return $this->occurrence_not_found();
 		}
 
 		// The filter is global and installed once for the whole stack; the
@@ -681,8 +677,10 @@ final class Rest_Api {
 	 *
 	 * @param WP_REST_Request $request Contains data from the request.
 	 *
-	 * @return bool|WP_Error True when the caller may write this RSVP, or a 403 when a
-	 *                       presented token does not carry the requested occurrence.
+	 * @return bool|WP_Error True when the caller may write this RSVP, a 403 when a
+	 *                       presented token does not carry the requested occurrence, or
+	 *                       the shared not-found refusal when the occurrence's owner
+	 *                       refuses a logged-in caller.
 	 */
 	public function can_update_rsvp( WP_REST_Request $request ): bool|WP_Error {
 		$post_id    = (int) $request->get_param( 'post_id' );
@@ -695,7 +693,7 @@ final class Rest_Api {
 			$allowed   = Occurrence_Identity::matches(
 				Occurrence_Identity::for_comment( (int) $comment->comment_ID ),
 				$requested
-			) && $this->can_write_occurrence_owner( $requested, $post_id );
+			) && $this->can_access_occurrence_owner( $requested, $post_id );
 
 			// One message and one status for every refusal, whether the
 			// requested occurrence is real, belongs to a sibling, or does not
@@ -709,37 +707,65 @@ final class Rest_Api {
 		}
 
 		// Otherwise the caller must be logged in and able to read the event.
-		// The owner check is deliberately second: it reads storage, so it must
-		// not run for a caller the named-post check has not already admitted.
-		return is_user_logged_in()
-			&& $this->can_read_event_rsvps( $request )
-			&& $this->can_write_occurrence_owner( $this->requested_occurrence( $request ), $post_id );
+		// `can_read_event_rsvps()` carries the whole rule, ordered so storage
+		// is only read for a caller the named-post check has already admitted,
+		// and its owner refusal is returned as-is so the refusal stays
+		// indistinguishable from a fabricated identifier's.
+		if ( ! is_user_logged_in() ) {
+			return false;
+		}
+
+		return $this->can_read_event_rsvps( $request );
 	}
 
 	/**
-	 * Authorize the post that actually owns the occurrence being written.
+	 * Authorize the post that actually owns the occurrence being read or written.
 	 *
 	 * The named post and the owner are the same post for every series that has
 	 * never been split, so this is a no-op today. It exists because they stop
 	 * being the same post the moment the forward split moves an occurrence
 	 * onto a sibling: authorization would then have been granted against the
-	 * fragment the caller named while the write landed on a fragment nobody
-	 * checked. Capability on one fragment must never authorize a mutation of an
-	 * unauthorized sibling.
+	 * fragment the caller named while the read or write landed on a fragment
+	 * nobody checked. Capability on one fragment must never authorize access
+	 * to an unauthorized sibling, and the rule is the same for a roster read
+	 * as for a mutation, because the read is what discloses the roster.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param Occurrence_Identity|null $identity      The resolved occurrence, if any.
 	 * @param int                      $named_post_id The post the request named.
 	 *
-	 * @return bool True when the caller may write against the owning post.
+	 * @return bool True when the caller may act against the owning post.
 	 */
-	private function can_write_occurrence_owner( ?Occurrence_Identity $identity, int $named_post_id ): bool {
+	private function can_access_occurrence_owner( ?Occurrence_Identity $identity, int $named_post_id ): bool {
 		if ( null === $identity || $identity->owner_post_id === $named_post_id ) {
 			return true;
 		}
 
 		return Event::can_read_rsvps( $identity->owner_post_id );
+	}
+
+	/**
+	 * Build the one refusal every unusable occurrence receives.
+	 *
+	 * The single source of that refusal, shared by
+	 * `enter_occurrence_context()`, `can_read_event_rsvps()` and
+	 * `handle_rsvp_form_submission()`, so a caller cannot tell an occurrence
+	 * that does not exist from one whose owner refused them. Two refusals that
+	 * drifted apart in status, code or message would let a caller authorized
+	 * on one post of a series enumerate which occurrences of an unreadable
+	 * sibling exist, one candidate at a time.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return WP_Error The not-found refusal, identical for every caller.
+	 */
+	private function occurrence_not_found(): WP_Error {
+		return new WP_Error(
+			'gatherpress_occurrence_not_found',
+			__( 'The requested occurrence no longer exists.', 'gatherpress' ),
+			array( 'status' => 404 )
+		);
 	}
 
 	/**
@@ -749,14 +775,36 @@ final class Rest_Api {
 	 * public (subject to any password gate), while other statuses require read
 	 * access to the specific event. Editors keep access in every state.
 	 *
+	 * The roster callbacks read from the post that owns the requested
+	 * occurrence, which a forward split can make a different post from the one
+	 * the request named, so the owner is authorized here too. The named-post
+	 * check runs first and alone for a refused caller: the owner re-check
+	 * resolves the occurrence from storage, and resolving for a caller the
+	 * named post refuses would answer "is this occurrence real?" for a caller
+	 * with no right to ask. An authorized caller whose resolved owner refuses
+	 * them gets the exact refusal a fabricated identifier gets, for the reason
+	 * given on `occurrence_not_found()`.
+	 *
 	 * @since 0.35.1
 	 *
 	 * @param WP_REST_Request $request Contains data from the request.
 	 *
-	 * @return bool True when the caller may read the event's RSVP responses.
+	 * @return bool|WP_Error True when the caller may read the event's RSVP responses, false
+	 *                       when the named post refuses them, or the shared not-found refusal
+	 *                       when the occurrence's owner does.
 	 */
-	public function can_read_event_rsvps( WP_REST_Request $request ): bool {
-		return Event::can_read_rsvps( (int) $request->get_param( 'post_id' ) );
+	public function can_read_event_rsvps( WP_REST_Request $request ): bool|WP_Error {
+		$post_id = (int) $request->get_param( 'post_id' );
+
+		if ( ! Event::can_read_rsvps( $post_id ) ) {
+			return false;
+		}
+
+		if ( $this->can_access_occurrence_owner( $this->requested_occurrence( $request ), $post_id ) ) {
+			return true;
+		}
+
+		return $this->occurrence_not_found();
 	}
 
 	/**
@@ -1312,6 +1360,26 @@ final class Rest_Api {
 			);
 		}
 
+		// Steps 1 and 2 of resolve-authorize-use, on the one route whose
+		// `permission_callback` is `__return_true`: the response is written
+		// against the post that owns the occurrence, so that owner is the post
+		// that must pass the same viewability gate the named post just did.
+		// The two are identical on every unsplit series, and deliberately not
+		// identical after a forward split has moved the occurrence onto a
+		// sibling; without this, naming a viewable sibling wrote an RSVP onto
+		// a private owner nobody authorized. The refusal is the exact refusal
+		// a fabricated identifier gets, for the reason given on
+		// `occurrence_not_found()`.
+		$identity = $this->requested_occurrence( $request );
+
+		if (
+			null !== $identity
+			&& $identity->owner_post_id !== $post_id
+			&& ! Event::is_viewable( $identity->owner_post_id )
+		) {
+			return $this->occurrence_not_found();
+		}
+
 		// Scope the duplicate check, the written response and the returned
 		// counts to the occurrence the visitor is looking at.
 		$occurrence_error = $this->enter_occurrence_context( $request );
@@ -1322,12 +1390,8 @@ final class Rest_Api {
 
 		$params = $request->get_params();
 
-		// Step 3 of resolve-authorize-use: the response is written against the
-		// post that owns the authorized occurrence. Identical to the named post
-		// on every unsplit series, and deliberately not identical after a
-		// forward split has moved the occurrence onto a sibling.
-		$identity = $this->requested_occurrence( $request );
-		$post_id  = ( null === $identity ) ? $post_id : $identity->owner_post_id;
+		// Step 3: the write itself runs against the authorized owner.
+		$post_id = ( null === $identity ) ? $post_id : $identity->owner_post_id;
 
 		// Prepare data for the RSVP processor.
 		$data = array(
