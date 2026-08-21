@@ -1176,6 +1176,45 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Coverage for `add_rewrite_rule_for_post_type` bailing when the post
+	 * type's permastruct is not registered. A truthy `rewrite` normally
+	 * guarantees one, but `remove_permastruct()` is public API and a rule
+	 * built from an empty struct would start with a bare `/` and match
+	 * nothing it advertises.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 *
+	 * @return void
+	 */
+	public function test_add_rewrite_rule_for_post_type_bails_without_a_permastruct(): void {
+		register_post_type(
+			'gp_test_no_struct',
+			array(
+				'public'  => true,
+				'rewrite' => array( 'slug' => 'gp-test-no-struct' ),
+			)
+		);
+		remove_permastruct( 'gp_test_no_struct' );
+
+		global $wp_rewrite;
+		$before = $wp_rewrite->extra_rules_top;
+
+		Utility::invoke_hidden_method(
+			Rewrite::get_instance(),
+			'add_rewrite_rule_for_post_type',
+			array( 'gp_test_no_struct' )
+		);
+
+		$this->assertSame(
+			$before,
+			$wp_rewrite->extra_rules_top,
+			'No rewrite rule should be added for a post type without a registered permastruct.'
+		);
+
+		unregister_post_type( 'gp_test_no_struct' );
+	}
+
+	/**
 	 * Coverage for `add_rewrite_rule_for_post_type` bailing on a post type
 	 * with its query var disabled.
 	 *

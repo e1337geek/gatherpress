@@ -113,10 +113,12 @@ final class Rewrite {
 	/**
 	 * Register the occurrence rewrite rule for one post type.
 	 *
-	 * Reads the post type's registered rewrite slug and query var at call
+	 * Reads the post type's registered permastruct and query var at call
 	 * time rather than assuming `gatherpress_event` / `/event/`, so a
 	 * non-default or localized `events_url` setting gets a working occurrence
-	 * URL, and so does a companion plugin's own event-supporting post type.
+	 * URL, and so does a companion plugin's own event-supporting post type,
+	 * including hierarchical ones and ones whose permastruct keeps the
+	 * rewrite front.
 	 *
 	 * @since 0.36.0
 	 *
@@ -125,6 +127,8 @@ final class Rewrite {
 	 * @return void
 	 */
 	protected function add_rewrite_rule_for_post_type( string $post_type ): void {
+		global $wp_rewrite;
+
 		$type_object = get_post_type_object( $post_type );
 
 		if ( ! $type_object instanceof WP_Post_Type
@@ -134,14 +138,30 @@ final class Rewrite {
 			return;
 		}
 
-		// A truthy `rewrite` is always normalized to an array with a 'slug' key by
-		// WP_Post_Type, and `rewrite === true` resolves 'slug' to the post type
-		// name, so there is no reachable case where the key is absent here.
-		$slug = (string) $type_object->rewrite['slug'];
+		// The pattern is built from the post type's registered permastruct
+		// rather than from the bare rewrite slug: `register_post_type()`
+		// prepends the rewrite front to every `with_front` permastruct, so
+		// the struct's leading path is what every real permalink of the post
+		// type carries, and a rule missing it would never match the URLs
+		// `get_occurrence_url()` advertises.
+		$struct = (string) $wp_rewrite->get_extra_permastruct( $post_type );
+
+		if ( '' === $struct ) {
+			return;
+		}
+
+		$base = trim( str_replace( '%' . $post_type . '%', '', $struct ), '/' );
+
+		// A hierarchical post type publishes child posts at `parent/child`,
+		// so the post-name capture must span path segments, matching the
+		// `(.+?)` capture WordPress's own rewrite tag uses for hierarchical
+		// post types. A non-hierarchical name is always one segment.
+		$capture = $type_object->hierarchical ? '(.+?)' : '([^/]+)';
 
 		$reg_ex = sprintf(
-			'%s/([^/]+)/(%s)/?$',
-			$slug,
+			'%s/%s/(%s)/?$',
+			$base,
+			$capture,
 			self::RECURRENCE_ID_REGEX
 		);
 
