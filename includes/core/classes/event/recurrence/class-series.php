@@ -174,6 +174,13 @@ final class Series {
 	 * the taxonomy records: this class is `final` with a `protected` constructor,
 	 * so no test can mock or subclass it.
 	 *
+	 * The filtered result is normalized rather than returned verbatim: IDs are
+	 * cast to integers, the resolving post is re-added, duplicates are removed
+	 * and the set is sorted ascending. An integration returning only a
+	 * companion ID would otherwise strip the guaranteed self-membership, and
+	 * every occurrence query consuming the set would silently skip the
+	 * resolving post's own rows.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID to resolve.
@@ -192,6 +199,10 @@ final class Series {
 		/**
 		 * Filters the post IDs that make up an event's series.
 		 *
+		 * The result is normalized after filtering: values are cast to integer,
+		 * the resolved post ID is always re-added, duplicates are dropped and
+		 * the set is sorted ascending.
+		 *
 		 * @since 0.36.0
 		 *
 		 * @param int[] $post_ids Post IDs in the series, default the posts sharing this post's series term.
@@ -199,7 +210,14 @@ final class Series {
 		 *
 		 * @return int[] Post IDs in the series.
 		 */
-		return apply_filters( 'gatherpress_series_post_ids', $post_ids, $post_id );
+		$post_ids = (array) apply_filters( 'gatherpress_series_post_ids', $post_ids, $post_id );
+
+		$post_ids[] = $post_id;
+		$post_ids   = array_values( array_unique( array_map( 'intval', $post_ids ) ) );
+
+		sort( $post_ids );
+
+		return $post_ids;
 	}
 
 	/**
