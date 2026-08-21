@@ -728,7 +728,7 @@ class Test_Loop_Render extends Base {
 
 		// Read before any `the_post()`, which is the singular occurrence page's
 		// own shape: nothing is stamped, so the request is the only identity
-		// there is. Reading after the loop instead would prove nothing --
+		// there is. Reading after the loop instead would prove nothing, because
 		// `wp_reset_postdata()` restores from the *main* query, which this test
 		// has no post in, so the last stamped row would still be current.
 		$unstamped = Utility::invoke_hidden_method( Context::get_instance(), 'resolve', array( $series_id ) );

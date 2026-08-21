@@ -482,7 +482,7 @@ class Test_Rewrite extends Base {
 		// Simulate an existing site upgrading: strip the occurrence pattern
 		// back out of the persisted option, as if this plugin version had
 		// never registered it and the site's rules were never otherwise
-		// regenerated since. `extra_rules_top` in memory is untouched --
+		// regenerated since. `extra_rules_top` in memory is untouched, which is
 		// exactly what happens between one request finishing and the next
 		// one's `wp_loaded` firing.
 		$reg_ex = sprintf( '%s/([^/]+)/(%s)/?$', 'event', Rewrite::RECURRENCE_ID_REGEX );
