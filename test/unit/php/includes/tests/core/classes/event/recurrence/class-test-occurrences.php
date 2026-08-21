@@ -2126,6 +2126,56 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for the horizon top-up: a trashed series must not stay in the
+	 * maintenance batch while another live recurrence keeps the sweep enabled.
+	 *
+	 * WordPress retains post meta on trash, so the trashed series' `end_type`
+	 * mirror is still in `wp_postmeta` when the candidate query runs. Driven
+	 * from meta alone, the selector would re-project a trashed series on every
+	 * sweep for as long as any other live recurrence exists, because the flag
+	 * that gates the sweep stays `'1'` for the published series. The candidate
+	 * query has to consult the post's own status.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_trashed_series_is_excluded_from_top_up_while_a_published_series_remains(): void {
+		list( $published_id ) = $this->create_short_horizon_never_ending_series();
+		list( $trashed_id )   = $this->create_short_horizon_never_ending_series();
+
+		// Trashing updates the post, which re-projects the series through
+		// `wp_after_insert_post`. Hold the short horizon through the trash so
+		// the trashed series is still stale afterward; without this, the
+		// trash-time re-projection freshens it and the exclusion assertion
+		// below would pass for a reason unrelated to post status.
+		$short_horizon = static fn() => 1;
+		add_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
+
+		wp_trash_post( $trashed_id );
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
+
+		$candidates = Occurrences::get_instance()->select_series_needing_top_up( 100 );
+
+		$this->assertContains(
+			$published_id,
+			$candidates,
+			'Failed to assert that the published stale series stays a top-up candidate.'
+		);
+		$this->assertNotContains(
+			$trashed_id,
+			$candidates,
+			'Failed to assert that a trashed series is excluded from the top-up batch.'
+		);
+		$this->assertSame(
+			'1',
+			get_option( Query::HAS_RECURRING_OPTION ),
+			'Failed to assert that the remaining published series keeps the sweep enabled.'
+		);
+	}
+
+	/**
 	 * Coverage for the horizon top-up: `select_series_needing_top_up()` orders by
 	 * staleness, not by `series_post_id`, so a batch smaller than the
 	 * candidate pool cannot starve the most-overdue series behind

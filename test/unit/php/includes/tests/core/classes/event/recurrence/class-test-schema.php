@@ -438,7 +438,16 @@ class Test_Schema extends Base {
 	/**
 	 * Coverage for trashing a supported post refreshing the flag via transition_post_status.
 	 *
+	 * WordPress retains post meta on trash, so the frequency mirror is still in
+	 * `wp_postmeta` when the recompute runs. The recompute has to look at the
+	 * post's own status to see that the last recurring event is gone. The
+	 * fixture deliberately leaves every meta row in place and drives nothing
+	 * but the real `wp_trash_post()` transition, because deleting the mirror
+	 * by hand first would let a meta-only recompute pass this test without
+	 * ever exercising the lifecycle its name claims.
+	 *
 	 * @covers ::maybe_refresh_has_recurring_events_for_transition
+	 * @covers ::refresh_has_recurring_events
 	 *
 	 * @return void
 	 */
@@ -454,9 +463,6 @@ class Test_Schema extends Base {
 		Query::refresh_has_recurring_events();
 
 		$this->assertSame( '1', get_option( Query::HAS_RECURRING_OPTION ) );
-
-		delete_post_meta( $post_id, self::FREQUENCY_META_KEY );
-		update_option( Query::HAS_RECURRING_OPTION, '1', true );
 
 		wp_trash_post( $post_id );
 
