@@ -795,6 +795,12 @@ final class Occurrences {
 	 * renderer and the submission handler cannot drift from what the lazy
 	 * repair treats as a series.
 	 *
+	 * Public because the admin events list marks a row as recurring off the
+	 * rule rather than off the occurrence rows. A series whose rows are all
+	 * cancelled, or whose projection has not run yet, still repeats, and a list
+	 * that dropped the marker in either case would be telling the reader the
+	 * event is a one-off.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID to check.
@@ -2059,6 +2065,91 @@ final class Occurrences {
 		// returns `null` for a non-empty query, so there is no failure value
 		// to branch on here either.
 		return $rows;
+	}
+
+	/**
+	 * Read the one occurrence a per-series list row should represent.
+	 *
+	 * The admin events list renders one row per post, so it has to pick a
+	 * single occurrence out of a series that may hold fifty of them. The rule
+	 * is "the next one that has not finished yet, and failing that the most
+	 * recent one that has", which is what a reader of a list of events expects
+	 * a date column to mean.
+	 *
+	 * Takes an array of post IDs from `Series::resolve_post_ids()` rather than
+	 * one ID, so a series a forward split has spread across several posts still
+	 * resolves to the earliest upcoming occurrence anywhere in it.
+	 *
+	 * The elapsed fallback is deliberate rather than a null return. A series
+	 * whose occurrences have all happened is still a real event that the list
+	 * has to date, and dating it from the series anchor would show the *first*
+	 * occurrence, which for a long-running weekly series is years off.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[] $post_ids Post IDs from `Series::resolve_post_ids()`.
+	 *
+	 * @return array|null The chosen occurrence row, or null when the series has no scheduled rows.
+	 */
+	public function select_display_for_series( array $post_ids ): ?array {
+		if ( array() === $post_ids || ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
+			return null;
+		}
+
+		$upcoming = $this->select_bounded_occurrence( $post_ids, true );
+
+		return ( null !== $upcoming ) ? $upcoming : $this->select_bounded_occurrence( $post_ids, false );
+	}
+
+	/**
+	 * Read the first scheduled occurrence of a series on one side of "now".
+	 *
+	 * Bounds on `datetime_end_gmt` rather than on the start, matching
+	 * `Event\Query::get_datetime_comparison_column()`'s inclusive-upcoming
+	 * semantics: an occurrence that has started but not finished is still the
+	 * one a list should be showing.
+	 *
+	 * Ordering carries `recurrence_id` as a tie-breaker for the same reason
+	 * `select_by_horizon()` does. Two occurrences of one series cannot share a
+	 * start, but two posts of a split series can contribute rows that do, and a
+	 * `LIMIT 1` over an ambiguous order is a coin flip between two reads.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[] $post_ids Post IDs from `Series::resolve_post_ids()`.
+	 * @param bool  $upcoming True for the earliest unfinished occurrence, false for the latest finished one.
+	 *
+	 * @return array|null The matching occurrence row, or null when the bound matches nothing.
+	 */
+	protected function select_bounded_occurrence( array $post_ids, bool $upcoming ): ?array {
+		global $wpdb;
+
+		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+		$placeholders = implode( ', ', array_fill( 0, count( $post_ids ), '%d' ) );
+		$comparison   = $upcoming ? '>=' : '<';
+		$order        = $upcoming ? 'ASC' : 'DESC';
+
+		$sql = "SELECT * FROM %i WHERE series_post_id IN ( {$placeholders} )"
+			. ' AND status = %s'
+			. " AND datetime_end_gmt {$comparison} %s"
+			. " ORDER BY datetime_start_gmt {$order}, recurrence_id {$order}"
+			. ' LIMIT 1';
+
+		$values = array_merge(
+			array( $table ),
+			$post_ids,
+			array( self::STATUS_SCHEDULED, current_time( 'mysql', true ) )
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $values ), ARRAY_A );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		// `get_row()` answers null both for no match and for a failed query,
+		// and this method has nothing different to do in the two cases.
+		return is_array( $row ) ? $row : null;
 	}
 
 	/**

@@ -1533,6 +1533,220 @@ class Test_Query extends Base {
 			'Failed to assert a clause ordering on another posts-table column is not mistaken for one.'
 		);
 	}
+
+	/**
+	 * Build the fixture the admin sorting tests share.
+	 *
+	 * Every entry is placed so that ordering by the series **anchor** and
+	 * ordering by the occurrence the list is showing disagree, in two
+	 * independent ways. Without that separation the test would pass against the
+	 * untouched code and prove nothing.
+	 *
+	 * `running` is anchored ten days ago and still going, so its anchor sorts
+	 * it near the bottom of the past while its next occurrence, five hours from
+	 * now, belongs between two upcoming one-off events.
+	 *
+	 * `elapsed` and `way_past` swap places between the two orderings on their
+	 * own: the series anchor is thirty days ago, earlier than `way_past`, while
+	 * its last occurrence is twenty-six days ago, later than `way_past`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array<string, int> Post IDs keyed by role.
+	 */
+	protected function build_admin_sort_fixture(): array {
+		$now = $this->now();
+
+		return array(
+			'elapsed'  => $this->create_series_at(
+				$now->modify( '-30 days' ),
+				$now->modify( '-30 days +1 hour' ),
+				self::DAILY_RULE
+			),
+			'way_past' => $this->create_event_at(
+				$now->modify( '-28 days' ),
+				$now->modify( '-28 days +1 hour' )
+			),
+			'running'  => $this->create_series_at(
+				$now->modify( '-10 days +5 hours' ),
+				$now->modify( '-10 days +6 hours' ),
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 20,
+				)
+			),
+			'before'   => $this->create_event_at(
+				$now->modify( '+1 hour' ),
+				$now->modify( '+2 hours' )
+			),
+			'after'    => $this->create_event_at(
+				$now->modify( '+1 day' ),
+				$now->modify( '+1 day +1 hour' )
+			),
+		);
+	}
+
+	/**
+	 * Run a date-ordered admin event list over a fixed set of posts.
+	 *
+	 * Drives a real `WP_Query` on a real `edit.php` screen, so the production
+	 * `posts_clauses` chain runs in the order production runs it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array<string, int> $fixture Post IDs keyed by role.
+	 * @param string             $orderby Value of the `orderby` query argument.
+	 *
+	 * @return int[] The result IDs, in query order.
+	 */
+	protected function run_admin_list_query( array $fixture, string $orderby = 'datetime' ): array {
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query(
+			array(
+				'post_type'      => Event::POST_TYPE,
+				'post_status'    => 'publish',
+				'post__in'       => array_values( $fixture ),
+				'orderby'        => $orderby,
+				'order'          => 'ASC',
+				'posts_per_page' => -1,
+				'fields'         => 'ids',
+				'no_found_rows'  => true,
+			)
+		);
+
+		set_current_screen( 'front' );
+
+		return array_map( 'intval', $query->posts );
+	}
+
+	/**
+	 * Recurring and non-recurring rows interleave by the date the list shows.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_orders_by_shown_occurrence(): void {
+		$fixture = $this->build_admin_sort_fixture();
+
+		$this->assertSame(
+			array(
+				$fixture['way_past'],
+				$fixture['elapsed'],
+				$fixture['before'],
+				$fixture['running'],
+				$fixture['after'],
+			),
+			$this->run_admin_list_query( $fixture ),
+			'Failed to assert that the admin list orders series by the occurrence it shows.'
+		);
+	}
+
+	/**
+	 * The join is added only when the clause actually carries the anchor ordering.
+	 *
+	 * Sorting the list by title has nothing for this filter to rewrite, and the
+	 * derived table would be paid for on every such screen.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_skips_non_datetime_ordering(): void {
+		$fixture  = $this->build_admin_sort_fixture();
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		$this->run_admin_list_query( $fixture, 'title' );
+		remove_filter( 'posts_request', $capture );
+
+		$this->assertStringNotContainsString(
+			Query::ADMIN_SORT_ALIAS,
+			$captured,
+			'Failed to assert that a title-ordered admin list pays for no occurrence join.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op outside the admin.
+	 *
+	 * Front-end lists get real occurrence expansion instead, and rewriting
+	 * their ordering here on top of that would sort an expanded list by a
+	 * per-series aggregate.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_outside_the_admin(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'front' );
+
+		// Every other guard is deliberately satisfied, so `is_admin()` is the
+		// only thing left that can return these clauses unchanged. A bare
+		// `WP_Query` would pass this test with the admin check deleted, because
+		// the event-post-type guard would stop it instead.
+		$query = new WP_Query();
+		$query->set( 'post_type', Event::POST_TYPE );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'join'    => '',
+		);
+
+		$this->assertSame(
+			$pieces,
+			Query::get_instance()->adjust_admin_occurrence_sorting( $pieces, $query ),
+			'Failed to assert that the admin sorting filter does nothing on the front end.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op on a site with no recurring events.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_without_recurring_events(): void {
+		$fixture = array(
+			'early' => $this->create_event_at( $this->now()->modify( '+1 hour' ), $this->now()->modify( '+2 hours' ) ),
+			'late'  => $this->create_event_at( $this->now()->modify( '+1 day' ), $this->now()->modify( '+2 days' ) ),
+		);
+
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		$results = $this->run_admin_list_query( $fixture );
+		remove_filter( 'posts_request', $capture );
+
+		$this->assertStringNotContainsString(
+			Query::ADMIN_SORT_ALIAS,
+			$captured,
+			'Failed to assert that a site with no recurring events runs unchanged admin SQL.'
+		);
+		$this->assertSame(
+			array( $fixture['early'], $fixture['late'] ),
+			$results,
+			'Failed to assert that plain events still sort by their own datetime.'
+		);
+	}
 	/**
 	 * The results filter stamps nothing yet, and it has to leave both result
 	 * shapes alone: the plugin's own read API asks for IDs, while a template

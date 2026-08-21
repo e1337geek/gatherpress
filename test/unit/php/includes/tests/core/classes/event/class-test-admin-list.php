@@ -8,10 +8,15 @@
 
 namespace GatherPress\Tests\Core\Event;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Admin_List;
+use GatherPress\Core\Event\Recurrence\Meta as Recurrence_Meta;
+use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Rsvp;
+use GatherPress\Core\Settings;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use WP_Query;
@@ -1731,6 +1736,263 @@ class Test_Admin_List extends Base {
 		$this->assertFalse(
 			has_filter( 'posts_orderby', array( $instance, 'rsvp_sorting_orderby' ) ),
 			'No RSVP orderby filter should be added for event-date-only post types.'
+		);
+	}
+
+	/**
+	 * Build the recurring fixture the date-column tests share.
+	 *
+	 * The anchor is deliberately **in the past** and the rule is deliberately
+	 * long enough to still be running. That separation is the whole point of
+	 * the fixture: the series anchor and the occurrence the column is supposed
+	 * to show are provably different dates, so a column that renders the anchor
+	 * and a column that renders the next occurrence cannot produce the same
+	 * string. A fixture anchored on its own next occurrence would pass against
+	 * both the fixed code and the broken code it replaced.
+	 *
+	 * The five-hour offset keeps the chosen occurrence off "right now", so the
+	 * assertion never races the clock across a `LIMIT 1` boundary.
+	 *
+	 * Everything is UTC so an occurrence's local columns and its GMT columns
+	 * read identically and a formatting assertion has one timezone to reason
+	 * about.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $count Number of daily occurrences to project.
+	 *
+	 * @return array<string, mixed> The post ID, the anchor start and the occurrence starts.
+	 */
+	protected function create_daily_series_fixture( int $count ): array {
+		gatherpress_reset_custom_tables();
+
+		$now    = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$anchor = $now->modify( '-40 days +5 hours' );
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $anchor->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		add_post_meta(
+			$post_id,
+			Recurrence_Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => $count,
+				)
+			)
+		);
+
+		Recurrence_Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return array(
+			'post_id' => (int) $post_id,
+			'anchor'  => $anchor,
+			// Occurrence 40 of a daily series anchored forty days ago starts
+			// five hours from now, the first one that has not finished.
+			'next'    => $anchor->modify( '+40 days' ),
+			'last'    => $anchor->modify( sprintf( '+%d days', $count - 1 ) ),
+		);
+	}
+
+	/**
+	 * Format a datetime the way the event date column does.
+	 *
+	 * Reads the same two settings `Event::get_display_datetime()` reads, so the
+	 * expectation tracks a site that has changed its date format rather than
+	 * hard-coding one.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeImmutable $datetime Datetime to format, in UTC.
+	 *
+	 * @return string The formatted date and time.
+	 */
+	protected function format_column_datetime( DateTimeImmutable $datetime ): string {
+		$settings = Settings::get_instance();
+
+		return $datetime->format(
+			sprintf( '%s %s', $settings->get( 'date_format' ), $settings->get( 'time_format' ) )
+		);
+	}
+
+	/**
+	 * A running series dates its row from its next occurrence, not its anchor.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_shows_next_occurrence_for_running_series(): void {
+		$fixture = $this->create_daily_series_fixture( 60 );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['next'] ),
+			$output,
+			'Failed to assert that the column shows the next upcoming occurrence.'
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $fixture['anchor'] ),
+			$output,
+			'Failed to assert that the column no longer shows the series anchor.'
+		);
+		$this->assertStringContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that a recurring series is marked as recurring.'
+		);
+	}
+
+	/**
+	 * A series whose occurrences have all elapsed dates its row from the last one.
+	 *
+	 * The anchor is the *first* occurrence, so showing it for a finished series
+	 * would report a date the series stopped using thirty-six days before it
+	 * ended. The most recent occurrence is what a reader means by "when was
+	 * this".
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_shows_last_occurrence_for_elapsed_series(): void {
+		$fixture = $this->create_daily_series_fixture( 5 );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['last'] ),
+			$output,
+			'Failed to assert that a fully elapsed series shows its most recent occurrence.'
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $fixture['anchor'] ),
+			$output,
+			'Failed to assert that a fully elapsed series does not show its anchor.'
+		);
+		$this->assertStringContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that an elapsed series is still marked as recurring.'
+		);
+	}
+
+	/**
+	 * A series with a rule but no scheduled rows keeps its marker.
+	 *
+	 * Cancelling every occurrence leaves the series with nothing to date the
+	 * row from, so the anchor is the only date available. It is still a
+	 * recurring event, and dropping the marker would tell the reader it is a
+	 * one-off.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_marks_series_with_no_scheduled_occurrences(): void {
+		$fixture     = $this->create_daily_series_fixture( 60 );
+		$occurrences = Occurrences::get_instance();
+
+		foreach ( $occurrences->select_for_series( array( $fixture['post_id'] ) ) as $occurrence ) {
+			$occurrences->set_status(
+				$fixture['post_id'],
+				(string) $occurrence['recurrence_id'],
+				Occurrences::STATUS_CANCELLED
+			);
+		}
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['anchor'] ),
+			$output,
+			'Failed to assert that a fully cancelled series falls back to its anchor.'
+		);
+		$this->assertStringContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that a fully cancelled series is still marked as recurring.'
+		);
+	}
+
+	/**
+	 * A non-recurring event is untouched by any of the above.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_leaves_non_recurring_event_alone(): void {
+		gatherpress_reset_custom_tables();
+
+		$start   = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->modify( '+3 days' );
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $start->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', (int) $post_id );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $start ),
+			$output,
+			'Failed to assert that a non-recurring event still shows its own datetime.'
+		);
+		$this->assertStringNotContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that a non-recurring event is not marked as recurring.'
 		);
 	}
 }

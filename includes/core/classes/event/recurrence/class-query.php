@@ -115,6 +115,19 @@ final class Query {
 	const OCCURRENCE_ALIAS = 'gatherpress_occurrence';
 
 	/**
+	 * SQL alias of the per-series sort table joined onto admin event lists.
+	 *
+	 * Distinct from `OCCURRENCE_ALIAS`: that one names the occurrence table
+	 * itself, joined row-for-row to expand a list. This one names a derived
+	 * table holding exactly one aggregate row per series, which is why it can
+	 * be joined onto the admin list without multiplying its rows.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const ADMIN_SORT_ALIAS = 'gatherpress_admin_occurrence_sort';
+
+	/**
 	 * Prefix every occurrence column is aliased under in an expanded SELECT.
 	 *
 	 * @since 0.36.0
@@ -212,6 +225,10 @@ final class Query {
 		// filters, so the events table is already joined and its ordering and
 		// range predicates are there to be rewritten.
 		add_filter( 'posts_clauses', array( $this, 'expand_event_clauses' ), 11, 2 );
+		// Also priority 11, and registered after `expand_event_clauses()` so it
+		// runs after it. The two are mutually exclusive by their guards:
+		// expansion is exempt in the admin, and this one only ever runs there.
+		add_filter( 'posts_clauses', array( $this, 'adjust_admin_occurrence_sorting' ), 11, 2 );
 		add_filter( 'the_posts', array( $this, 'attach_occurrences' ), 10, 2 );
 	}
 
@@ -509,6 +526,102 @@ final class Query {
 		global $wpdb;
 
 		return str_contains( $clause, $wpdb->posts . '.ID' );
+	}
+
+	/**
+	 * Sort an admin event list by the occurrence each series is next doing.
+	 *
+	 * `expand_event_clauses()` exempts the admin, so `edit.php` keeps one row
+	 * per post. That is the right row count and the wrong sort key:
+	 * `Event\Query::adjust_event_sql()` orders on the events table's
+	 * `datetime_start_gmt`, which is the series **anchor**, the date the series
+	 * first ran. A weekly series anchored last January therefore sinks to the
+	 * bottom of a date-ordered list all year, below one-off events months
+	 * further away than its next meeting is, and the column beside it now says
+	 * so out loud.
+	 *
+	 * The join is a derived table of one aggregate row per series, not the
+	 * occurrence table itself, so it cannot multiply the list's rows the way a
+	 * plain occurrence join would. The two conditional aggregates read
+	 * "earliest occurrence that has not finished" and "latest occurrence that
+	 * has", and the `COALESCE()` chain prefers them in that order before
+	 * falling back to the anchor. That is the same choice
+	 * `Occurrences::select_display_for_series()` makes for the date column, so
+	 * the list is ordered by the dates it is showing rather than by a second,
+	 * invisible key.
+	 *
+	 * Both aggregates are taken over the same `status = scheduled` set, so a
+	 * cancelled occurrence never becomes the date a series sorts on.
+	 *
+	 * The guards, in the order they are cheapest: this is admin-only, because
+	 * front-end lists get real expansion instead; a site with no recurring
+	 * events runs byte-identical SQL; the query has to be for an event post
+	 * type; the clause has to actually carry the anchor ordering, which is
+	 * false whenever the reader has sorted by title, author or RSVP count and
+	 * makes this free on those screens; and the occurrence table has to exist
+	 * on this blog, which is the multisite contract `expand_event_clauses()`
+	 * states at length.
+	 *
+	 * Bucketing is deliberately left alone. The Upcoming and Past filter links
+	 * still partition on the anchor, so a part-elapsed series can be filed
+	 * under Past while showing an upcoming date. Fixing that needs the *paired*
+	 * start and end of one chosen occurrence rather than two independent
+	 * aggregates, and it is not what REQ-17 asks for. The All view, which is
+	 * where `edit.php` opens, is correct.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array    $pieces Query clauses keyed as `WP_Query` supplies them.
+	 * @param WP_Query $query  Query being filtered.
+	 *
+	 * @return array The clauses, modified only for admin event lists ordered by date.
+	 */
+	public function adjust_admin_occurrence_sorting( array $pieces, WP_Query $query ): array {
+		global $wpdb;
+
+		$events_table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$anchor_order = sprintf( '%s.datetime_start_gmt', $events_table );
+
+		if (
+			! is_admin()
+			|| ! self::site_has_recurring_events()
+			|| ! $this->is_event_query( $query )
+			|| ! str_contains( (string) ( $pieces['orderby'] ?? '' ), $anchor_order )
+			|| ! Occurrences::get_instance()->table_exists()
+		) {
+			return $pieces;
+		}
+
+		$alias             = self::ADMIN_SORT_ALIAS;
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$now               = current_time( 'mysql', true );
+
+		$pieces['join'] .= $wpdb->prepare(
+			' LEFT JOIN ( SELECT series_post_id,'
+			. ' MIN( CASE WHEN datetime_end_gmt >= %s THEN datetime_start_gmt END ) AS next_start_gmt,'
+			. ' MAX( CASE WHEN datetime_end_gmt < %s THEN datetime_start_gmt END ) AS last_start_gmt'
+			. ' FROM %i WHERE status = %s GROUP BY series_post_id ) AS %i'
+			. ' ON %i.ID = %i.series_post_id',
+			$now,
+			$now,
+			$occurrences_table,
+			Occurrences::STATUS_SCHEDULED,
+			$alias,
+			$wpdb->posts,
+			$alias
+		);
+
+		$pieces['orderby'] = str_replace(
+			$anchor_order,
+			sprintf(
+				'COALESCE( %1$s.next_start_gmt, %1$s.last_start_gmt, %2$s )',
+				$alias,
+				$anchor_order
+			),
+			(string) $pieces['orderby']
+		);
+
+		return $pieces;
 	}
 
 	/**

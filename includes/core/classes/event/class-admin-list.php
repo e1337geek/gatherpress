@@ -17,6 +17,9 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use Exception;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Context;
+use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Series;
 use GatherPress\Core\Rsvp\Query as Rsvp_Query;
 use GatherPress\Core\Rsvp;
 use GatherPress\Core\Traits\Singleton;
@@ -501,8 +504,7 @@ final class Admin_List {
 	 */
 	public function custom_columns( string $column, int $post_id ): void {
 		if ( 'datetime' === $column ) {
-			$event = new Event( $post_id );
-			echo esc_html( $event->get_display_datetime() );
+			$this->render_datetime_column( $post_id );
 		}
 
 		if ( 'rsvps' === $column ) {
@@ -586,6 +588,70 @@ final class Admin_List {
 
 			echo '</span>';
 		}
+	}
+
+	/**
+	 * Render the event date column for one admin list row.
+	 *
+	 * A recurring series is one row in this list, because
+	 * `Recurrence\Query::expand_event_clauses()` exempts admin queries from
+	 * occurrence expansion. That leaves the row with a date to choose, and the
+	 * series anchor is the wrong one: it is the *first* occurrence, so a weekly
+	 * series started last January reads as a January event forever. The column
+	 * shows the occurrence the series is actually next doing, and falls back to
+	 * its most recent past one once the whole series has elapsed.
+	 *
+	 * Rendering goes through occurrence context rather than formatting the row
+	 * by hand, so the string is produced by the same
+	 * `Event::get_display_datetime()` every other surface uses, from the
+	 * occurrence record's own stored start and end. Nothing here takes an
+	 * occurrence's date and re-applies the series' time of day.
+	 *
+	 * The context is restored rather than cleared on the way out. This runs
+	 * inside a list table loop that a plugin can nest a render inside, and
+	 * clearing unconditionally would widen whatever scope was standing.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id The current post ID.
+	 *
+	 * @return void
+	 *
+	 * @throws Exception If initializing the Event object fails.
+	 */
+	protected function render_datetime_column( int $post_id ): void {
+		$occurrences = Occurrences::get_instance();
+		$occurrence  = $occurrences->select_display_for_series(
+			Series::get_instance()->resolve_post_ids( $post_id )
+		);
+		$context     = Context::get_instance();
+		$previous    = $context->current();
+
+		// A null occurrence restores "no context", which is exactly what a
+		// non-recurring event needs: the anchor is the only date it has.
+		$context->restore( $occurrence );
+
+		// The occurrence row names the post it belongs to. Reading that rather
+		// than the row's own post ID is what keeps a split series working, since
+		// `Context::resolve()` only serves an occurrence to the post that owns it.
+		$event = new Event(
+			( null !== $occurrence ) ? (int) $occurrence['series_post_id'] : $post_id
+		);
+
+		$datetime = $event->get_display_datetime();
+
+		$context->restore( $previous );
+
+		echo esc_html( $datetime );
+
+		if ( ! $occurrences->has_recurrence_rule( $post_id ) ) {
+			return;
+		}
+
+		printf(
+			' <span class="gatherpress-recurring-badge">%s</span>',
+			esc_html__( 'Recurring', 'gatherpress' )
+		);
 	}
 
 	/**

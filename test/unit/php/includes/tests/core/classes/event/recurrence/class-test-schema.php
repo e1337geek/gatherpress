@@ -656,6 +656,12 @@ class Test_Schema extends Base {
 			),
 			array(
 				'type'     => 'filter',
+				'name'     => 'posts_clauses',
+				'priority' => 11,
+				'callback' => array( $instance, 'adjust_admin_occurrence_sorting' ),
+			),
+			array(
+				'type'     => 'filter',
 				'name'     => 'the_posts',
 				'priority' => 10,
 				'callback' => array( $instance, 'attach_occurrences' ),
