@@ -200,6 +200,39 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
+	 * Create an ordinary, non-recurring event with a future date.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int The event post ID.
+	 */
+	protected function create_plain_event(): int {
+		$anchor  = $this->relative_anchor();
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $anchor->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'America/New_York',
+				)
+			)
+		);
+
+		\GatherPress\Core\Event\Setup::get_instance()->set_datetimes( $post_id );
+
+		return $post_id;
+	}
+
+	/**
 	 * Submit the classic form the way `wp-comments-post.php` does.
 	 *
 	 * @since 0.36.0
@@ -284,7 +317,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * The rendered form carries the occurrence it was rendered for.
+	 * The rendered form carries the scope it was rendered for on every form.
 	 *
 	 * `data-wp-context` already carried it, but only the interactivity runtime
 	 * reads that, which is exactly the runtime this path exists for the absence
@@ -292,6 +325,12 @@ class Test_Rsvp_Classic_Form extends Base {
 	 * identity at all, and no amount of server-side care downstream can recover
 	 * it. Inferring it from `HTTP_REFERER` is refused deliberately, because a
 	 * referer is attacker-controlled and routinely stripped.
+	 *
+	 * A recurring event's form emits the marker in series context too, with the
+	 * explicit `series` value, so the handler can tell an intentional
+	 * series-wide submission apart from a stale pre-upgrade page or a cached
+	 * form that never carried the field. Only a non-recurring event's form
+	 * stays byte-identical to its previous markup.
 	 *
 	 * @covers \GatherPress\Core\Blocks\Rsvp_Form::transform_block_content
 	 * @covers \GatherPress\Core\Blocks\Rsvp_Form::occurrence_input
@@ -311,10 +350,31 @@ class Test_Rsvp_Classic_Form extends Base {
 			$block
 		);
 
+		// The literal wire value is asserted, not a constant, so a change to
+		// the marker format fails here rather than passing a tautology.
+		$this->assertStringContainsString(
+			sprintf(
+				'<input type="hidden" name="%s" value="series">',
+				Form::RECURRENCE_ID_FIELD
+			),
+			$outside,
+			'Failed to assert a recurring event form outside occurrence context carries the explicit series marker.'
+		);
+
+		$plain_id   = $this->create_plain_event();
+		$plain_form = Rsvp_Form_Block::get_instance()->transform_block_content(
+			'<div class="wp-block-gatherpress-rsvp-form"></div>',
+			array(
+				'blockName'   => 'gatherpress/rsvp-form',
+				'attrs'       => array( 'postId' => $plain_id ),
+				'innerBlocks' => array(),
+			)
+		);
+
 		$this->assertStringNotContainsString(
 			Form::RECURRENCE_ID_FIELD,
-			$outside,
-			'Failed to assert the form is byte-identical to its previous markup outside occurrence context.'
+			$plain_form,
+			'Failed to assert a non-recurring event form is byte-identical to its previous markup.'
 		);
 
 		Context::get_instance()->set_for_series( $post_id, $this->occurrence_a );
@@ -556,27 +616,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	 * @return void
 	 */
 	public function test_a_submission_naming_no_occurrence_is_unchanged(): void {
-		$anchor  = $this->relative_anchor();
-		$post_id = $this->factory->post->create(
-			array(
-				'post_type'   => Event::POST_TYPE,
-				'post_status' => 'publish',
-			)
-		);
-
-		add_post_meta(
-			$post_id,
-			'gatherpress_datetime',
-			wp_json_encode(
-				array(
-					'dateTimeStart' => $anchor->format( 'Y-m-d H:i:s' ),
-					'dateTimeEnd'   => $anchor->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
-					'timezone'      => 'America/New_York',
-				)
-			)
-		);
-
-		\GatherPress\Core\Event\Setup::get_instance()->set_datetimes( $post_id );
+		$post_id = $this->create_plain_event();
 
 		Recurrence_Query::refresh_has_recurring_events();
 		Context::flush_resolved();
@@ -601,6 +641,141 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
+	 * A recurring event refuses a submission missing the scope marker.
+	 *
+	 * Every form this branch renders for a recurring event carries the marker,
+	 * as an occurrence identifier or as the explicit `series` value, so a
+	 * submission without it can only come from markup rendered before the
+	 * upgrade: a reverse proxy or page cache holding old occurrence-page HTML,
+	 * posted with JavaScript unavailable. Accepting it would silently write a
+	 * series-wide RSVP the visitor believes is for one date, indistinguishable
+	 * afterwards from an intentional series RSVP. The refusal asks for a
+	 * reload, which re-renders the form with the marker.
+	 *
+	 * @covers ::posted_occurrence
+	 * @covers ::preprocess_rsvp_comment
+	 *
+	 * @return void
+	 */
+	public function test_a_recurring_event_refuses_a_submission_missing_the_scope_marker(): void {
+		$post_id = $this->create_and_project();
+		$before  = get_comments(
+			array(
+				'post_id' => $post_id,
+				'type'    => Rsvp::COMMENT_TYPE,
+				'count'   => true,
+				'status'  => 'all',
+			)
+		);
+		$died    = false;
+
+		try {
+			$this->submit( $post_id, 'ada@example.test', null );
+		} catch ( WPDieException $e ) {
+			$died = true;
+		}
+
+		$this->assertTrue(
+			$died,
+			'Failed to assert a recurring event refuses a submission missing the scope marker.'
+		);
+		$this->assertSame(
+			$before,
+			get_comments(
+				array(
+					'post_id' => $post_id,
+					'type'    => Rsvp::COMMENT_TYPE,
+					'count'   => true,
+					'status'  => 'all',
+				)
+			),
+			'Failed to assert the refused marker-less submission wrote nothing at all.'
+		);
+	}
+
+	/**
+	 * An explicit series marker writes an intentional series-wide RSVP.
+	 *
+	 * The value a recurring event's form posts outside occurrence context. It
+	 * is accepted as a deliberate series-wide submission: no occurrence term is
+	 * written, the response reads series-wide, and it appears on no single
+	 * date's roster.
+	 *
+	 * @covers ::posted_occurrence
+	 * @covers ::preprocess_rsvp_comment
+	 * @covers ::handle_rsvp_comment_post
+	 *
+	 * @return void
+	 */
+	public function test_an_explicit_series_marker_writes_a_series_wide_rsvp(): void {
+		$post_id    = $this->create_and_project();
+		$comment_id = 0;
+
+		try {
+			$comment_id = $this->submit( $post_id, 'ada@example.test', 'series' );
+		} catch ( WPDieException $e ) {
+			$this->fail( 'Failed to assert the explicit series marker is accepted; refused with: ' . $e->getMessage() );
+		}
+
+		$this->redeem( $comment_id );
+
+		$this->assertSame(
+			array(),
+			array_map(
+				'strval',
+				wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) )
+			),
+			'Failed to assert an explicit series submission carries no occurrence term.'
+		);
+		$this->assertSame(
+			array( $comment_id ),
+			$this->roster( $post_id, null ),
+			'Failed to assert an explicit series submission is readable series-wide.'
+		);
+		$this->assertSame(
+			array(),
+			$this->roster( $post_id, $this->occurrence_a ),
+			'Failed to assert an explicit series submission is absent from a single date\'s roster.'
+		);
+	}
+
+	/**
+	 * A non-recurring event still accepts a marker-less submission on a recurring site.
+	 *
+	 * The refusal is gated per event, not per site: a non-recurring event never
+	 * renders the marker, so its submissions legitimately arrive without one,
+	 * and refusing them would break every ordinary event the moment any other
+	 * event on the site became recurring.
+	 *
+	 * @covers ::posted_occurrence
+	 * @covers ::preprocess_rsvp_comment
+	 *
+	 * @return void
+	 */
+	public function test_a_non_recurring_event_accepts_a_marker_less_submission_on_a_recurring_site(): void {
+		$this->create_and_project();
+
+		$post_id    = $this->create_plain_event();
+		$comment_id = $this->submit( $post_id, 'ada@example.test', null );
+
+		$this->redeem( $comment_id );
+
+		$this->assertSame(
+			array(),
+			array_map(
+				'strval',
+				wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) )
+			),
+			'Failed to assert the non-recurring event\'s response carries no occurrence term.'
+		);
+		$this->assertSame(
+			array( $comment_id ),
+			$this->roster( $post_id, null ),
+			'Failed to assert the non-recurring event still accepts its ordinary marker-less submission.'
+		);
+	}
+
+	/**
 	 * Direct invokes of the classic path's private helpers.
 	 *
 	 * Xdebug does not reliably trace a private method reached only from a short
@@ -617,14 +792,38 @@ class Test_Rsvp_Classic_Form extends Base {
 	 */
 	public function test_the_classic_path_helpers_cover_every_arm(): void {
 		$post_id  = $this->create_and_project();
+		$plain_id = $this->create_plain_event();
 		$instance = Form::get_instance();
 
 		$this->posted = array();
 
-		$this->assertNull(
-			Utility::invoke_hidden_method( $instance, 'posted_occurrence', array( $post_id ) ),
-			'Failed to assert a submission carrying no occurrence field resolves to none.'
+		$refused = false;
+
+		try {
+			Utility::invoke_hidden_method( $instance, 'posted_occurrence', array( $post_id ) );
+		} catch ( WPDieException $e ) {
+			$refused = true;
+		}
+
+		$this->assertTrue(
+			$refused,
+			'Failed to assert the resolver refuses a marker-less submission to a recurring event.'
 		);
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'posted_occurrence', array( $plain_id ) ),
+			'Failed to assert a marker-less submission to a non-recurring event resolves to none.'
+		);
+
+		$this->posted = array( Form::RECURRENCE_ID_FIELD => 'series' );
+
+		try {
+			$this->assertNull(
+				Utility::invoke_hidden_method( $instance, 'posted_occurrence', array( $post_id ) ),
+				'Failed to assert the explicit series marker resolves to none rather than to an occurrence.'
+			);
+		} catch ( WPDieException $e ) {
+			$this->fail( 'Failed to assert the explicit series marker is accepted; refused with: ' . $e->getMessage() );
+		}
 
 		$this->posted = array( Form::RECURRENCE_ID_FIELD => $this->occurrence_a );
 
