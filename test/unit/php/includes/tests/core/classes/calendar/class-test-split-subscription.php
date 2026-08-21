@@ -32,7 +32,6 @@ use DateTimeZone;
 use GatherPress\Core\Calendar\Cache as Calendar_Cache;
 use GatherPress\Core\Calendar\Calendar;
 use GatherPress\Core\Calendar\Setup as Calendar_Setup;
-use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
@@ -774,8 +773,8 @@ class Test_Split_Subscription extends Base {
 	 * Invoked directly because xdebug does not trace a private helper called
 	 * from a short delegation in the same class: the body runs, and the coverage
 	 * report says otherwise (see the "Extracted same-class helpers" rule in
-	 * `AGENTS.md`). Both no-pointer arms are reached here: the site-wide flag,
-	 * and a recurring series that carries no series term.
+	 * `AGENTS.md`). This covers the no-term arm; the site-wide flag arm is its
+	 * own test below, because the two cannot be measured with one fixture.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Calendar::series_origin_post_id
 	 * @covers \GatherPress\Core\Calendar\Calendar::related_lines
@@ -783,25 +782,6 @@ class Test_Split_Subscription extends Base {
 	 * @return void
 	 */
 	public function test_an_unsplit_series_names_no_origin(): void {
-		$plain = $this->factory->post->create(
-			array(
-				'post_type'   => Event::POST_TYPE,
-				'post_status' => 'publish',
-			)
-		);
-
-		Recurrence_Query::refresh_has_recurring_events();
-
-		$this->assertSame(
-			0,
-			Utility::invoke_hidden_method(
-				new Calendar( $plain ),
-				'series_origin_post_id',
-				array( $plain )
-			),
-			'A site with no recurring events must not read the series taxonomy at all.'
-		);
-
 		$origin_id = $this->create_series();
 
 		$this->assertSame(
@@ -817,6 +797,82 @@ class Test_Split_Subscription extends Base {
 			array(),
 			Utility::invoke_hidden_method( new Calendar( $origin_id ), 'related_lines', array() ),
 			'A series with no origin to point at emits no RELATED-TO property.'
+		);
+	}
+
+	/**
+	 * The flag, not the absence of a series term, is what keeps the origin
+	 * lookup off the series taxonomy.
+	 *
+	 * The test above drives a series nothing has split, which carries no term,
+	 * so it answers zero whether or not the flag guard exists and deleting the
+	 * guard leaves it green. Removing that coincidence takes a post that *does*
+	 * carry a series term while the flag says the site has no recurring events:
+	 * the option is recomputed from storage on every lifecycle event, so the
+	 * two being out of step is a bug state rather than an authored one, and it
+	 * is exactly the state the guard is there for. The object term cache is
+	 * cleared before the measurement, since a warm cache would answer
+	 * `get_the_terms()` without a query and the cost assertion would hold with
+	 * the guard gone.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Calendar::series_origin_post_id
+	 *
+	 * @return void
+	 */
+	public function test_the_flag_is_what_keeps_the_origin_lookup_off_the_series_taxonomy(): void {
+		global $wpdb;
+
+		$origin_id = $this->create_series();
+		$result    = Splitter::get_instance()->split_forward( $origin_id, $this->identifiers[2] );
+
+		$this->assertGreaterThan(
+			0,
+			(int) $result['forward_post_id'],
+			'Fixture setup: the split should have produced a forward post.'
+		);
+
+		Series::get_instance()->flush_memo();
+
+		$this->assertSame(
+			$origin_id,
+			Utility::invoke_hidden_method(
+				new Calendar( $origin_id ),
+				'series_origin_post_id',
+				array( $origin_id )
+			),
+			'The fixture must resolve an origin while the flag is on, or the guard test proves nothing.'
+		);
+
+		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '0', true );
+		Series::get_instance()->flush_memo();
+		clean_object_term_cache( $origin_id, (string) get_post_type( $origin_id ) );
+
+		$before = count( $wpdb->queries );
+
+		$this->assertSame(
+			0,
+			Utility::invoke_hidden_method(
+				new Calendar( $origin_id ),
+				'series_origin_post_id',
+				array( $origin_id )
+			),
+			'A site the flag reports as having no recurring events must resolve no origin at all.'
+		);
+
+		$captured = array_column( array_slice( $wpdb->queries, $before ), 0 );
+
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$captured,
+					static function ( string $sql ) use ( $wpdb ): bool {
+						return str_contains( $sql, $wpdb->term_relationships )
+							|| str_contains( $sql, $wpdb->term_taxonomy );
+					}
+				)
+			),
+			'And it must not read the series taxonomy to find that out.'
 		);
 	}
 
