@@ -366,6 +366,61 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Coverage for `get_occurrence_url` on a site with plain permalinks, where
+	 * `get_permalink()` returns a query-string URL such as
+	 * `/?gatherpress_event=slug`. The occurrence must ride as its own
+	 * `gatherpress_occurrence` query variable there, the same way
+	 * `Calendar::get_endpoint_url()` already composes its endpoint URLs, and
+	 * the URL must round-trip through a real request. Appending a path
+	 * segment instead would push the identifier *into* the event query value,
+	 * yielding `?gatherpress_event=slug/{id}/`, which matches no post.
+	 *
+	 * This class's `setUp()` establishes pretty permalinks, so this test
+	 * establishes the plain structure itself, including the post type
+	 * re-registration the structure change requires.
+	 *
+	 * @covers ::get_occurrence_url
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_round_trips_under_plain_permalinks(): void {
+		global $wp_rewrite;
+
+		$wp_rewrite->set_permalink_structure( '' );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+		$wp_rewrite->flush_rules();
+
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+		$recurrence_id                  = Occurrences::recurrence_id( $anchor_start );
+		$url                            = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
+
+		$query_args = array();
+		wp_parse_str( (string) wp_parse_url( $url, PHP_URL_QUERY ), $query_args );
+
+		$this->assertSame(
+			$recurrence_id,
+			$query_args[ Context::QUERY_VAR ] ?? null,
+			'A plain-permalink occurrence URL must carry the occurrence as its own query variable.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'A plain-permalink occurrence URL must not 404.' );
+		$this->assertSame(
+			$post_id,
+			get_queried_object_id(),
+			'A plain-permalink occurrence URL should resolve to the series post.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'A plain-permalink occurrence URL should round-trip to its own recurrence ID.'
+		);
+	}
+
+	/**
 	 * Coverage for the occurrence segment being unfilterable, and for the URL
 	 * it emits round-tripping through a real request.
 	 *
