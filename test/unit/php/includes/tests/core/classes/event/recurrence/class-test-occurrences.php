@@ -1413,22 +1413,49 @@ class Test_Occurrences extends Base {
 	 * Coverage for `resolve_pending_projection()` skipping a post whose type no
 	 * longer supports `gatherpress-event-date` by the time shutdown runs.
 	 *
+	 * What the guard has to be measured against is not an empty table. An
+	 * unsupported post type reaching `run_projection()` still resolves no
+	 * anchor, because `Event`'s own constructor refuses to wrap it, so a
+	 * fixture with no occurrence rows produces the same empty result whether
+	 * this guard runs or not. The rule mirrors, however, survive a post type
+	 * change, so `resolve_projectable()` finds a `Rule`, fails on the anchor,
+	 * and takes its cleanup arm with the deferred path's `$was_recurring`
+	 * true. That deletes every existing occurrence row. The fixture is
+	 * therefore an already-projected series carrying its five reference rows,
+	 * and the guard is what keeps them.
+	 *
 	 * @covers ::resolve_pending_projection
 	 *
 	 * @return void
 	 */
 	public function test_resolve_pending_projection_skips_unsupported_post_type(): void {
-		$post_id  = $this->factory->post->create( array( 'post_type' => 'post' ) );
+		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
+		$this->assertCount(
+			5,
+			$instance->select_for_series( array( $post_id ) ),
+			'Failed to assert that the fixture was projected before the post type changed.'
+		);
+
 		Utility::set_and_get_hidden_property( $instance, 'pending_projection', array( $post_id => true ) );
+
+		// The support disappears between `maybe_project()` deferring the post
+		// and `shutdown` running, which is the race the guard exists for.
+		set_post_type( $post_id, 'post' );
+
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_post( $post_id ),
+			'Failed to assert that the rule mirrors survived the post type change.'
+		);
 
 		$instance->resolve_pending_projection();
 
 		$this->assertCount(
-			0,
+			5,
 			$instance->select_for_series( array( $post_id ) ),
-			'Failed to assert that an unsupported post type was skipped rather than projected.'
+			'Failed to assert that an unsupported post type was skipped rather than cleaned up.'
 		);
 	}
 

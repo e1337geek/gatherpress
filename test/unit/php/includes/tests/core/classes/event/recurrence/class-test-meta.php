@@ -315,19 +315,47 @@ class Test_Meta extends Base {
 	 * can be gone, or its type support can have changed, between the insert
 	 * hook and shutdown.
 	 *
+	 * Everything the write path needs is arranged, so the post type is the
+	 * only reason the mirrors stay unwritten: the blob is stored, it decodes
+	 * to a valid rule, and the `gatherpress_datetime` blob carries a named
+	 * timezone. A bare `post` with no rule would reach the same empty mirrors
+	 * through the blob check instead, and would stay green with this guard
+	 * deleted.
+	 *
 	 * @covers ::resolve_pending_recurrence
 	 *
 	 * @return void
 	 */
 	public function test_resolve_pending_recurrence_skips_unsupported_post_type(): void {
-		$post_id  = $this->factory->post->create( array( 'post_type' => 'post' ) );
+		$post_id  = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
 		$instance = Meta::get_instance();
 
 		PMC_Utility::set_and_get_hidden_property( $instance, 'pending_recurrence', array( $post_id => true ) );
 
+		// The support disappears between the insert hook deferring the post
+		// and `shutdown` running, which is the race the guard exists for.
+		set_post_type( $post_id, 'post' );
+
+		$this->assertNotEmpty(
+			get_post_meta( $post_id, Meta::META_KEY, true ),
+			'Failed to assert that the rule blob survived the post type change.'
+		);
+
 		$instance->resolve_pending_recurrence();
 
-		$this->assertSame( '', get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ) );
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be left unwritten for an unsupported post type."
+			);
+		}
 	}
 
 	/**
