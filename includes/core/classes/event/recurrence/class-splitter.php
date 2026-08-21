@@ -1,6 +1,6 @@
 <?php
 /**
- * Forward splits — the "apply going forward" workflow.
+ * Forward splits, the "apply going forward" workflow.
  *
  * An organizer editing a series from occurrence 3 of 6 chooses whether the edit
  * rewrites the whole series (retroactive, the default) or applies only from that
@@ -170,7 +170,7 @@ final class Splitter {
 	 *
 	 * Step 3 of resolve-authorize-use. A caller that has authorized
 	 * `$identity->owner_post_id` passes the same immutable instance in here, so
-	 * the post this mutates is provably the post that was checked -- the route
+	 * the post this mutates is provably the post that was checked. The route
 	 * used to authorize the post the request named and then let this class
 	 * discover a different sibling to cap, move and rewrite.
 	 *
@@ -207,9 +207,9 @@ final class Splitter {
 	/**
 	 * Perform the split once the owning post, its rule and the split row are known.
 	 *
-	 * A split writes to five WordPress stores -- posts, postmeta, the occurrence
-	 * table, comments, and terms with their relationships -- none of which share
-	 * a transaction. This method is therefore the compensating boundary: every
+	 * A split writes to five WordPress stores that share no transaction: posts,
+	 * postmeta, the occurrence table, comments, and terms with their
+	 * relationships. This method is therefore the compensating boundary: every
 	 * durable phase registers how to undo itself before the next one runs, and
 	 * the first failure unwinds the stack in reverse and settles the origin back
 	 * to the state it described before the call.
@@ -712,8 +712,8 @@ final class Splitter {
 	 * Drop every cache whose identity the split just changed.
 	 *
 	 * The resolved-context memo maps an occurrence to the post that owned it,
-	 * and the RSVP transients are keyed on `(owner post, recurrence id)` -- both
-	 * of which are exactly what moved. `Rsvp\Cache::delete()` drops the series
+	 * and the RSVP transients are keyed on `(owner post, recurrence id)`. Both
+	 * are exactly what moved. `Rsvp\Cache::delete()` drops the series
 	 * key and the occurrence key for each identity it is given.
 	 *
 	 * @since 0.36.0
@@ -804,7 +804,7 @@ final class Splitter {
 	 * store involved succeeds under ordinary conditions, and simulating a
 	 * broken one with DDL would commit the surrounding transaction and leak
 	 * fixtures into the rest of the run. The filter is a production extension
-	 * point as well -- an integration that must veto a split part-way through
+	 * point as well. An integration that must veto a split part-way through
 	 * gets a full rollback rather than a half-migrated series.
 	 *
 	 * @since 0.36.0
@@ -919,7 +919,7 @@ final class Splitter {
 		// The datetime blob arrived through `meta_input`, which lands before
 		// `wp_after_insert_post`, so the events-table row is already written by
 		// the time this returns. Writing it again here would be a second,
-		// identical write -- see `Event\Setup::set_datetimes()`.
+		// identical write. See `Event\Setup::set_datetimes()`.
 		return $forward_post_id;
 	}
 
@@ -1066,7 +1066,7 @@ final class Splitter {
 		}
 
 		// Exactly one occurrence forward is a single-occurrence edit, not a
-		// series -- but only a `COUNT` rule can be *known* to produce exactly
+		// series, but only a `COUNT` rule can be *known* to produce exactly
 		// one. An `UNTIL` or `never` rule projected to a single row may simply
 		// have run into the projection horizon, and demoting it would silently
 		// discard every date beyond it.
@@ -1086,9 +1086,9 @@ final class Splitter {
 	 * because that is the order their `wp_after_insert_post` handlers run in
 	 * (priority 10, then 20) and `project()` reads the mirrors the first writes.
 	 * Calling them directly rather than through `wp_update_post()` keeps the
-	 * split synchronous — the REST response reports the state it produced, not
-	 * the state a `shutdown` handler will produce later — and leaves
-	 * `post_modified` alone.
+	 * split synchronous and leaves `post_modified` alone. The REST response
+	 * therefore reports the state it produced, not the state a `shutdown`
+	 * handler will produce later.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1109,7 +1109,7 @@ final class Splitter {
 	 *
 	 * The rule goes, the occurrence row goes, the event's own datetime becomes
 	 * that occurrence's, and the occurrence's RSVP term is dropped so its RSVPs
-	 * read series-wide again — which, on a single-date event, *is* that date. No
+	 * read series-wide again, which on a single-date event *is* that date. No
 	 * RSVP is moved, deleted or re-attached.
 	 *
 	 * **A canceled occurrence is never demoted.** Cancellation is occurrence
@@ -1152,7 +1152,7 @@ final class Splitter {
 	 * Report which occurrences a candidate rule would strand, and how many RSVPs ride on them.
 	 *
 	 * Migrating an RSVP to a date the attendee never agreed to is worse than
-	 * leaving it where it is, so GatherPress leaves it — and tells the organizer
+	 * leaving it where it is, so GatherPress leaves it and tells the organizer
 	 * how many are affected before they commit the change. The count is of the
 	 * approved RSVPs on the dates the candidate rule would remove.
 	 *

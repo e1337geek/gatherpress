@@ -52,8 +52,8 @@ class Test_Splitter extends Base {
 	 * The reference bi-weekly rule, widened to six occurrences.
 	 *
 	 * Six rather than the shared fixture's five, so a split at occurrence 3
-	 * leaves two behind and moves four -- two asymmetric sides, neither of which
-	 * is one row and neither of which is the whole series.
+	 * leaves two behind and moves four. The two sides are asymmetric, neither
+	 * is one row, and neither is the whole series.
 	 *
 	 * @since 0.36.0
 	 * @var array
@@ -154,7 +154,7 @@ class Test_Splitter extends Base {
 	 * Read the whole per-occurrence RSVP vector across a set of posts.
 	 *
 	 * Keyed by recurrence ID, valued by the sorted comment IDs attached to the
-	 * occurrence -- resolved from each comment's own `_gatherpress_occurrence`
+	 * occurrence, resolved from each comment's own `_gatherpress_occurrence`
 	 * term rather than from the request, so the vector says which occurrence
 	 * each RSVP actually believes it belongs to.
 	 *
@@ -233,8 +233,8 @@ class Test_Splitter extends Base {
 	 */
 	public function test_the_constructor_stays_protected(): void {
 		// The singleton is built once per process, before any test runs, so the
-		// constructor body is invoked directly here -- the documented way to
-		// trace it from the test that is actually about it.
+		// constructor body is invoked directly here, which is the documented way
+		// to trace it from the test that is actually about it.
 		Utility::invoke_hidden_method( Splitter::get_instance(), '__construct' );
 
 		$this->assertTrue(
@@ -346,8 +346,8 @@ class Test_Splitter extends Base {
 	 *
 	 * Two things a regeneration could not preserve are asserted together: a
 	 * canceled occurrence stays canceled, and the RSVP term that
-	 * names it keeps its `term_taxonomy_id` -- the column every
-	 * `term_relationships` row keys on -- so no RSVP relationship was rewritten.
+	 * names it keeps its `term_taxonomy_id`, the column every
+	 * `term_relationships` row keys on, so no RSVP relationship was rewritten.
 	 *
 	 * @covers ::split_owned_series
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::move_to_post
@@ -395,7 +395,7 @@ class Test_Splitter extends Base {
 		$this->assertSame(
 			(int) $before->term_taxonomy_id,
 			(int) $after->term_taxonomy_id,
-			'Failed to assert the occurrence term was renamed rather than re-tagged -- a new'
+			'Failed to assert the occurrence term was renamed rather than re-tagged. A new'
 				. ' term_taxonomy_id means every RSVP relationship row was rewritten.'
 		);
 		$this->assertSame(
@@ -514,7 +514,7 @@ class Test_Splitter extends Base {
 					)
 				)
 			),
-			'Failed to assert the post count is unchanged -- a second event post is the cost this degradation avoids.'
+			'Failed to assert the post count is unchanged. A second event post is the cost this degradation avoids.'
 		);
 		$this->assertSame(
 			self::FULL_SET,
@@ -531,7 +531,7 @@ class Test_Splitter extends Base {
 	/**
 	 * Forward from the final occurrence produces a plain non-recurring event.
 	 *
-	 * The forward side holds exactly one date -- never zero -- and carries no
+	 * The forward side holds exactly one date, never zero, and carries no
 	 * recurrence rule, so it is a single-occurrence edit rather than a series of
 	 * one.
 	 *
@@ -624,7 +624,7 @@ class Test_Splitter extends Base {
 	 * Demoting an RSVPd occurrence leaves its RSVPs readable on the plain event.
 	 *
 	 * The occurrence term is dropped rather than renamed, so the RSVP reads
-	 * series-wide -- which on a single-date event is that date. Nothing is moved
+	 * series-wide, which on a single-date event is that date. Nothing is moved
 	 * and nothing is deleted.
 	 *
 	 * @covers ::demote_to_plain_event
@@ -679,7 +679,7 @@ class Test_Splitter extends Base {
 		$this->assertSame(
 			Occurrences::STATUS_CANCELLED,
 			(string) Occurrences::get_instance()->get( $origin_id, '20260903T180000' )['status'],
-			'Failed to assert the cancellation survived -- it is the reason the rule was kept.'
+			'Failed to assert the cancellation survived. It is the reason the rule was kept.'
 		);
 	}
 
@@ -827,8 +827,8 @@ class Test_Splitter extends Base {
 
 		// WordPress's test case unregisters every taxonomy between tests and
 		// `init` never fires again, so the venue shadow taxonomy's wiring onto
-		// the event post type -- which `Venue\Setup::register_taxonomy()` does on
-		// `init` in production -- has to be restored here. Without it this test
+		// the event post type has to be restored here. In production
+		// `Venue\Setup::register_taxonomy()` does it on `init`. Without it this test
 		// would assert nothing: the venue would be absent from both posts.
 		register_taxonomy_for_object_type( '_gatherpress_venue', Event::POST_TYPE );
 
@@ -886,7 +886,7 @@ class Test_Splitter extends Base {
 		$this->assertSame(
 			2,
 			$impact['rsvp_count'],
-			'Failed to assert only the RSVPs on stranded dates are counted -- the RSVP on the first'
+			'Failed to assert only the RSVPs on stranded dates are counted. The RSVP on the first'
 				. ' occurrence, which the change keeps, must not inflate the number.'
 		);
 	}
@@ -1025,8 +1025,8 @@ class Test_Splitter extends Base {
 		// The behavioral assertion above cannot fail on InnoDB today: a clustered
 		// index on `(series_post_id, recurrence_id)` is scanned in primary-key
 		// order, so `LIMIT 1` happens to return the lowest post ID with or
-		// without the `ORDER BY`. Measured, not assumed -- deleting the clause
-		// leaves the assertion green. The ordering is a guarantee against a
+		// without the `ORDER BY`. Measured rather than assumed: deleting the
+		// clause leaves the assertion green. The ordering is a guarantee against a
 		// future query plan rather than against today's observed one, so the
 		// statement itself is pinned; otherwise the guarantee is verified by
 		// nothing.
@@ -1108,7 +1108,7 @@ class Test_Splitter extends Base {
 		$this->assertStringContainsString(
 			gmdate( 'Ymd\THis', (int) strtotime( (string) $rows[2]['datetime_start_gmt'] ) ),
 			$feed,
-			'Failed to assert the forward post contributes its dates too -- a feed representing only'
+			'Failed to assert the forward post contributes its dates too. A feed representing only'
 				. ' the fragment the split left behind could not carry this date.'
 		);
 		$this->assertStringContainsString(
@@ -1178,7 +1178,7 @@ class Test_Splitter extends Base {
 		$this->assertSame(
 			1,
 			$instance->count_rsvps( $origin_id, array( '20260903T180000' ) ),
-			'Failed to assert a real RSVP is counted -- without this the zeros above prove nothing.'
+			'Failed to assert a real RSVP is counted. Without this the zeros above prove nothing.'
 		);
 	}
 
@@ -1307,10 +1307,10 @@ class Test_Splitter extends Base {
 	 * posts A's ID with B's identifier.
 	 *
 	 * Substituting `$post_id` for `$row['series_post_id']` turns this into
-	 * `{"split":false,"reason":"first_occurrence","moved":0}` -- a silent no-op
-	 * reported to the organizer as "Nothing was split" -- because A's own row
-	 * list does not contain the identifier at all and `array_search()` answers
-	 * `false`, which casts to index 0.
+	 * `{"split":false,"reason":"first_occurrence","moved":0}`, a silent no-op
+	 * reported to the organizer as "Nothing was split". A's own row list does
+	 * not contain the identifier at all, so `array_search()` answers `false`,
+	 * which casts to index 0.
 	 *
 	 * @covers ::split_forward
 	 * @covers ::split_owned_series
@@ -1379,7 +1379,7 @@ class Test_Splitter extends Base {
 	 * - A **pending** RSVP is excluded by the query's `'status' => 'approve'`.
 	 *   That is the arm the trashed case cannot reach: `WP_Comment_Query`
 	 *   interprets an absent status as `all`, which is
-	 *   `comment_approved IN ( '0', '1' )` -- trash and spam are already out, but
+	 *   `comment_approved IN ( '0', '1' )`. Trash and spam are already out, but
 	 *   an unapproved RSVP is in. Deleting `'status' => 'approve'` therefore
 	 *   changes nothing about a trashed RSVP and everything about a pending one.
 	 *
@@ -1412,7 +1412,7 @@ class Test_Splitter extends Base {
 
 		$this->assertNotEmpty(
 			wp_get_object_terms( $trashed, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'ids' ) ),
-			'Failed to assert trashing leaves the occurrence relationship in place -- if it did not, the'
+			'Failed to assert trashing leaves the occurrence relationship in place. If it did not, the'
 				. ' count below would fall for a reason that has nothing to do with counting comments.'
 		);
 		$this->assertNotEmpty(

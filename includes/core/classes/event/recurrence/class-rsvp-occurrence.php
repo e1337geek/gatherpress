@@ -455,8 +455,8 @@ final class Rsvp_Occurrence {
 	 * is the state a rename-only split left behind, and it stranded a real
 	 * roster rather than merely mis-labeling one.
 	 *
-	 * `comment_post_ID` is also what WordPress itself keys on -- capability
-	 * checks, moderation, the trash cascade, and `new Rsvp( $post_id )` -- so
+	 * `comment_post_ID` is also what WordPress itself keys on for capability
+	 * checks, moderation, the trash cascade, and `new Rsvp( $post_id )`, so
 	 * the comment follows the row rather than the row following the comment.
 	 *
 	 * The whole migration is atomic: a term that cannot be renamed or a comment
@@ -674,7 +674,7 @@ final class Rsvp_Occurrence {
 	 * Used when a side of a split is demoted to a plain non-recurring event.
 	 * Deleting the term removes its `term_relationships` rows, which is exactly
 	 * what is wanted: the RSVPs stay on the same comments, on the same post, for
-	 * the same date, and become readable series-wide again — which on a
+	 * the same date, and become readable series-wide again, which on a
 	 * single-date event *is* the date. Nothing is migrated and nothing is
 	 * deleted; only the scoping that no longer has anything to scope goes away.
 	 *
@@ -714,12 +714,12 @@ final class Rsvp_Occurrence {
 	 *
 	 * Counts comments rather than `term_taxonomy.count`, because that column
 	 * counts relationship rows and would include RSVPs whose comment has since
-	 * been trashed — an organizer told "4 RSVPs affected" when two of them are in
+	 * been trashed. An organizer told "4 RSVPs affected" when two of them are in
 	 * the trash has been told the wrong thing.
 	 *
 	 * `'status' => 'approve'` narrows it one step further, and does work the
 	 * trashed case does not: `WP_Comment_Query` reads an absent status as `all`,
-	 * which is `comment_approved IN ( '0', '1' )` — trash and spam are already
+	 * which is `comment_approved IN ( '0', '1' )`. Trash and spam are already
 	 * out, but a **pending** RSVP is in. Guest responses arrive pending by
 	 * design (`Rsvp\Form::prepare_comment_data()` inserts them with
 	 * `comment_approved => 0`), so without this the count would include

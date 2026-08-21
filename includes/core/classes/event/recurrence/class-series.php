@@ -63,8 +63,8 @@ final class Series {
 	/**
 	 * Resolved series membership, memoized per post for the life of the request.
 	 *
-	 * A single front-end response resolves the same post many times — once per
-	 * occurrence rendered, plus once for every RSVP read on it — and the answer
+	 * A single front-end response resolves the same post many times, once per
+	 * occurrence rendered plus once for every RSVP read on it, and the answer
 	 * cannot change mid-request, because the only thing that changes it is a
 	 * split, which is a write.
 	 *
@@ -85,9 +85,9 @@ final class Series {
 	/**
 	 * Set up hooks for the series taxonomy.
 	 *
-	 * Priority 11 on `registered_post_type`, matching `Recurrence\Meta` — after
-	 * the default priority 10 a post type normally registers at, so a companion
-	 * plugin's own `add_post_type_support()` call has already landed.
+	 * Priority 11 on `registered_post_type`, matching `Recurrence\Meta`. That is
+	 * after the default priority 10 a post type normally registers at, so a
+	 * companion plugin's own `add_post_type_support()` call has already landed.
 	 *
 	 * @since 0.36.0
 	 *
@@ -106,8 +106,8 @@ final class Series {
 	 * issues **one** query naming every taxonomy registered for the post type.
 	 * Registering this taxonomy unconditionally would therefore change the SQL
 	 * text of a query that runs on every event listing, on a site that has never
-	 * authored a recurring event — a byte-for-byte difference where such a site
-	 * is promised none.
+	 * authored a recurring event, producing a byte-for-byte difference where
+	 * such a site is promised none.
 	 *
 	 * @since 0.36.0
 	 *
@@ -204,9 +204,9 @@ final class Series {
 	/**
 	 * Read a post's series membership off the taxonomy.
 	 *
-	 * A post with no series term is a series of one — the whole of a site that
-	 * has never split anything — and that answer costs one cached term read,
-	 * never a term insert.
+	 * A post with no series term is a series of one, which is the whole of a
+	 * site that has never split anything. That answer costs one cached term
+	 * read, never a term insert.
 	 *
 	 * @since 0.36.0
 	 *
@@ -330,7 +330,7 @@ final class Series {
 
 		// A term left behind by an earlier split whose relationship rows were
 		// removed (a restored-from-trash post, a partial import) is recovered
-		// rather than treated as a failure -- `wp_insert_term()` reports the
+		// rather than treated as a failure. `wp_insert_term()` reports the
 		// existing term's ID in the error data.
 		$existing = $result->get_error_data( 'term_exists' );
 
@@ -340,7 +340,7 @@ final class Series {
 	/**
 	 * Discard the request-scoped membership memo.
 	 *
-	 * Production needs this on exactly one path — a split, which changes
+	 * Production needs this on exactly one path, a split, which changes
 	 * membership inside the request that performs it. Tests split and re-read
 	 * inside one PHP lifetime and need it for the same reason.
 	 *

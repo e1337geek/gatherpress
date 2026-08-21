@@ -621,9 +621,9 @@ final class Calendar {
 	 * unknown property, which is why this is additive rather than a change to
 	 * `UID`.
 	 *
-	 * Emitted only by a fragment. The origin carries no pointer -- it is the
-	 * identifier everything else points at, and a self-reference would make the
-	 * relationship a cycle rather than a tree.
+	 * Emitted only by a fragment. The origin carries no pointer, because it is
+	 * the identifier everything else points at, and a self-reference would make
+	 * the relationship a cycle rather than a tree.
 	 *
 	 * @since 0.36.0
 	 *

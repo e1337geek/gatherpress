@@ -848,7 +848,7 @@ class Test_Rewrite extends Base {
 	 * afterwards, by 301 to the sibling post that now owns the row.
 	 *
 	 * This is the whole point of recycling occurrence records rather than
-	 * regenerating them -- permalinks come first in the list of things that
+	 * regenerating them, since permalinks come first in the list of things that
 	 * must survive a split. The row still exists under the same
 	 * `recurrence_id`; only the post that owns it changed. Resolving through
 	 * `find_in_series()` over `Series::resolve_post_ids()` is precisely what
@@ -1396,11 +1396,11 @@ class Test_Rewrite extends Base {
 	 * A series of one post has nowhere to follow to.
 	 *
 	 * Invoked directly because xdebug does not trace a protected helper called
-	 * from a short delegation in the same class -- the body runs, the coverage
+	 * from a short delegation in the same class: the body runs, and the coverage
 	 * report says otherwise (see the "Extracted same-class helpers" rule in
-	 * `AGENTS.md`). The guard is what keeps every unsplit series -- which is
-	 * every series on a site that has never split anything -- from paying a
-	 * second occurrence query on a bare URL.
+	 * `AGENTS.md`). The guard is what keeps every unsplit series from paying a
+	 * second occurrence query on a bare URL, which is every series on a site
+	 * that has never split anything.
 	 *
 	 * @covers ::next_upcoming_in_series
 	 *

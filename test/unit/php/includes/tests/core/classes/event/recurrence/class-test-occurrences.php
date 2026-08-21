@@ -5566,7 +5566,7 @@ class Test_Occurrences extends Base {
 	 *
 	 * More consequential than the same guarantee on `find_in_series()`, because
 	 * this ordering is what `Splitter::split_owned_series()` derives `$index`
-	 * from -- and `$index` decides which occurrences stay behind, how the origin
+	 * from, and `$index` decides which occurrences stay behind, how the origin
 	 * rule is capped, and whether either side demotes to a plain event. An
 	 * unstable order here does not return the wrong row; it partitions the
 	 * series at the wrong date.
@@ -5577,7 +5577,7 @@ class Test_Occurrences extends Base {
 	 * lexically in chronological order, so a primary-key scan happens to answer
 	 * correctly with the clause deleted (measured, not assumed). The ordering is
 	 * a guarantee against a future query plan rather than against today's
-	 * observed one, so the statement itself is pinned -- otherwise the guarantee
+	 * observed one, so the statement itself is pinned. Otherwise the guarantee
 	 * is verified by nothing.
 	 *
 	 * @covers ::select_for_series

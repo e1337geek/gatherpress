@@ -345,7 +345,7 @@ describe( 'ApplyScope', () => {
 		} );
 
 		// rows[ 0 ] is the series' first date whenever the series has not
-		// started, and splitting there degrades to "Nothing was split" -- so it
+		// started, and splitting there degrades to "Nothing was split", so it
 		// is never the default.
 		await waitFor( () =>
 			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(

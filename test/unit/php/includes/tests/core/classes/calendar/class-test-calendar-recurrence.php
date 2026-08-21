@@ -1917,7 +1917,7 @@ class Test_Calendar_Recurrence extends Base {
 
 		// Scoped to the requested post's own component. The export now carries
 		// one component per post of the series, and the sibling's component
-		// excludes the same date on its own account -- reading the whole body
+		// excludes the same date on its own account, so reading the whole body
 		// would count that second, correct line as a duplicate.
 		$this->assertSame(
 			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 2 ) ) ),

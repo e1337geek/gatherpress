@@ -357,7 +357,7 @@ final class Rewrite {
 	 * 2 below holds exactly as written: a bare request never *resolves* into
 	 * another post's occurrence. When A has nothing left, the alternative to
 	 * moving is rendering A's stale anchor while the same logical series has an
-	 * upcoming date -- which is the defect -- so the request moves instead.
+	 * upcoming date, which is the defect, so the request moves instead.
 	 *
 	 * Resolving B's row in place under A's slug was the alternative, and it is
 	 * worse in three ways. It would make one occurrence answer at two addresses,
@@ -372,7 +372,7 @@ final class Rewrite {
 	 *
 	 * **What `rel="canonical"` reports.** The `301` lands on B's occurrence URL,
 	 * a real request that WordPress resolves to post B with occurrence context,
-	 * so the canonical link is B's occurrence URL -- the address the row is
+	 * so the canonical link is B's occurrence URL, the address the row is
 	 * served from. A's bare URL never emits a canonical of its own for that row,
 	 * because A never renders it.
 	 *
@@ -430,9 +430,9 @@ final class Rewrite {
 	 * Send a lapsed fragment's bare URL on to the live one.
 	 *
 	 * Reached only when the requested post has no upcoming scheduled occurrence
-	 * of its own, so an unsplit series -- every series on a site that has never
-	 * split anything -- returns from the first guard having read one already-run
-	 * query result and nothing else.
+	 * of its own. An unsplit series returns from the first guard having read one
+	 * already-run query result and nothing else, which covers every series on a
+	 * site that has never split anything.
 	 *
 	 * The destination is an `Occurrence_Identity`, resolved by W6's seam rather
 	 * than read off the query row, so the post the visitor is sent to is the one
@@ -466,7 +466,7 @@ final class Rewrite {
 	 * The earliest upcoming scheduled occurrence anywhere in a post's series.
 	 *
 	 * Unlike `next_upcoming_recurrence_id()` this does not narrow to the
-	 * requested post -- it answers the logical-series question, and its caller
+	 * requested post. It answers the logical-series question, and its caller
 	 * turns the answer into a redirect rather than into rendered context.
 	 *
 	 * Rows whose owner the visitor may not read are skipped rather than
@@ -475,7 +475,7 @@ final class Rewrite {
 	 * the bare URL an existence oracle for unpublished posts.
 	 *
 	 * A single-post series returns before any of that, and so does a request on
-	 * a post whose own rows are the ones that are upcoming -- the caller only
+	 * a post whose own rows are the ones that are upcoming. The caller only
 	 * reaches here once the narrowing read has come back empty.
 	 *
 	 * @since 0.36.0
@@ -527,7 +527,7 @@ final class Rewrite {
 	 *
 	 * The status test comes first and is not redundant. `current_user_can(
 	 * 'read_post' )` maps a published post to the plain `read` capability, which
-	 * a logged-out visitor does not hold on any site -- so the permission check
+	 * a logged-out visitor does not hold on any site, so the permission check
 	 * alone would refuse to forward anybody who is not logged in, which is most
 	 * subscribers. A publicly-queryable status is what makes a post readable by
 	 * the public; the capability check is what admits the non-public ones an

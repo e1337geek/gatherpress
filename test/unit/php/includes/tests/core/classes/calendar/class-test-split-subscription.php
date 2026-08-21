@@ -216,7 +216,7 @@ class Test_Split_Subscription extends Base {
 	 * @since 0.36.0
 	 *
 	 * Line breaks are normalized to `\n` so the patterns in this file can anchor
-	 * on `$` -- in multiline mode `$` matches before the `\n` of a CRLF pair and
+	 * on `$`. In multiline mode `$` matches before the `\n` of a CRLF pair and
 	 * leaves the `\r` unmatched, which silently fails every anchored pattern.
 	 *
 	 * @param string $body The iCal payload.
@@ -465,8 +465,8 @@ class Test_Split_Subscription extends Base {
 	 * split. Moving the occurrence rows already advances the revision through
 	 * `gatherpress_occurrences_changed`, and every split moves rows, so a
 	 * before-and-after comparison of the emitted component would pass whether or
-	 * not capping the rule advanced anything -- it would be measuring the row
-	 * move. Serializing the origin's component the moment the cap completes and
+	 * not capping the rule advanced anything, because it would be measuring the
+	 * row move. Serializing the origin's component the moment the cap completes and
 	 * requiring the finished component to be strictly newer than *that* is what
 	 * isolates the cap.
 	 *
@@ -534,8 +534,8 @@ class Test_Split_Subscription extends Base {
 	 * The merge follows RFC 5545 section 3.8.7.4: an incoming component with a
 	 * known `UID` replaces the held one when its `SEQUENCE` is greater, and an
 	 * unknown `UID` is added. The point of the assertion is what the client is
-	 * left holding -- five dates, once each -- rather than the fact that a merge
-	 * ran.
+	 * left holding, five dates and each of them once, rather than the fact that
+	 * a merge ran.
 	 *
 	 * @covers ::get_ical_file
 	 * @covers \GatherPress\Core\Calendar\Calendar::uid
@@ -772,7 +772,7 @@ class Test_Split_Subscription extends Base {
 	 * A series nothing has split carries no relationship pointer.
 	 *
 	 * Invoked directly because xdebug does not trace a private helper called
-	 * from a short delegation in the same class -- the body runs, the coverage
+	 * from a short delegation in the same class: the body runs, and the coverage
 	 * report says otherwise (see the "Extracted same-class helpers" rule in
 	 * `AGENTS.md`). Both no-pointer arms are reached here: the site-wide flag,
 	 * and a recurring series that carries no series term.

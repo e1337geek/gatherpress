@@ -23,14 +23,14 @@ import { EVENT_REST_API } from '../../../helpers/namespace';
  * event post. "This occurrence only" is not a top-level scope here; it is a
  * per-occurrence operation and is Post-MVP.
  *
- * Retroactive needs no action at all — it is what an ordinary save already does
- * — so this component only ever calls the server for the forward choice, and a
- * panel left on its default performs no request.
+ * Retroactive needs no action at all, since it is what an ordinary save
+ * already does. This component therefore only ever calls the server for the
+ * forward choice, and a panel left on its default performs no request.
  *
  * **The split is refused while the editor holds unsaved changes**, and that is
  * not a nicety. A split moves the forward occurrences onto a *second* post; an
  * edit still sitting in the editor belongs to the origin, so pressing Update
- * after the split writes it to the occurrences that stayed behind — the past.
+ * after the split writes it to the occurrences that stayed behind, the past.
  * That is the exact inverse of what a forward edit promises: moving the venue
  * in October does not rewrite where we met in March. Carrying an in-flight edit through a
  * split would need the pre-edit state captured before the split runs, which is
@@ -63,7 +63,7 @@ const ApplyScope = ( { postId } ) => {
 		// Everything below is scoped to one post, and this component survives
 		// navigation from event A to event B. Clearing first means B's panel
 		// cannot offer A's occurrences, A's notice or A's "Edit the new event"
-		// link while B's request is still in flight -- a split fired from that
+		// link while B's request is still in flight. A split fired from that
 		// state would submit B's post with A's occurrence.
 		latestRequest.current += 1;
 
@@ -91,7 +91,7 @@ const ApplyScope = ( { postId } ) => {
 				setOccurrences( rows ?? [] );
 				// The route lists upcoming occurrences only, so the first row is
 				// the series' own first date whenever the series has not started
-				// — and splitting there degrades to "Nothing was split". It is
+				// and splitting there degrades to "Nothing was split". It is
 				// the one selection that can be a guaranteed no-op, so the
 				// default steps past it whenever there is somewhere to step to.
 				setSplitFrom(

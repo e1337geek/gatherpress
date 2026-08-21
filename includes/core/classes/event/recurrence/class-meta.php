@@ -607,9 +607,10 @@ final class Meta {
 	 *
 	 * A side of a split left holding exactly one occurrence is a plain
 	 * non-recurring event: the blob goes, the ten mirrors go, and the
-	 * has-recurring-events flag is recomputed — all inside the caller's request
-	 * rather than on `shutdown`, because the caller (`Splitter`) has to return
-	 * the resulting state to the organizer in the same response.
+	 * has-recurring-events flag is recomputed. All of it happens inside the
+	 * caller's request rather than on `shutdown`, because the caller
+	 * (`Splitter`) has to return the resulting state to the organizer in the
+	 * same response.
 	 *
 	 * Deleting the blob alone is not enough and the difference is not cosmetic:
 	 * `Rule::from_post()` reads the **mirrors**, so a post whose blob is gone but

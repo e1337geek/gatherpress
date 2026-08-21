@@ -75,7 +75,7 @@ class Test_Series extends Base {
 	 *
 	 * Taxonomy registration is process-global and WordPress's test case does not
 	 * roll it back, so without this the guard test would find the taxonomy
-	 * already registered by whichever test ran before it -- and would pass or
+	 * already registered by whichever test ran before it, and would pass or
 	 * fail on execution order rather than on the guard it is about.
 	 *
 	 * @since 0.36.0
@@ -332,9 +332,9 @@ class Test_Series extends Base {
 
 		// The difference is emitted by `update_object_term_cache()`, which runs
 		// only once the loop has loaded an event. Asserting the loop ran is what
-		// stops a request that never reached an event listing -- a page lookup,
-		// an empty archive -- from satisfying the comparison below with two
-		// identical captures of nothing.
+		// stops a request that never reached an event listing, such as a page
+		// lookup or an empty archive, from satisfying the comparison below with
+		// two identical captures of nothing.
 		$this->assertGreaterThan(
 			0,
 			$guarded['events'],
@@ -343,7 +343,7 @@ class Test_Series extends Base {
 		$this->assertSame(
 			$guarded['events'],
 			$unguarded['events'],
-			'Failed to assert both captures looped the same events -- otherwise the difference below'
+			'Failed to assert both captures looped the same events. Otherwise the difference below'
 				. ' could come from a different result set rather than from the taxonomy registration.'
 		);
 
@@ -354,7 +354,7 @@ class Test_Series extends Base {
 		$this->assertNotSame(
 			$unguarded,
 			$guarded,
-			'Failed to assert registering the taxonomy changes the SQL an event archive runs -- if it did not,'
+			'Failed to assert registering the taxonomy changes the SQL an event archive runs. If it did not,'
 				. ' this test could never fail and the registration guard would be unfalsifiable.'
 		);
 		$this->assertSame(

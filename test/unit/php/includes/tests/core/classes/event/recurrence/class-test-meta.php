@@ -1221,7 +1221,7 @@ class Test_Meta extends Base {
 		);
 		$this->assertNull(
 			Rule::from_post( $post_id ),
-			'Failed to assert the mirrors were cleared -- a surviving mirror keeps the deleted rule alive.'
+			'Failed to assert the mirrors were cleared. A surviving mirror keeps the deleted rule alive.'
 		);
 
 		foreach ( Meta::DERIVED_META_KEYS as $meta_key ) {

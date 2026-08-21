@@ -301,7 +301,7 @@ class Test_Split_Continuity extends Base {
 	 *
 	 * Rule 3a #8: a rollback assertion against one column cannot tell a restored
 	 * state from a state the operation never reached. This captures the whole
-	 * surface the split writes to -- posts and their fields, all postmeta,
+	 * surface the split writes to: posts and their fields, all postmeta,
 	 * occurrence rows, RSVP comments and their owners, both taxonomies keyed by
 	 * slug rather than by term ID, and the has-recurring-events option.
 	 *
@@ -581,10 +581,10 @@ class Test_Split_Continuity extends Base {
 	 * when the token's own post equals the post the request named; the token now
 	 * belongs to the forward post, so a request naming the origin falls through
 	 * to the logged-in branch and an unauthenticated guest is refused there. The
-	 * security property is identical either way -- the write does not happen and
-	 * the response does not vary with whether the occurrence exists -- and the
-	 * status is asserted exactly rather than loosely so a change to it has to be
-	 * a deliberate one.
+	 * security property is identical either way, because the write does not
+	 * happen and the response does not vary with whether the occurrence exists.
+	 * The status is asserted exactly rather than loosely, so a change to it has
+	 * to be a deliberate one.
 	 *
 	 * @covers ::split_owned_series
 	 * @covers \GatherPress\Core\Event\Rest_Api::can_update_rsvp
@@ -658,8 +658,8 @@ class Test_Split_Continuity extends Base {
 	 * off and rewrote whichever sibling actually owned it. An author who could
 	 * edit A and not B could therefore restructure B by naming A.
 	 *
-	 * The sibling is left in a state worth defending -- five occurrences, a
-	 * rule, and its own membership -- and the whole of it is compared before and
+	 * The sibling is left in a state worth defending, with five occurrences, a
+	 * rule and its own membership, and the whole of it is compared before and
 	 * after, so a refusal that changed something quietly would fail.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rest_Api::split_series
@@ -997,8 +997,9 @@ class Test_Split_Continuity extends Base {
 	 * B4: capping the origin's rule advances the logical series' calendar revision.
 	 *
 	 * A rule cap is a bare `postmeta` write. It changes published calendar
-	 * content -- the origin's already-issued `UID` acquires a shorter `RRULE` --
-	 * while touching no occurrence row, so nothing else on the stack notices.
+	 * content, because the origin's already-issued `UID` acquires a shorter
+	 * `RRULE`, while touching no occurrence row, so nothing else on the stack
+	 * notices.
 	 * Without this a subscriber keeps expanding the dates the split moved away
 	 * and then accepts them again under the sibling's identifier.
 	 *
@@ -1187,7 +1188,7 @@ class Test_Split_Continuity extends Base {
 	 * Acceptance 3: a failure after the forward rule demoted the new post rolls back.
 	 *
 	 * Splitting at the last occurrence of a `COUNT` rule gives the forward post
-	 * exactly one date, so it is demoted the same way -- and the occurrence term
+	 * exactly one date, so it is demoted the same way, and the occurrence term
 	 * it drops is the one the split has just renamed onto it, carrying a
 	 * pre-split RSVP.
 	 *
@@ -1882,8 +1883,8 @@ class Test_Split_Continuity extends Base {
 	 * An RSVP migration that fails mid-split aborts the split.
 	 *
 	 * The destination occurrence term already existing is the real shape of this
-	 * failure -- a series split twice, or a partial import -- and merging two
-	 * occurrences' RSVPs into one term would be data loss. The collision is
+	 * failure, arising from a series split twice or a partial import, and
+	 * merging two occurrences' RSVPs into one term would be data loss. The collision is
 	 * arranged from the phase seam, which is the first moment the forward post
 	 * ID exists.
 	 *

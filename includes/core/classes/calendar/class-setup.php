@@ -770,7 +770,7 @@ final class Setup {
 	 * The subscription a client holds is this URL, and it was taken out before
 	 * anybody split anything. A forward split moves the later dates onto a
 	 * second post, and there is no protocol by which the subscriber discovers
-	 * that post's address -- so an export of the queried post alone silently
+	 * that post's address, so an export of the queried post alone silently
 	 * drops every future occurrence from a calendar that keeps polling happily.
 	 * The body therefore carries one component per fragment (resolved through
 	 * `Series::resolve_post_ids()`), which together expand to exactly
@@ -803,12 +803,12 @@ final class Setup {
 	 *
 	 * Read by both the body builder and the cache key, so a response can never
 	 * be stored under a key that describes a different set of fragments than it
-	 * contains -- which is what would let one visitor's readable set be served
+	 * contains, which is what would let one visitor's readable set be served
 	 * to a visitor who may not read it.
 	 *
 	 * The queried post is always present and is never re-authorized here: the
 	 * endpoint already decided that request. Siblings are additions to it, so
-	 * each one is checked on its own -- a private sibling is invisible to anyone
+	 * each one is checked on its own. A private sibling is invisible to anyone
 	 * who cannot read it, and a password-protected one stays behind its form
 	 * rather than exporting its title and description in plain text.
 	 *
