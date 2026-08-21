@@ -392,7 +392,7 @@ final class Rewrite {
 	 * redirects want. It is the wrong answer for `.ics`: a series' export is
 	 * **one** component carrying the whole rule, so narrowing it to one date
 	 * here would silently reintroduce the very limitation that shape exists to
-	 * beat -- an attendee subscribing to a recurring meetup would get a single
+	 * beat. An attendee subscribing to a recurring meetup would get a single
 	 * entry again, just on a different date than before.
 	 *
 	 * A request that names an occurrence explicitly never reaches this method:
@@ -521,7 +521,7 @@ final class Rewrite {
 	 * `Occurrences::recurrence_id()` and never re-derived here.
 	 *
 	 * There is deliberately no filter over the segment. An earlier revision of
-	 * this class carried one -- `gatherpress_recurrence_id_format` -- and it
+	 * this class carried one, `gatherpress_recurrence_id_format`, and it
 	 * was one-way: the emitted segment was filterable, but
 	 * `add_rewrite_rule_for_post_type()` registers a single fixed
 	 * `RECURRENCE_ID_REGEX` and `parse_request()` matches the raw segment

@@ -6,7 +6,7 @@
  * identifier into the RFC 5545 component that gives it meaning. GatherPress
  * emits `DTSTART;TZID=America/New_York:20300615T143000` rather than a bare UTC
  * instant, because an `RRULE` cannot be correctly attached to a UTC-anchored
- * start for anything but a fixed-offset series -- and RFC 5545 section 3.2.19
+ * start for anything but a fixed-offset series. RFC 5545 section 3.2.19
  * requires that every `TZID` parameter refer to a `VTIMEZONE` carried in the
  * same `VCALENDAR`. Without one the output is not merely under-specified, it is
  * invalid, and clients are free to reject or misplace the event.
@@ -29,18 +29,18 @@ use GatherPress\Core\Traits\Singleton;
  *
  * Definitions are derived from `DateTimeZone::getTransitions()` rather than
  * from a bundled table, so they track whatever tz database the host carries.
- * Where a zone's transitions are regular -- the same offsets and name on the
- * same weekday ordinal of the same month at the same wall clock, year after
- * year -- one `STANDARD` and one `DAYLIGHT` sub-component carry an `RRULE` and
- * describe the zone for as long as that policy holds. Where they are not, each
+ * A zone's transitions are regular when they repeat the same offsets and name
+ * on the same weekday ordinal of the same month at the same wall clock, year
+ * after year. Where they are, one `STANDARD` and one `DAYLIGHT` sub-component
+ * carry an `RRULE` and describe the zone for as long as that policy holds. Where they are not, each
  * transition in range is written out on its own.
  *
  * The range is the one the body covers, never the one the request happens to
  * fall in. RFC 5545 section 3.6.5 requires the definition to be valid for every
  * instant the components it serves refer to, and resolves an instant against
- * the observance with the last onset *before* it -- so a definition whose
- * earliest onset postdates a 2020 event does not define that event's offset at
- * all, however correct it is about today.
+ * the observance with the last onset *before* it. A definition whose earliest
+ * onset postdates a 2020 event therefore does not define that event's offset
+ * at all, however correct it is about today.
  *
  * @since 0.36.0
  */
@@ -79,7 +79,7 @@ final class Timezone_Component {
 	 * Rendered definitions, keyed by identifier and the range they were built for.
 	 *
 	 * A feed commonly carries many events in one zone, and the transition list
-	 * is the same for all of them -- but only for the same range, which is why
+	 * is the same for all of them, but only for the same range. That is why
 	 * the range is part of the key rather than assumed away.
 	 *
 	 * @since 0.36.0
@@ -91,8 +91,9 @@ final class Timezone_Component {
 	 * Every `VTIMEZONE` the components in an iCal body need to be valid.
 	 *
 	 * Derived from the body rather than from the events that produced it, so
-	 * the invariant it exists to hold -- every `TZID` referenced is defined --
-	 * is true by construction rather than by two code paths agreeing.
+	 * the invariant it exists to hold is true by construction rather than by two
+	 * code paths agreeing. That invariant is that every `TZID` referenced is
+	 * defined.
 	 *
 	 * @since 0.36.0
 	 *
@@ -268,9 +269,8 @@ final class Timezone_Component {
 		);
 		$changes = array_slice( $transitions, 1 );
 
-		// A zone that never changes offset within the window -- UTC,
-		// Asia/Kolkata, a zone that abolished daylight saving before it -- has
-		// no transition to describe, but still needs a definition, because its
+		// A zone that never changes offset within the window has no transition
+		// to describe, yet still needs a definition, because its
 		// identifier is named in a `TZID` parameter. It is written as the
 		// degenerate case RFC 5545 allows: one `STANDARD` moving from its own
 		// offset to itself, effective from the start of the epoch, with no rule.
@@ -402,7 +402,7 @@ final class Timezone_Component {
 	 *
 	 * The offsets are the half that is easy to leave out and expensive to get
 	 * wrong. A zone can keep transitioning on the same yearly position while
-	 * changing what it transitions *to* -- which is exactly what a jurisdiction
+	 * changing what it transitions *to*, which is exactly what a jurisdiction
 	 * abolishing daylight saving looks like in tzdata, and what Alberta's
 	 * scheduled move reads as today: two first-Sunday-of-November transitions at
 	 * 02:00, the first to -0700 and the second to -0600. Comparing position

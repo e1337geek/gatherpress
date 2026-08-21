@@ -123,7 +123,7 @@ class Test_Occurrences extends Base {
 	 * A move that matches no row changes nothing and announces nothing.
 	 *
 	 * The scope is the composite `(series_post_id, recurrence_id)` key, so an
-	 * identifier that belongs to another series matches nothing here -- and the
+	 * identifier that belongs to another series matches nothing here, and the
 	 * announcement is gated on rows actually having moved rather than on the
 	 * statement having run.
 	 *
@@ -812,8 +812,8 @@ class Test_Occurrences extends Base {
 
 	/**
 	 * Saving an ordinary, never-recurring event through the real save-path
-	 * hooks must issue zero queries against the occurrence table -- the "a site
-	 * with no recurring events pays nothing" guarantee. Checking only
+	 * hooks must issue zero queries against the occurrence table, which is the
+	 * "a site with no recurring events pays nothing" guarantee. Checking only
 	 * project()'s return value (the test above) is not enough to guard this: a
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
 	 * that cleans up unconditionally silently adds a DELETE query to this

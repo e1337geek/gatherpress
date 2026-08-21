@@ -2356,9 +2356,10 @@ final class Occurrences {
 	 * deleted and regenerated: `recurrence_id` is untouched (identity is
 	 * `(series_post_id, recurrence_id)`, and only the first half changes), the
 	 * datetimes are untouched, and `status` is untouched, so a canceled
-	 * occurrence stays canceled across the split. Everything keyed to the row — its permalink segment, the RSVP
-	 * comments carrying its `_gatherpress_occurrence` term — survives, because
-	 * nothing about the row's identity was recreated.
+	 * occurrence stays canceled across the split. Everything keyed to the row
+	 * survives, because nothing about the row's identity was recreated. That
+	 * covers its permalink segment and the RSVP comments carrying its
+	 * `_gatherpress_occurrence` term.
 	 *
 	 * Scopes by both `series_post_id` and `recurrence_id`, never by
 	 * `recurrence_id` alone.
@@ -2367,7 +2368,7 @@ final class Occurrences {
 	 * loses rows from its feed and its aggregate bucket, the destination gains
 	 * them, and a subscriber revalidating either one against an unmoved
 	 * `Last-Modified` is told `304` for a body that no longer describes it. The
-	 * resolved-context memo is dropped for the same reason -- it maps an
+	 * resolved-context memo is dropped for the same reason. It maps an
 	 * occurrence to the post that owned it, and that is precisely what changed.
 	 *
 	 * The RSVP comments carried by a moved row survive the row itself, but their
@@ -2420,8 +2421,8 @@ final class Occurrences {
 	 * Read-only, and deliberately so: the organizer must be **shown** how many
 	 * RSVPs a rule change would strand before the change is applied, which
 	 * means answering "what would this rule produce?" without writing anything.
-	 * Everything `project()` does after the expansion — the upsert, the
-	 * stale-row delete — is absent here.
+	 * Everything `project()` does after the expansion is absent here, both the
+	 * upsert and the stale-row delete.
 	 *
 	 * @since 0.36.0
 	 *
@@ -2459,9 +2460,9 @@ final class Occurrences {
 	/**
 	 * Announce that a series' occurrence rows changed.
 	 *
-	 * Occurrence rows are read while an `.ics` response is built -- the
-	 * aggregate feeds select their bucket from them, and a canceled row becomes
-	 * an `EXDATE` -- but they are written by bare `$wpdb` statements that touch
+	 * Occurrence rows are read while an `.ics` response is built. The aggregate
+	 * feeds select their bucket from them, and a canceled row becomes an
+	 * `EXDATE`. Yet they are written by bare `$wpdb` statements that touch
 	 * no post row, no meta row and no term relationship. None of the hooks
 	 * `Calendar\Cache` watches fires for them, so without this the response
 	 * cache keeps serving bodies that predate the change, and `Last-Modified`
@@ -2470,9 +2471,9 @@ final class Occurrences {
 	 * stored entity tag is told `304` for as long as the stamp stays put, so a
 	 * canceled date may never reach it at all.
 	 *
-	 * Fired from every write that can alter emitted output -- the projection
-	 * upsert, a status change, and a per-post delete -- rather than from the one
-	 * that prompted it.
+	 * Fired from every write that can alter emitted output rather than from the
+	 * one that prompted it: the projection upsert, a status change, and a
+	 * per-post delete.
 	 *
 	 * @since 0.36.0
 	 *
@@ -2485,8 +2486,8 @@ final class Occurrences {
 		 * Fires after a series' occurrence rows are written, updated or removed.
 		 *
 		 * Occurrence writes bypass the post, meta and term hooks entirely, so
-		 * anything caching a rendering that reads occurrence rows -- calendar
-		 * feeds above all -- needs this to know it went stale.
+		 * anything caching a rendering that reads occurrence rows needs this to
+		 * know it went stale, calendar feeds above all.
 		 *
 		 * @since 0.36.0
 		 *

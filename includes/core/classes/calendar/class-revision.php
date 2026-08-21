@@ -6,7 +6,7 @@
  * `SEQUENCE` reports for a series' components. RFC 5545 section 3.8.7.4 makes
  * that number the only signal by which a client decides whether an incoming
  * component supersedes one it already holds, so anything that changes published
- * calendar content has to move it -- including changes that never touch the
+ * calendar content has to move it, including changes that never touch the
  * post row, and including two changes that land in the same second.
  *
  * @package GatherPress\Core\Calendar
@@ -137,7 +137,7 @@ final class Revision {
 	 * occurrence rows to a sibling and renaming the RSVP terms are all direct
 	 * storage writes that leave `post_modified_gmt` alone, so without this the
 	 * origin's already-published `UID` acquires a shorter rule while reporting
-	 * the same `SEQUENCE` -- and a subscriber is entitled to keep the dates the
+	 * the same `SEQUENCE`, and a subscriber is entitled to keep the dates the
 	 * split just moved away, then accept them again under the sibling's
 	 * identifier.
 	 *
@@ -181,8 +181,8 @@ final class Revision {
 		}
 
 		// `strtotime()` answers `false` for a date nothing can parse, which casts
-		// to zero and floors below -- one expression rather than a guard whose
-		// only reachable input is corrupt storage.
+		// to zero and floors below. That is one expression rather than a guard
+		// whose only reachable input is corrupt storage.
 		$modified = (int) strtotime( (string) $post->post_modified_gmt );
 
 		return min( max( 0, $modified - self::EPOCH ), self::CEILING );

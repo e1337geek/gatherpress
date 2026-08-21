@@ -668,7 +668,7 @@ final class Setup {
 	 * The timezone definitions are not decoration. GatherPress emits
 	 * `DTSTART;TZID=...` wherever an event carries a named timezone, and
 	 * RFC 5545 section 3.2.19 requires that such a parameter refer to a
-	 * `VTIMEZONE` in the same `VCALENDAR` -- so the definitions are what keep
+	 * `VTIMEZONE` in the same `VCALENDAR`, so the definitions are what keep
 	 * the timezone-qualified start valid. They are derived from the assembled
 	 * component text rather than from the events, so a `TZID` cannot be emitted
 	 * without its definition following it. A fixed-offset event contributes no

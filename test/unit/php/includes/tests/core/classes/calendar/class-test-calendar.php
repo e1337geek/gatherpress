@@ -518,7 +518,7 @@ class Test_Calendar extends Base {
 	 * Folding splits a content line on an octet budget and unfolds byte for byte.
 	 *
 	 * RFC 5545 section 3.1 counts octets, not characters, and every physical
-	 * line has to fit the same ceiling -- which the continuation lines only do
+	 * line has to fit the same ceiling, which the continuation lines only do
 	 * if the leading space they carry is charged against their own budget.
 	 *
 	 * @covers ::fold_content_line
@@ -749,8 +749,8 @@ class Test_Calendar extends Base {
 	 * `Calendar\Setup::get_ics_body()` is what both `ical-feed.php` and
 	 * `ical-download.php` call, and on a non-feed request it builds a
 	 * `Calendar` from `get_queried_object_id()`. When that object is not an
-	 * event -- a venue, or any post that does not support
-	 * `gatherpress-event-date` -- `Event::$event` stays null, and
+	 * event, such as a venue or any post that does not support
+	 * `gatherpress-event-date`, `Event::$event` stays null, and
 	 * `get_ical_event_string()` used to read `post_title` straight off it.
 	 * PHP 8 evaluates that to null rather than raising, so the null reached
 	 * `escape_ical_text( string $text )` and threw a `TypeError` that took the

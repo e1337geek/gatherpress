@@ -267,8 +267,8 @@ final class Calendar {
 		// Nothing to serialize when the wrapped post is not a resolvable
 		// event. `Event::$event` is declared `?WP_Post` and stays null
 		// whenever the ID does not resolve to a post that supports
-		// `gatherpress-event-date` -- a deleted post, a venue, or the 0 that
-		// `get_queried_object_id()` yields on an unresolved request. Every
+		// `gatherpress-event-date`, such as a deleted post, a venue, or the 0
+		// that `get_queried_object_id()` yields on an unresolved request. Every
 		// line below reads through it, and reading `post_title` off null
 		// evaluates to null in PHP 8, which reaches `escape_ical_text()`'s
 		// `string` parameter and fatals the whole request on what is a public
@@ -416,7 +416,7 @@ final class Calendar {
 	 * Two shapes. A component describing one named occurrence
 	 * carries a `RECURRENCE-ID` referring back to the series and no rule of its
 	 * own. A component describing the series carries the rule and the
-	 * exclusions **derived** from its canceled occurrence rows -- the stored
+	 * exclusions **derived** from its canceled occurrence rows. The stored
 	 * rule is never mutated to express a cancellation.
 	 *
 	 * Neither shape is emitted without a named timezone: an `RRULE` cannot be
@@ -708,7 +708,7 @@ final class Calendar {
 	 * break", and a longer one is split by inserting a CRLF followed by a single
 	 * space, which a parser removes again when it reads the value. Octets, not
 	 * characters: the limit is a byte budget, so a multi-byte character counts
-	 * for as many bytes as it occupies -- and must never be split across a fold,
+	 * for as many bytes as it occupies, and must never be split across a fold,
 	 * which would leave two invalid byte sequences that do not reassemble.
 	 *
 	 * Applied to the whole property line rather than to a value, because the
@@ -716,7 +716,7 @@ final class Calendar {
 	 * octets of it before the first identifier, and an exclusion list grows
 	 * without bound as a series accumulates cancellations. Folding the value
 	 * alone measures the wrong string and emits over-length lines a strict
-	 * parser may reject or truncate -- which puts canceled dates back on the
+	 * parser may reject or truncate, which puts canceled dates back on the
 	 * subscriber's calendar.
 	 *
 	 * @since 0.34.0

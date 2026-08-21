@@ -1377,7 +1377,7 @@ class Test_Rule extends Base {
 	 *
 	 * The two cases differ only in which side of a daylight saving change the
 	 * end date sits on, and they must produce different UTC clock times from
-	 * the same wall clock -- which is the whole reason the offset is resolved
+	 * the same wall clock. That is the whole reason the offset is resolved
 	 * on the end date rather than on the anchor's.
 	 *
 	 * @covers ::until_as_utc_datetime
@@ -1425,7 +1425,7 @@ class Test_Rule extends Base {
 	 * in the series timezone, so the `setTimezone()` call is invisible to them:
 	 * dropping it leaves the whole suite green. `to_rrule_string()` is public
 	 * and takes an arbitrary `DateTimeImmutable`, though, and an anchor typed in
-	 * UTC carries a different wall clock for the same instant -- which is the
+	 * UTC carries a different wall clock for the same instant, and that is the
 	 * value `UNTIL` is built from. A UTC-typed anchor is therefore the fixture
 	 * where "normalized" and "not normalized" give different answers.
 	 *

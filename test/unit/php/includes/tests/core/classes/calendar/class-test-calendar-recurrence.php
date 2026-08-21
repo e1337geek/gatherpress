@@ -66,7 +66,7 @@ class Test_Calendar_Recurrence extends Base {
 	/**
 	 * How far the fixture anchor sits from now.
 	 *
-	 * Behind now for every test in this file -- see `anchor()`. That is the
+	 * Behind now for every test in this file, as `anchor()` shows. That is the
 	 * steady state of a live series: every recurring series is in it from the
 	 * moment its second date arrives, and it is the shape the aggregate feeds
 	 * have to work in. `Recurrence\Query::expand_event_clauses()` is what makes
@@ -302,7 +302,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * The `VTIMEZONE` definitions are stripped first. They are part of the same
 	 * `VCALENDAR` and carry `DTSTART` and `RRULE` properties of their own, which
 	 * describe when a *timezone* changes offset and have nothing to do with when
-	 * an event happens -- letting them through would answer every question in
+	 * an event happens. Letting them through would answer every question in
 	 * this file with two unrelated kinds of line mixed together. Use
 	 * `properties_in()` to read inside a definition.
 	 *
@@ -632,9 +632,9 @@ class Test_Calendar_Recurrence extends Base {
 	 * postdates the event.
 	 *
 	 * The fixture is deliberately in the opposite daylight-saving regime from
-	 * the one the suite runs in -- a January date in New York is standard time,
-	 * and the request cannot be -- so a definition that happens to describe today
-	 * cannot be mistaken for one that describes the event.
+	 * the one the suite runs in, since a January date in New York is standard
+	 * time and the request cannot be. A definition that happens to describe
+	 * today therefore cannot be mistaken for one that describes the event.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
@@ -737,7 +737,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * This is what a jurisdiction abolishing daylight saving looks like in
 	 * tzdata: the same first-Sunday-of-November 02:00 position, changing to
 	 * `-0500` in one year and to `-0400` in the next. A signature built from
-	 * position alone -- or from position and name -- calls the pair regular and
+	 * position alone, or from position and name, calls the pair regular and
 	 * emits one unbounded yearly rule, so every date after the policy change is
 	 * computed an hour wrong for as long as the subscription lives.
 	 *
@@ -862,9 +862,9 @@ class Test_Calendar_Recurrence extends Base {
 	 * `move_to_post()` is the primitive a forward split moves rows with.
 	 * It is bare SQL: no post row, no meta row and no term relationship changes,
 	 * so nothing the cache watches fires by itself. A move is a write on **two**
-	 * series -- the source stops carrying the dates and the destination starts --
-	 * and a subscriber revalidating either against an unmoved `Last-Modified` is
-	 * told `304` for a body that no longer describes it.
+	 * series, because the source stops carrying the dates and the destination
+	 * starts, and a subscriber revalidating either against an unmoved
+	 * `Last-Modified` is told `304` for a body that no longer describes it.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::move_to_post
 	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
@@ -939,7 +939,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * The response cache is namespaced by `Last-Modified`, which has one-second
 	 * resolution. Render, change, render again in the same second and the second
-	 * lookup lands on the key the first render filled -- so the change is
+	 * lookup lands on the key the first render filled, so the change is
 	 * correctly absent from the stored body and correctly reported as fresh.
 	 * Cancelling two dates of a series is one operator action and lands well
 	 * inside a second, so this is the ordinary case rather than a race.
@@ -1064,8 +1064,8 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * RFC 5545 section 3.1: a CRLF followed by a single linear white space
 	 * character is removed when the content is processed. Byte-for-byte, which
-	 * is the point -- a folder that drops or duplicates an octet round-trips to
-	 * something the assertion would not recognize.
+	 * is the point, because a folder that drops or duplicates an octet
+	 * round-trips to something the assertion would not recognize.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1103,7 +1103,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * `Setup::get_ics_cache_key()` is built from the resolved query, and the
 	 * occurrence is not part of the query in the sense that key was originally
-	 * written for -- without the occurrence in the key, whichever of the two
+	 * written for. Without the occurrence in the key, whichever of the two
 	 * was requested first would be served for the other.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Setup::get_ics_cache_key
@@ -1141,7 +1141,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * Scoped to the `VEVENT` deliberately. The component is what stays
 	 * unchanged modulo the start; the enclosing `VCALENDAR` gains the
 	 * `VTIMEZONE` that start's `TZID` now refers to, which is asserted
-	 * separately -- and the shape of that definition is a property of the
+	 * separately. The shape of that definition is a property of the
 	 * tz database rather than of this plugin, so pinning it here would make an
 	 * unrelated tzdata update fail a test about a plain event.
 	 *
@@ -1393,7 +1393,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * The transient is the lesser half. `Last-Modified` is served from the
 	 * calendar stamp, and `is_not_modified()` answers true whenever the client's
-	 * timestamp is at or past it -- so a client revalidating with
+	 * timestamp is at or past it, so a client revalidating with
 	 * `If-Modified-Since` and no stored entity tag gets a 304 for as long as the
 	 * stamp stays put. `Occurrences::set_status()` is a bare `UPDATE`; unless it
 	 * stamps the calendar, the canceled date may never reach the subscriber.
@@ -1465,7 +1465,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * Projecting a series' occurrence rows stamps the calendar too.
 	 *
 	 * `save_post` covers the editor path, but the top-up cron writes occurrence
-	 * rows with no post save anywhere near it -- new dates appear in the
+	 * rows with no post save anywhere near it, so new dates appear in the
 	 * aggregate feeds with nothing to invalidate the bodies that omit them.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::upsert_occurrences
@@ -1521,8 +1521,8 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * A series is never assumed to be one post. Under a forward split a
 	 * canceled date living on a sibling post would otherwise drop silently out
-	 * of the feed. Proved the way the other series-wide read call sites in this
-	 * suite are proved -- by installing the `gatherpress_series_post_ids`
+	 * of the feed. This is proved the way the other series-wide read call sites
+	 * in this suite are proved, by installing the `gatherpress_series_post_ids`
 	 * filter and canceling the date on the post the filter adds.
 	 *
 	 * @covers ::exdate_line
@@ -1566,7 +1566,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * RFC 5545 section 3.2.19: a `TZID` parameter refers to a `VTIMEZONE` in the
 	 * same calendar object. Emitting `DTSTART;TZID=` with no such component is
 	 * what makes the output invalid, so the definition travels with it. One per
-	 * *distinct* identifier -- two events in one zone share a definition.
+	 * *distinct* identifier, so two events in one zone share a definition.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
 	 * @covers \GatherPress\Core\Calendar\Setup::get_ical_wrap
@@ -1610,8 +1610,8 @@ class Test_Calendar_Recurrence extends Base {
 	 * the offsets it moves between and a rule describing when it moves.
 	 *
 	 * The offsets are cross-checked against the tz database directly rather than
-	 * against a pasted expectation, so the assertion states the requirement --
-	 * "the emitted offsets are this zone's real offsets" -- instead of encoding
+	 * against a pasted expectation, so the assertion states the requirement,
+	 * that the emitted offsets are this zone's real offsets, instead of encoding
 	 * whatever the generator produced.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
@@ -1683,7 +1683,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * 1. Both transitions fall on the **last** Sunday of their month, so the
 	 *    rule's `BYDAY` is `-1SU`. Counting forward from the first Sunday
-	 *    instead gives `4SU` or `5SU` depending on the year -- a rule that is
+	 *    instead gives `4SU` or `5SU` depending on the year, a rule that is
 	 *    wrong outright in some years and right by accident in others. The US
 	 *    rule is "second Sunday" and "first Sunday", so it never exercises this.
 	 * 2. Both transitions happen at 01:00 UTC, and RFC 5545 section 3.6.5 writes
@@ -1691,7 +1691,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *    forward leaves CET, so 01:00 UTC is 02:00 there; autumn back leaves
 	 *    CEST, so the same 01:00 UTC is 03:00. Reading the offset from the wrong
 	 *    side of the change swaps those two, which is invisible in any zone
-	 *    whose transitions are pinned to local time -- as the US ones are, at
+	 *    whose transitions are pinned to local time, as the US ones are, at
 	 *    02:00 local both ways.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render
@@ -2129,7 +2129,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * the occurrence table.
 	 *
 	 * The sibling test above drives a plain event, which has no rule
-	 * mirrors -- so it stays off the occurrence table whether or not the guard
+	 * mirrors, so it stays off the occurrence table whether or not the guard
 	 * exists, and deleting the guard leaves it green. Removing that coincidence
 	 * takes an event that *does* carry rule mirrors while the flag says the
 	 * site has none: the option is recomputed from storage on every lifecycle

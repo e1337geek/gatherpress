@@ -5,8 +5,8 @@
  * The behavior of this class through a real request is covered in
  * `Test_Calendar_Recurrence`, which is where the requirement lives: a feed
  * defines every timezone its components reference. This file exists for the
- * branches xdebug will not trace through a same-class delegation -- every
- * method below `render()` is private and reached only from it -- plus the two
+ * branches xdebug will not trace through a same-class delegation, since every
+ * method below `render()` is private and reached only from it, plus the two
  * degenerate transition lists a real tz database never hands back.
  *
  * @package GatherPress\Core\Calendar
@@ -54,7 +54,7 @@ class Test_Timezone_Component extends Base {
 	 * An identifier that names no zone produces no definition at all.
 	 *
 	 * A fixed UTC offset is never written into a `TZID` parameter, so it never
-	 * reaches here in production -- but an empty `VTIMEZONE` would be worse than
+	 * reaches here in production. But an empty `VTIMEZONE` would be worse than
 	 * none, and `new DateTimeZone( 'UTC+5' )` throws.
 	 *
 	 * @covers ::build
@@ -145,7 +145,7 @@ class Test_Timezone_Component extends Base {
 	 * A rule with no last instant extends the range to the lookahead horizon.
 	 *
 	 * An open-ended series names no final date, so the only concrete moments in
-	 * its component are its own start and end -- which would bound the window to
+	 * its component are its own start and end, which would bound the window to
 	 * a single day and leave the definition unable to describe the dates the
 	 * rule goes on producing. Both arms of the check matter: a bounded rule must
 	 * *not* extend the window, or every feed on the site pays for transitions
@@ -226,7 +226,7 @@ class Test_Timezone_Component extends Base {
 	 *
 	 * `getTransitions()` always returns at least the entry describing the state
 	 * at the range start, so this is the defensive arm rather than an authored
-	 * one -- but the fallback has to name an offset, and a `VTIMEZONE` carrying
+	 * one. The fallback still has to name an offset, and a `VTIMEZONE` carrying
 	 * no sub-component at all is invalid.
 	 *
 	 * @covers ::sub_components
@@ -389,7 +389,7 @@ class Test_Timezone_Component extends Base {
 	 * The zone this stands in for is a real one: a jurisdiction that moves its
 	 * change date, or adopts and then drops daylight saving mid-window. Writing
 	 * an unbounded yearly `RRULE` from the first of those would claim a rule the
-	 * zone does not follow, for every year after the window -- worse than
+	 * zone does not follow, for every year after the window. That is worse than
 	 * enumerating, which is merely incomplete.
 	 *
 	 * @covers ::sub_component

@@ -721,7 +721,7 @@ final class Rule {
 	 * mistake for the line above: it normalizes the anchor into the series
 	 * timezone before its wall clock is read. Every call site inside the plugin
 	 * hands in an anchor already constructed there, so it is a no-op for all of
-	 * them -- but `to_rrule_string()` is public and takes an arbitrary
+	 * them. But `to_rrule_string()` is public and takes an arbitrary
 	 * `DateTimeImmutable`, and the same instant typed in another zone carries a
 	 * different wall clock. Dropping the call would silently emit that other
 	 * zone's clock as `UNTIL`.

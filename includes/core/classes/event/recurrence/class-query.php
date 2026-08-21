@@ -342,7 +342,7 @@ final class Query {
 	 * Once the clauses below consult the occurrence table, an event query's
 	 * result set depends on rows `WP_Query`'s own cache knows nothing about.
 	 * That cache is keyed on the `posts` group's `last_changed` value, which
-	 * core bumps from `clean_post_cache()` -- a post write. An occurrence write
+	 * core bumps from `clean_post_cache()`, which is a post write. An occurrence write
 	 * touches no post, so nothing bumps it, and a site with a persistent object
 	 * cache keeps serving the pre-cancellation post list until some unrelated
 	 * edit happens to move it. Bumping the value strands every cached result set
@@ -417,8 +417,8 @@ final class Query {
 		// Its rows carry Edit/Trash/View actions and bulk-action checkboxes
 		// keyed by post ID, and `Event\Admin_List` renders its columns from the
 		// post. Expanding it would emit one indistinguishable row per
-		// occurrence -- roughly fifty for a weekly series projected to the
-		// twelve-month horizon -- pushing every other event off the screen and
+		// occurrence, roughly fifty for a weekly series projected to the
+		// twelve-month horizon, pushing every other event off the screen and
 		// making a bulk action on "a row" act on the whole series.
 		// Per-occurrence management belongs to a dedicated series screen, not
 		// to the generic post list. `admin-ajax.php` is carved back out:
@@ -427,7 +427,7 @@ final class Query {
 		// manage and must see the same expanded list a page load renders.
 		//
 		// Arm 3 scopes the filter to queries `Event\Query` has already joined
-		// the events table onto -- the only case with an anchor column for
+		// the events table onto, the only case with an anchor column for
 		// `COALESCE()` to fall back to. A plain Query Loop over an event post
 		// type sets no upcoming/past bucket, so it gets no events join and is
 		// not expanded: it shows one entry per series, at the series anchor
@@ -678,7 +678,7 @@ final class Query {
 	 * A recurring series must appear in the aggregate site-wide, archive,
 	 * venue and taxonomy feeds. Those feeds are built by
 	 * `Calendar\Setup::get_ical_list()` from `Event\Query::get_events_list()`,
-	 * which asks for `'fields' => 'ids'` -- and left unexpanded, its
+	 * which asks for `'fields' => 'ids'`. Left unexpanded, its
 	 * `upcoming` bucket is selected from each series' *anchor*. A series whose
 	 * anchor has passed is therefore in no aggregate feed at all, which is every
 	 * recurring series from its second date onward.
@@ -691,11 +691,11 @@ final class Query {
 	 * tidiness: a series shares one `UID` across its whole recurrence set (RFC
 	 * 5545 section 3.8.4.7), so one component per occurrence would repeat that
 	 * identifier once per date with nothing but `RECURRENCE-ID` to tell the
-	 * copies apart -- a feed that overrides every instance of a rule it also
-	 * carries. One component carrying an `RRULE` is how a series is representable
+	 * copies apart, producing a feed that overrides every instance of a rule it
+	 * also carries. One component carrying an `RRULE` is how a series is representable
 	 * at all.
 	 *
-	 * Ordering is aggregated for the same reason it is grouped -- see
+	 * Ordering is aggregated for the same reason it is grouped. See
 	 * `aggregate_orderby()`.
 	 *
 	 * @since 0.36.0
@@ -735,7 +735,7 @@ final class Query {
 	 *
 	 * A folded query orders by a column belonging to the joined occurrence rows
 	 * while grouping them away, so without an aggregate the value MySQL sorts on
-	 * is whichever row of the group it happened to read -- stable within a
+	 * is whichever row of the group it happened to read. That is stable within a
 	 * statement, arbitrary between them, and enough to move an entry between
 	 * pages of a paginated feed. `MIN()` on an ascending sort picks the series'
 	 * *next* occurrence and `MAX()` on a descending one picks its most recent,
@@ -751,7 +751,7 @@ final class Query {
 	 * expanded path solves with the canonical list key. Two series whose next
 	 * scheduled occurrence falls at the same instant tie on the aggregate, MySQL
 	 * does not sort stably, and a tied pair can be ordered one way for
-	 * `LIMIT 0, 10` and the other for `LIMIT 10, 10` -- which repeats one series
+	 * `LIMIT 0, 10` and the other for `LIMIT 10, 10`, which repeats one series
 	 * across two pages of a feed and drops the other from both. The group key is
 	 * unique per row of a folded result and is what breaks the tie; nothing
 	 * finer is needed, because folding has already collapsed the occurrences.
@@ -821,7 +821,7 @@ final class Query {
 	 * `Occurrences::select_by_horizon()`, and deliberately not the rule mirror.
 	 * Keying on the mirror instead asks "does this post have a rule", which is
 	 * `true` for a post whose rule has not projected any rows yet, or whose rule
-	 * legitimately produces none -- an `until` that precedes the anchor,
+	 * legitimately produces none, such as an `until` that precedes the anchor,
 	 * reachable by editing either end of that pair. Such a post would match no
 	 * join row *and* be denied the `NULL` fallback, disappearing from every
 	 * list, the archive, and the admin screen while still being a published

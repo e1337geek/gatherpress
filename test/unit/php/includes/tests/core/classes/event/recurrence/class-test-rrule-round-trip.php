@@ -7,8 +7,8 @@
  * The reader below is written from RFC 5545 rather than from
  * `Rule::to_rrule_string()`. That separation is the whole point: a round-trip
  * test whose two halves share an implementation passes whenever they share a
- * bug. This one reads `UNTIL` the way the RFC defines it -- a UTC date-time
- * whose value type must match `DTSTART`'s -- so a serializer that emits a bare
+ * bug. This one reads `UNTIL` the way the RFC defines it, as a UTC date-time
+ * whose value type must match `DTSTART`'s, so a serializer that emits a bare
  * `DATE`, or that stamps a `Z` onto a local wall clock, produces a different
  * end date here and therefore a different occurrence set.
  *
@@ -370,8 +370,8 @@ class Test_Rrule_Round_Trip extends Base {
 	 * Render an occurrence set as comparable strings.
 	 *
 	 * Carries the local wall clock, its UTC offset, and the absolute instant,
-	 * so a set that holds the right wall clock at the wrong offset -- the
-	 * signature of a UTC-anchored expansion -- does not compare equal.
+	 * so a set that holds the right wall clock at the wrong offset does not
+	 * compare equal. That is the signature of a UTC-anchored expansion.
 	 *
 	 * @since 0.36.0
 	 *

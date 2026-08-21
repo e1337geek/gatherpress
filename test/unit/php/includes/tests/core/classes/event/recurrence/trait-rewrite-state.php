@@ -28,7 +28,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
  * against `wp-includes/class-wp-rewrite.php`). So
  * `get_extra_permastruct( 'gatherpress_event' )` keeps answering for the rest of
  * the process and every later test's event permalinks silently become pretty
- * ones -- which is a defect that surfaces in whichever file happens to run next,
+ * ones. That is a defect which surfaces in whichever file happens to run next,
  * not in the file that caused it.
  *
  * Three suites do the same sequence. Restoring in only one of them leaves the

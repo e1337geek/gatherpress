@@ -291,8 +291,8 @@ final class Cache {
 	 * The series' calendar revision advances with it. The stamp invalidates the
 	 * *server's* copy, but a subscriber already holding the old component decides
 	 * whether to replace it by comparing `SEQUENCE`, and an occurrence write
-	 * leaves `post_modified_gmt` -- which that number is otherwise derived from
-	 * -- exactly where it was. Without the advance a canceled date is correctly
+	 * leaves `post_modified_gmt` exactly where it was, and that number is
+	 * otherwise derived from it. Without the advance a canceled date is correctly
 	 * absent from the body and still on the subscriber's calendar.
 	 *
 	 * @param int|string $post_id The series post whose occurrence rows changed.

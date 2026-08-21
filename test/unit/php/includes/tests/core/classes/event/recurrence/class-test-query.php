@@ -664,8 +664,8 @@ class Test_Query extends Base {
 	 *
 	 * Two requirements at once, and the fixture separates them. The scenario's
 	 * series is anchored an hour behind now with its remaining occurrences ahead
-	 * of it -- the steady state of any live series -- so selecting the bucket
-	 * from the anchor drops it out of the list entirely, which is what kept
+	 * of it, which is the steady state of any live series, so selecting the
+	 * bucket from the anchor drops it out of the list entirely, which is what kept
 	 * recurring series out of every aggregate iCal feed. And `WP_Query` returns
 	 * before `the_posts` for an ids result set, so occurrence identity cannot
 	 * travel with the rows: expanding would hand the caller a repeated bare post
