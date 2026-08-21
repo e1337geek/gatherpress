@@ -680,17 +680,33 @@ class Test_Rewrite extends Base {
 	 * occurrence rows exist at all, so `select_for_series()` returns an
 	 * empty array and the query var stays unset.
 	 *
+	 * A second, unrelated series has to exist for this test to mean what its
+	 * name says. `parse_request()` bails on
+	 * `Query::site_has_recurring_events()` before either method named below
+	 * runs, so on a site holding nothing but this one plain event the request
+	 * never reaches the resolver and the query var stays unset for a reason
+	 * that has nothing to do with the post being asked for. The live series
+	 * satisfies that first arm and leaves the empty row set as the only thing
+	 * that can decide the outcome.
+	 *
 	 * @covers ::maybe_resolve_bare_series
 	 * @covers ::next_upcoming_recurrence_id
 	 *
 	 * @return void
 	 */
 	public function test_bare_series_url_leaves_query_var_unset_for_non_recurring_event(): void {
+		$this->create_relative_daily_series( 10, 7, 3 );
+
 		$post_id = $this->factory->post->create(
 			array(
 				'post_type'   => Event::POST_TYPE,
 				'post_status' => 'publish',
 			)
+		);
+
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to assert that the site has recurring events, which parse_request() requires.'
 		);
 
 		$this->go_to( get_permalink( $post_id ) );
