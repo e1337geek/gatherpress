@@ -99,11 +99,39 @@ class Test_Rewrite extends Base {
 		int $count,
 		string $timezone = 'America/New_York'
 	): array {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$start   = $this->project_relative_daily_series( $post_id, $day_offset, $interval, $count, $timezone );
+
+		return array( $post_id, $start );
+	}
+
+	/**
+	 * Project a now-relative daily series onto an existing post.
+	 *
+	 * Split out of `create_relative_daily_series()` so the routing tests for
+	 * companion post types can project a series onto a post of their own
+	 * post type rather than of `Event::POST_TYPE`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id    Post to project the series onto.
+	 * @param int    $day_offset Days from "now" for the first occurrence.
+	 * @param int    $interval   Days between occurrences.
+	 * @param int    $count      Number of occurrences.
+	 * @param string $timezone   Named tz-database identifier for the series.
+	 *
+	 * @return DateTimeImmutable The series' anchor start.
+	 */
+	protected function project_relative_daily_series(
+		int $post_id,
+		int $day_offset,
+		int $interval,
+		int $count,
+		string $timezone = 'America/New_York'
+	): DateTimeImmutable {
 		$tz    = new DateTimeZone( $timezone );
 		$start = ( new DateTimeImmutable( 'now', $tz ) )->modify( sprintf( '%+d days', $day_offset ) );
 		$end   = $start->add( new DateInterval( 'PT2H' ) );
-
-		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
 
 		add_post_meta(
 			$post_id,
@@ -133,7 +161,7 @@ class Test_Rewrite extends Base {
 		Meta::get_instance()->set_recurrence( $post_id );
 		Occurrences::get_instance()->project( $post_id );
 
-		return array( $post_id, $start );
+		return $start;
 	}
 
 	/**
@@ -348,6 +376,152 @@ class Test_Rewrite extends Base {
 		Event_Setup::get_instance()->register_post_type();
 		Rewrite::get_instance()->add_rewrite_rules();
 		$wp_rewrite->flush_rules();
+	}
+
+	/**
+	 * Coverage for a hierarchical companion post type declaring the
+	 * `gatherpress-event-date` support. WordPress publishes a child post of
+	 * such a type at `parent/child`, so its advertised occurrence URL is
+	 * `/gp-hier/parent/child/{Ymd\THis}/`, and the occurrence rule must use
+	 * the hierarchical capture WordPress's own permastruct uses, or the URL
+	 * the plugin itself advertises 404s.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::parse_request
+	 * @covers ::resolve_post_id_from_query_vars
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_routes_for_a_hierarchical_supporting_post_type(): void {
+		global $wp_rewrite;
+
+		register_post_type(
+			'gp_hier_event',
+			array(
+				'public'       => true,
+				'hierarchical' => true,
+				'supports'     => array( 'title', 'editor', 'page-attributes', 'gatherpress-event-date' ),
+				'rewrite'      => array(
+					'slug'       => 'gp-hier',
+					'with_front' => false,
+				),
+			)
+		);
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+
+		$parent_id = $this->factory->post->create(
+			array(
+				'post_type'   => 'gp_hier_event',
+				'post_name'   => 'parent-event',
+				'post_status' => 'publish',
+			)
+		);
+		$child_id  = $this->factory->post->create(
+			array(
+				'post_type'   => 'gp_hier_event',
+				'post_name'   => 'child-event',
+				'post_parent' => $parent_id,
+				'post_status' => 'publish',
+			)
+		);
+
+		$anchor_start  = $this->project_relative_daily_series( $child_id, 5, 7, 3 );
+		$recurrence_id = Occurrences::recurrence_id( $anchor_start );
+		$url           = Rewrite::get_occurrence_url( $child_id, $recurrence_id );
+
+		$this->assertStringContainsString(
+			'/gp-hier/parent-event/child-event/',
+			$url,
+			'Fixture setup: the occurrence URL should be composed under the child post\'s hierarchical path.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'A hierarchical supporting post type\'s occurrence URL must not 404.' );
+		$this->assertSame(
+			$child_id,
+			get_queried_object_id(),
+			'A hierarchical occurrence URL should resolve to the child post.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'A hierarchical occurrence URL should round-trip to its own recurrence ID.'
+		);
+
+		unregister_post_type( 'gp_hier_event' );
+	}
+
+	/**
+	 * Coverage for a companion post type whose permastruct keeps the rewrite
+	 * front. With a permalink structure of `/blog/%postname%/`, WordPress
+	 * prepends `/blog/` to every `with_front` permastruct, so the post's
+	 * permalink and its advertised occurrence URL both live under
+	 * `/blog/gp-front/`. The occurrence rule must include that front, or the
+	 * advertised URL 404s. The stock event post type registers with
+	 * `with_front` disabled, which is why its own tests never expose this.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::parse_request
+	 * @covers ::resolve_post_id_from_query_vars
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_routes_for_a_post_type_with_front(): void {
+		global $wp_rewrite;
+
+		$wp_rewrite->set_permalink_structure( '/blog/%postname%/' );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
+
+		register_post_type(
+			'gp_front_event',
+			array(
+				'public'   => true,
+				'supports' => array( 'title', 'editor', 'gatherpress-event-date' ),
+				'rewrite'  => array(
+					'slug'       => 'gp-front',
+					'with_front' => true,
+				),
+			)
+		);
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => 'gp_front_event',
+				'post_name'   => 'fronted-event',
+				'post_status' => 'publish',
+			)
+		);
+
+		$anchor_start  = $this->project_relative_daily_series( $post_id, 5, 7, 3 );
+		$recurrence_id = Occurrences::recurrence_id( $anchor_start );
+		$url           = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
+
+		$this->assertStringContainsString(
+			'/blog/gp-front/fronted-event/',
+			$url,
+			'Fixture setup: the occurrence URL should be composed under the permastruct front.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'A with_front supporting post type\'s occurrence URL must not 404.' );
+		$this->assertSame(
+			$post_id,
+			get_queried_object_id(),
+			'A with_front occurrence URL should resolve to its own post.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'A with_front occurrence URL should round-trip to its own recurrence ID.'
+		);
+
+		unregister_post_type( 'gp_front_event' );
 	}
 
 	/**
