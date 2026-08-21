@@ -743,6 +743,201 @@ class Test_Rule extends Base {
 	}
 
 	/**
+	 * An arbitrary non-numeric interval string is rejected, never coerced.
+	 *
+	 * `(int) 'not-a-number'` is `0`, which the sub-one clamp would then turn
+	 * into a valid interval of 1. That is a silent semantic change of the
+	 * author's input, not a safe coercion, so the boundary must reject it.
+	 *
+	 * @covers ::from_array
+	 *
+	 * @return void
+	 */
+	public function test_from_array_rejects_non_numeric_interval_string(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 'not-a-number',
+				'weekdays'  => array( 2 ),
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertNull( $rule );
+	}
+
+	/**
+	 * An arbitrary non-numeric weekday string is rejected, never coerced.
+	 *
+	 * `intval( 'not-a-weekday' )` is `0`, which silently turns an arbitrary
+	 * word into Sunday. The whole rule is rejected rather than the element
+	 * dropped, because dropping it would accept a different schedule than the
+	 * one submitted.
+	 *
+	 * @covers ::from_array
+	 *
+	 * @return void
+	 */
+	public function test_from_array_rejects_non_numeric_weekday_string(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( 'not-a-weekday' ),
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertNull( $rule );
+	}
+
+	/**
+	 * Booleans and floats in integer fields are rejected, never cast.
+	 *
+	 * `(int) true` is `1`, so a boolean interval or count would silently
+	 * become a valid schedule. `(int) 2.5` is `2`, a different interval than
+	 * the one submitted. Integer fields accept JSON integers only.
+	 *
+	 * @covers ::from_array
+	 *
+	 * @return void
+	 */
+	public function test_from_array_rejects_boolean_and_float_integer_fields(): void {
+		$boolean_interval = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => true,
+				'end_type'  => 'never',
+			)
+		);
+		$boolean_count    = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => true,
+			)
+		);
+		$float_interval   = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 2.5,
+				'end_type'  => 'never',
+			)
+		);
+		$boolean_weekday  = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( true ),
+				'end_type'  => 'never',
+			)
+		);
+
+		$this->assertNull( $boolean_interval, 'Failed to assert that a boolean interval is rejected.' );
+		$this->assertNull( $boolean_count, 'Failed to assert that a boolean count is rejected.' );
+		$this->assertNull( $float_interval, 'Failed to assert that a float interval is rejected.' );
+		$this->assertNull( $boolean_weekday, 'Failed to assert that a boolean weekday is rejected.' );
+	}
+
+	/**
+	 * Canonical integer strings remain accepted for integer fields.
+	 *
+	 * A form serialization or CLI client legitimately submits `"3"` where the
+	 * editor submits `3`. Only a complete-match canonical integer string
+	 * qualifies; `"007"` and `"2x"` do not.
+	 *
+	 * @covers ::from_array
+	 *
+	 * @return void
+	 */
+	public function test_from_array_accepts_canonical_integer_strings(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => '3',
+				'weekdays'  => array( '2', '4' ),
+				'end_type'  => 'count',
+				'count'     => '5',
+			)
+		);
+
+		$this->assertInstanceOf( Rule::class, $rule );
+		$this->assertSame( 3, $rule->interval() );
+		$this->assertSame( array( 2, 4 ), $rule->weekdays() );
+		$this->assertSame( 5, $rule->count() );
+
+		$this->assertNull(
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => '007',
+					'end_type'  => 'never',
+				)
+			),
+			'Failed to assert that a non-canonical zero-padded integer string is rejected.'
+		);
+		$this->assertNull(
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => '2x',
+					'end_type'  => 'never',
+				)
+			),
+			'Failed to assert that a trailing-garbage integer string is rejected.'
+		);
+	}
+
+	/**
+	 * A malformed nonempty `until` alongside a `count` is rejected, never
+	 * silently resolved into a valid `COUNT` rule.
+	 *
+	 * The `UNTIL`/`COUNT` mutual exclusion has to run against the raw field's
+	 * presence: erasing an unparseable `until` to null before the exclusion
+	 * check would let a rule carrying both survive the very check the
+	 * boundary exists to enforce.
+	 *
+	 * @covers ::from_array
+	 *
+	 * @return void
+	 */
+	public function test_from_array_rejects_malformed_until_alongside_count(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'until'     => 'not-a-date',
+				'count'     => 5,
+			)
+		);
+
+		$this->assertNull( $rule );
+	}
+
+	/**
+	 * A malformed nonempty `until` on a `never` rule is rejected, never
+	 * silently erased into a valid never-ending schedule.
+	 *
+	 * @covers ::from_array
+	 *
+	 * @return void
+	 */
+	public function test_from_array_rejects_malformed_until_on_a_never_rule(): void {
+		$rule = Rule::from_array(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+				'until'     => 'not-a-date',
+			)
+		);
+
+		$this->assertNull( $rule );
+	}
+
+	/**
 	 * `is_valid()`'s `count`-arm `until` guard, unreachable through
 	 * `from_array()` because its own pre-check already rejects any rule
 	 * carrying both a count and an until, is exercised directly by

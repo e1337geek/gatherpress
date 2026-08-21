@@ -511,6 +511,50 @@ class Test_Meta extends Base {
 	}
 
 	/**
+	 * A blob carrying malformed scalar types is rejected on the real save
+	 * path, never coerced into a different valid schedule.
+	 *
+	 * This is the write boundary a REST or CLI client actually reaches:
+	 * the blob lands as post meta and `wp_after_insert_post` derives the
+	 * mirrors from it. `(int) 'not-a-number'` is `0`, which the sub-one
+	 * clamp turns into interval 1, and `intval( 'not-a-weekday' )` is `0`,
+	 * Sunday, so without type validation this exact payload was accepted as
+	 * a weekly Sunday schedule.
+	 *
+	 * @covers ::set_recurrence
+	 * @covers ::write_recurrence
+	 * @covers ::clear_mirrors
+	 *
+	 * @return void
+	 */
+	public function test_set_recurrence_rejects_a_blob_with_malformed_scalar_types(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 'not-a-number',
+				'weekdays'  => array( 'not-a-weekday' ),
+				'end_type'  => 'never',
+			)
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'wp_after_insert_post', $post_id, get_post( $post_id ), true, null );
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Failed to assert that {$derived_key} stayed clear for a malformed blob."
+			);
+		}
+
+		$this->assertNull(
+			Rule::from_post( $post_id ),
+			'Failed to assert that no rule is reconstructable from a malformed blob.'
+		);
+	}
+
+	/**
 	 * `Query::refresh_has_recurring_events()` runs after `write_mirrors()`,
 	 * never before it. This is a regression test for that ordering, since
 	 * `refresh_has_recurring_events()` reads the frequency mirror directly
