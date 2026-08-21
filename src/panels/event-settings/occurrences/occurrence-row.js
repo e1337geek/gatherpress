@@ -14,6 +14,15 @@ import { dateI18n, getSettings } from '@wordpress/date';
  * the occurrence's `status` column via the `occurrence-status` REST route, and
  * never touches the rule.
  *
+ * The date is formatted from the row's GMT instant in the row's own named
+ * timezone, never from the timezone-free local `datetime_start`. A bare
+ * local string handed to `dateI18n()` is parsed in the browser timezone and
+ * then converted to the site timezone, so an 18:00 New York occurrence can
+ * print as 11:00 for a traveling organizer. Converting the MySQL GMT value
+ * to ISO UTC pins the instant, and the `timezone` column names the clock to
+ * render it on; the column is nullable, and an empty value falls back to
+ * `dateI18n()`'s own default, the site timezone.
+ *
  * @since 0.36.0
  *
  * @param {Object}   props            Component props.
@@ -25,13 +34,15 @@ import { dateI18n, getSettings } from '@wordpress/date';
  */
 const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
 	const isCancelled = 'cancelled' === occurrence.status;
+	const startUtc = `${ occurrence.datetime_start_gmt.replace( ' ', 'T' ) }Z`;
 
 	return (
 		<div className="gatherpress-occurrence-row">
 			<span className="gatherpress-occurrence-row__date">
 				{ dateI18n(
 					getSettings().formats.datetime,
-					occurrence.datetime_start,
+					startUtc,
+					occurrence.timezone || undefined,
 				) }
 			</span>
 			<span className="gatherpress-occurrence-row__status">
