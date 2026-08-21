@@ -1462,6 +1462,70 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
+	 * A second cancellation is never answered 304 against the first one's
+	 * validator, however close together the two land.
+	 *
+	 * `Last-Modified` has one-second resolution. A client that revalidated
+	 * right after the first change holds that second as its snapshot; when the
+	 * second change lands inside the same second and rewrites the stamp with
+	 * the same value, `is_not_modified()` answers true and the client keeps a
+	 * body missing the second change until some unrelated write happens to
+	 * move the stamp, which may be never.
+	 *
+	 * The stored validator is seeded ahead of the wall clock, which is what a
+	 * burst of same-second changes leaves behind. That makes the scenario
+	 * deterministic instead of a race against the suite's own speed: a stamp
+	 * that only reports the clock can never advance past the seed, whatever
+	 * the timing, while a strictly monotonic one advances on every change.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::set_status
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed_for_occurrences
+	 * @covers \GatherPress\Core\Calendar\Cache::mark_changed
+	 * @covers \GatherPress\Core\Calendar\Setup::is_not_modified
+	 *
+	 * @return void
+	 */
+	public function test_a_second_change_in_one_validator_second_is_not_answered_304(): void {
+		$post_id = $this->create_weekly_series();
+
+		update_option(
+			Calendar_Cache::LAST_MODIFIED_OPTION,
+			gmdate( 'Y-m-d H:i:s', time() + HOUR_IN_SECONDS ),
+			false
+		);
+
+		$occurrences = Occurrences::get_instance();
+
+		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
+
+		// The client revalidated after the first change and holds its stamp.
+		$held = Calendar_Cache::get_instance()->get_last_modified();
+
+		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
+
+		$moved = Calendar_Cache::get_instance()->get_last_modified();
+
+		$this->assertGreaterThan(
+			strtotime( $held . ' GMT' ),
+			strtotime( $moved . ' GMT' ),
+			'The second change must move the validator past the snapshot the client holds.'
+		);
+
+		// No stored entity tag, so the timestamp is the whole decision.
+		unset( $_SERVER['HTTP_IF_NONE_MATCH'] );
+		$_SERVER['HTTP_IF_MODIFIED_SINCE'] = gmdate( 'D, d M Y H:i:s', strtotime( $held . ' GMT' ) ) . ' GMT';
+
+		$not_modified = Calendar_Setup::get_instance()->is_not_modified( '"whatever"', $moved );
+
+		unset( $_SERVER['HTTP_IF_MODIFIED_SINCE'] );
+
+		$this->assertFalse(
+			$not_modified,
+			'A client whose snapshot predates the second change must not be told 304.'
+		);
+	}
+
+	/**
 	 * Projecting a series' occurrence rows stamps the calendar too.
 	 *
 	 * `save_post` covers the editor path, but the top-up cron writes occurrence

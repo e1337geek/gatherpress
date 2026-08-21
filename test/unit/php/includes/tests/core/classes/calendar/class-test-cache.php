@@ -454,4 +454,131 @@ class Test_Cache extends Base {
 			'An unknown taxonomy should not stamp the calendar.'
 		);
 	}
+
+	/**
+	 * A change always advances the validator past the value a client may hold.
+	 *
+	 * `Last-Modified` has one-second resolution and it is what conditional
+	 * requests are answered from. A stored validator at or ahead of the wall
+	 * clock is exactly what a burst of same-second changes leaves behind, and a
+	 * change that rewrites it with the same second answers the next
+	 * `If-Modified-Since` with a 304 for a body the change just invalidated.
+	 * The stored value ahead of the clock makes the requirement testable
+	 * without a sleep: a write that only reports the clock can never satisfy
+	 * it, whatever the timing.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_last_modified
+	 *
+	 * @return void
+	 */
+	public function test_a_change_advances_the_validator_even_when_the_clock_does_not(): void {
+		$instance = Cache::get_instance();
+
+		update_option( Cache::LAST_MODIFIED_OPTION, '2030-06-01 12:00:00', false );
+
+		$instance->mark_changed();
+
+		$first = $instance->get_last_modified();
+
+		$this->assertGreaterThan(
+			strtotime( '2030-06-01 12:00:00' ),
+			strtotime( $first ),
+			'A change must move the validator past the value a client may already hold.'
+		);
+
+		$instance->mark_changed();
+
+		$this->assertGreaterThan(
+			strtotime( $first ),
+			strtotime( $instance->get_last_modified() ),
+			'A second change must move it again, however close together the two land.'
+		);
+	}
+
+	/**
+	 * The change count builds on the row, not on a read a writer already made.
+	 *
+	 * `get_change_count() + 1` followed by a write is the interleave two
+	 * concurrent cancellations produce: both read N, both write N + 1, and one
+	 * increment is lost, so a feed request between them can serve a stale
+	 * namespace. One process cannot run two writers, so the stale first read is
+	 * forced through the option cache, which is the same seam a concurrent
+	 * writer's snapshot lives behind.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_change_count
+	 *
+	 * @return void
+	 */
+	public function test_the_change_count_allocation_survives_a_stale_read(): void {
+		global $wpdb;
+
+		$instance = Cache::get_instance();
+
+		update_option( Cache::CHANGE_COUNT_OPTION, 5, false );
+		wp_cache_set( Cache::CHANGE_COUNT_OPTION, '3', 'options' );
+
+		$instance->mark_changed();
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stored = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT option_value FROM %i WHERE option_name = %s',
+				$wpdb->options,
+				Cache::CHANGE_COUNT_OPTION
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->assertSame(
+			6,
+			(int) $stored,
+			'The allocation must increment the stored row rather than a stale read of it.'
+		);
+		$this->assertSame(
+			6,
+			$instance->get_change_count(),
+			'And the stale cached copy must be dropped, or every namespaced key keeps using it.'
+		);
+	}
+
+	/**
+	 * A revision meta write does not stamp the calendar a second time.
+	 *
+	 * `mark_changed_for_occurrences()` advances the series' revision and then
+	 * stamps once. The advance is `update_post_meta()` on a `gatherpress_`
+	 * key of a calendar post type, so without a bail the meta hooks re-enter
+	 * `mark_changed()` once per sibling, the change count moves two or three
+	 * times per change, and its docblock's "strictly increasing count of
+	 * changes" stops describing anything.
+	 *
+	 * @covers ::mark_changed_for_meta
+	 *
+	 * @return void
+	 */
+	public function test_a_revision_meta_write_does_not_stamp_the_calendar_again(): void {
+		$instance = Cache::get_instance();
+		$event_id = $this->mock->post( array( 'post_type' => Event::POST_TYPE ) )->get()->ID;
+		$count    = $instance->get_change_count();
+
+		// The production path: the revision advance writes its meta and the
+		// meta hooks call back in.
+		add_post_meta( $event_id, Revision::META_KEY, 123 );
+
+		$this->assertSame(
+			$count,
+			$instance->get_change_count(),
+			'The revision write is itself part of a stamp in progress and must not stamp again.'
+		);
+
+		// The direct call answers the same way.
+		$instance->mark_changed_for_meta( 1, $event_id, Revision::META_KEY );
+
+		$this->assertSame(
+			$count,
+			$instance->get_change_count(),
+			'A revision key reaching the meta callback directly must bail too.'
+		);
+	}
 }
