@@ -1046,6 +1046,104 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
+	 * Hard-deleting a series-wide RSVP invalidates the series cache key.
+	 *
+	 * The counterpart branch to the occurrence-scoped delete: a comment with no
+	 * occurrence term is counted only under the series key, and on a site with
+	 * no recurring events at all that is the only key that can exist.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cache::delete
+	 *
+	 * @return void
+	 */
+	public function test_hard_deleting_a_series_wide_rsvp_invalidates_the_series_cache(): void {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+		$user_id = $this->factory->user->create();
+
+		Recurrence_Query::refresh_has_recurring_events();
+
+		$comment_id = (int) ( new Rsvp( $post_id ) )->save( $user_id, 'attending' )['comment_id'];
+
+		Cache::set( $post_id, array( 'all' => array( 'count' => 99 ) ) );
+
+		$this->assertSame(
+			array( 'all' => array( 'count' => 99 ) ),
+			Cache::get( $post_id ),
+			'Failed to warm the series-wide cache entry the delete must invalidate.'
+		);
+
+		wp_delete_comment( $comment_id, true );
+
+		$this->assertNull(
+			Cache::get( $post_id ),
+			'Failed to assert hard-deleting a series-wide RSVP invalidated the series cache.'
+		);
+	}
+
+	/**
+	 * The delete drops both posts' caches when the term names a sibling post.
+	 *
+	 * After a forward split the occurrence term's own series post can
+	 * legitimately differ from the post the comment names, and the row was
+	 * counted under both identities at different times, so the invalidation
+	 * must drop the named post's series key alongside the owning post's pair.
+	 *
+	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
+	 * @covers \GatherPress\Core\Rsvp\Cache::delete
+	 *
+	 * @return void
+	 */
+	public function test_hard_delete_drops_both_posts_caches_when_the_term_names_a_sibling(): void {
+		$owner_id = $this->create_and_project();
+		$named_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$comment_id = (int) $this->factory->comment->create(
+			array(
+				'comment_post_ID' => $named_id,
+				'comment_type'    => Rsvp::COMMENT_TYPE,
+			)
+		);
+
+		Rsvp_Occurrence::get_instance()->assign( $comment_id, $owner_id, self::OCCURRENCE_A );
+
+		Cache::set( $named_id, array( 'all' => array( 'count' => 7 ) ) );
+		Cache::set( $owner_id, array( 'all' => array( 'count' => 99 ) ) );
+		Cache::set( $owner_id, array( 'all' => array( 'count' => 42 ) ), self::OCCURRENCE_A );
+
+		$this->assertSame(
+			array( 'all' => array( 'count' => 7 ) ),
+			Cache::get( $named_id ),
+			'Failed to warm the named post cache entry the delete must invalidate.'
+		);
+
+		wp_delete_comment( $comment_id, true );
+
+		$this->assertNull(
+			Cache::get( $named_id ),
+			'Failed to assert the delete invalidated the series cache of the post the comment names.'
+		);
+		$this->assertNull(
+			Cache::get( $owner_id ),
+			'Failed to assert the delete invalidated the series cache of the term-owning post.'
+		);
+		$this->assertNull(
+			Cache::get( $owner_id, self::OCCURRENCE_A ),
+			'Failed to assert the delete invalidated the occurrence cache of the term-owning post.'
+		);
+	}
+
+	/**
 	 * The list table's bulk delete leaves no orphaned term relationships.
 	 *
 	 * @covers ::assign

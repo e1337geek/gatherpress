@@ -73,9 +73,14 @@ final class Cleanup {
 	 * `Rsvp\Storage::save()` calls `wp_delete_comment()` without the force
 	 * flag, so it trashes rather than deletes and never reaches this.
 	 *
-	 * The occurrence taxonomy is only named on a site that actually has
-	 * recurring events: elsewhere there is nothing to clean up and the
-	 * lookup would be pure cost.
+	 * The delete also invalidates the RSVP caches the row was counted in.
+	 * Neither hard-delete site reaches `Rsvp\Storage::save()`, which is where
+	 * every other write invalidates, so without this the deleted responder
+	 * stayed on every warm roster for the length of `Cache::CACHE_EXPIRATION`,
+	 * shared across all visitors under a persistent object cache. The
+	 * occurrence identity is read from the comment's own term, and it has to be
+	 * read here, before the relationships below are removed; the hook fires
+	 * with no ambient occurrence context to fall back on.
 	 *
 	 * @since 0.36.0
 	 *
@@ -89,6 +94,8 @@ final class Cleanup {
 			return;
 		}
 
+		$occurrence = Rsvp_Occurrence::occurrence_for_comment( (int) $comment_id );
+
 		$taxonomies = array( Status::TAXONOMY, Provider::TAXONOMY );
 
 		if ( Recurrence_Query::site_has_recurring_events() ) {
@@ -96,6 +103,28 @@ final class Cleanup {
 		}
 
 		wp_delete_object_term_relationships( (int) $comment_id, $taxonomies );
+
+		$post_id = (int) $comment->comment_post_ID;
+
+		if ( null === $occurrence ) {
+			// A series-wide RSVP is counted only under the series key. There
+			// is no ambient occurrence context on any real hard-delete path,
+			// so the null identifier resolves to nothing and only that key
+			// drops; over-invalidating an occurrence key would be harmless
+			// anyway.
+			Cache::delete( $post_id );
+
+			return;
+		}
+
+		// The term's own series post is the one the row was counted under,
+		// and after a forward split it can legitimately differ from the post
+		// the comment names, so both are dropped when they disagree.
+		Cache::delete( (int) $occurrence['series_post_id'], (string) $occurrence['recurrence_id'] );
+
+		if ( (int) $occurrence['series_post_id'] !== $post_id ) {
+			Cache::delete( $post_id );
+		}
 	}
 
 	/**
