@@ -115,11 +115,9 @@ final class Rsvp_Occurrence {
 	 * occurrence page onto the requested date.
 	 *
 	 * The request arm keeps its widened-series membership check, and that
-	 * admission is deliberate: once the forward split moves an occurrence
-	 * onto a sibling post, the context legitimately holds a row whose
-	 * `series_post_id` is not the post the request named. The identity
-	 * comparison stays ahead of `resolve_post_ids()`, so a one-post series never
-	 * reaches the filter. That is the whole of today's traffic.
+	 * admission is deliberate, for the split-series reason given above. The
+	 * identity comparison stays ahead of `resolve_post_ids()`, so a one-post
+	 * series never reaches the filter. That is the whole of today's traffic.
 	 *
 	 * @since 0.36.0
 	 *
@@ -171,16 +169,14 @@ final class Rsvp_Occurrence {
 	/**
 	 * Resolve just the identifier of the occurrence the request is scoped to.
 	 *
-	 * The thin accessor for the one consumer that needs the identifier without
-	 * the post it belongs to. That consumer is `Rsvp\Cache`, whose
-	 * occurrence-scoped transient key is deliberately built from the post the
-	 * caller named. Its sibling
-	 * call site, `Rsvp\Token`, has no request context at all and passes the
-	 * identifier explicitly, so keying the implicit path off the occurrence's
-	 * own post would make the two disagree about which transient to drop.
+	 * The thin accessor for the consumers that need the identifier without the
+	 * post it belongs to: `block_context()` publishes it in the client's
+	 * composite state key, and `Blocks\Rsvp_Form::occurrence_input()` emits it
+	 * as the classic form's hidden field.
 	 *
-	 * Anything composing an occurrence **term slug** must use
-	 * `current_occurrence()` instead. Its docblock explains why.
+	 * Anything that also needs the owning post, in particular anything
+	 * composing an occurrence **term slug**, must use `current_occurrence()`
+	 * instead. Its docblock explains why.
 	 *
 	 * @since 0.36.0
 	 *
