@@ -1215,39 +1215,148 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for `add_rewrite_rule_for_post_type` bailing on a post type
-	 * with its query var disabled.
+	 * Coverage for a supporting post type registered with `query_var => false`.
+	 * WordPress still gives such a post type pretty permalinks, routed through
+	 * the `post_type` and `name` pair rather than a named query var, and
+	 * `Context::permalink()` still publishes occurrence URLs for it. The
+	 * occurrence rule must route those URLs through the same fallback pair, or
+	 * the plugin advertises URLs with no rule that can resolve them.
 	 *
 	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::parse_request
+	 * @covers ::resolve_post_id_from_query_vars
 	 *
 	 * @return void
 	 */
-	public function test_add_rewrite_rule_for_post_type_bails_when_query_var_disabled(): void {
+	public function test_occurrence_url_routes_for_a_post_type_without_query_var(): void {
+		global $wp_rewrite;
+
 		register_post_type(
-			'gp_test_no_qv',
+			'gp_no_qv_event',
 			array(
 				'public'    => true,
-				'rewrite'   => array( 'slug' => 'gp-test-no-qv' ),
+				'supports'  => array( 'title', 'editor', 'gatherpress-event-date' ),
+				'rewrite'   => array(
+					'slug'       => 'gp-no-qv',
+					'with_front' => false,
+				),
 				'query_var' => false,
 			)
 		);
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
 
-		global $wp_rewrite;
-		$before = $wp_rewrite->extra_rules_top;
-
-		Utility::invoke_hidden_method(
-			Rewrite::get_instance(),
-			'add_rewrite_rule_for_post_type',
-			array( 'gp_test_no_qv' )
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => 'gp_no_qv_event',
+				'post_name'   => 'no-query-var-event',
+				'post_status' => 'publish',
+			)
 		);
 
+		$anchor_start  = $this->project_relative_daily_series( $post_id, 5, 7, 3 );
+		$recurrence_id = Occurrences::recurrence_id( $anchor_start );
+		$url           = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
+
+		$this->assertStringContainsString(
+			'/gp-no-qv/no-query-var-event/',
+			$url,
+			'Fixture setup: the occurrence URL should be composed under the post type\'s rewrite slug.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse( is_404(), 'A query-var-disabled post type\'s occurrence URL must not 404.' );
 		$this->assertSame(
-			$before,
-			$wp_rewrite->extra_rules_top,
-			'No rewrite rule should be added for a post type with its query var disabled.'
+			$post_id,
+			get_queried_object_id(),
+			'A query-var-disabled post type\'s occurrence URL should resolve to its own post.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'A query-var-disabled post type\'s occurrence URL should round-trip to its own recurrence ID.'
 		);
 
-		unregister_post_type( 'gp_test_no_qv' );
+		unregister_post_type( 'gp_no_qv_event' );
+	}
+
+	/**
+	 * Coverage for the hierarchical half of the `query_var => false` fallback
+	 * pair. WordPress routes a hierarchical post type without a query var
+	 * through `post_type` and `pagename` rather than `name`, so the fallback
+	 * target and the request resolution must both pick the key the post
+	 * type's own permastruct uses.
+	 *
+	 * @covers ::add_rewrite_rule_for_post_type
+	 * @covers ::parse_request
+	 * @covers ::resolve_post_id_from_query_vars
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_routes_for_a_hierarchical_post_type_without_query_var(): void {
+		global $wp_rewrite;
+
+		register_post_type(
+			'gp_no_qv_hier',
+			array(
+				'public'       => true,
+				'hierarchical' => true,
+				'supports'     => array( 'title', 'editor', 'page-attributes', 'gatherpress-event-date' ),
+				'rewrite'      => array(
+					'slug'       => 'gp-no-qv-hier',
+					'with_front' => false,
+				),
+				'query_var'    => false,
+			)
+		);
+		Rewrite::get_instance()->add_rewrite_rules();
+		$wp_rewrite->flush_rules();
+
+		$parent_id = $this->factory->post->create(
+			array(
+				'post_type'   => 'gp_no_qv_hier',
+				'post_name'   => 'quiet-parent',
+				'post_status' => 'publish',
+			)
+		);
+		$child_id  = $this->factory->post->create(
+			array(
+				'post_type'   => 'gp_no_qv_hier',
+				'post_name'   => 'quiet-child',
+				'post_parent' => $parent_id,
+				'post_status' => 'publish',
+			)
+		);
+
+		$anchor_start  = $this->project_relative_daily_series( $child_id, 5, 7, 3 );
+		$recurrence_id = Occurrences::recurrence_id( $anchor_start );
+		$url           = Rewrite::get_occurrence_url( $child_id, $recurrence_id );
+
+		$this->assertStringContainsString(
+			'/gp-no-qv-hier/quiet-parent/quiet-child/',
+			$url,
+			'Fixture setup: the occurrence URL should be composed under the child post\'s hierarchical path.'
+		);
+
+		$this->go_to( $url );
+
+		$this->assertFalse(
+			is_404(),
+			'A hierarchical query-var-disabled post type\'s occurrence URL must not 404.'
+		);
+		$this->assertSame(
+			$child_id,
+			get_queried_object_id(),
+			'A hierarchical query-var-disabled occurrence URL should resolve to the child post.'
+		);
+		$this->assertSame(
+			$recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'A hierarchical query-var-disabled occurrence URL should round-trip to its own recurrence ID.'
+		);
+
+		unregister_post_type( 'gp_no_qv_hier' );
 	}
 
 	/**
