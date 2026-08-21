@@ -472,7 +472,12 @@ final class Rest_Api {
 	 * Read the event post ID a request names, whichever parameter carries it.
 	 *
 	 * The RSVP form route inherits `comment_post_ID` from the comment form it
-	 * replaced; every other RSVP route uses `post_id`.
+	 * replaced; every other RSVP route uses `post_id`. The two are mutually
+	 * exclusive per route, so the fallback fires whenever `post_id` is absent
+	 * or names no post rather than only when it is absent: `get_param()` reads
+	 * undeclared parameters too, and a stray `post_id` of zero posted alongside
+	 * the form (a theme's hidden field, a stale embed) must not suppress the
+	 * `comment_post_ID` the route actually declares.
 	 *
 	 * @since 0.36.0
 	 *
@@ -481,7 +486,9 @@ final class Rest_Api {
 	 * @return int The event post ID, or 0 when the request names none.
 	 */
 	private function request_post_id( WP_REST_Request $request ): int {
-		return (int) ( $request->get_param( 'post_id' ) ?? $request->get_param( 'comment_post_ID' ) );
+		$post_id = (int) $request->get_param( 'post_id' );
+
+		return ( 0 === $post_id ) ? (int) $request->get_param( 'comment_post_ID' ) : $post_id;
 	}
 
 	/**
