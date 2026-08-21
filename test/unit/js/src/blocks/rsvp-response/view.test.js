@@ -278,7 +278,7 @@ describe( 'rsvp-response view per-occurrence keying', () => {
 
 		// Two passes, and the second is the whole test. On the first,
 		// `processRsvpDropdown` reads the row's own `data-counts`, writes it
-		// into the store, and reads it straight back in the same invocation --
+		// into the store, and reads it straight back in the same invocation,
 		// so the per-row vector comes from the DOM read and holds even when
 		// every row shares one store key. The first pass then *deletes* that
 		// attribute, so every later re-run renders from

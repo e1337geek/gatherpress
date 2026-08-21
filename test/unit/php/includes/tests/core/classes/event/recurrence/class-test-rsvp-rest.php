@@ -644,7 +644,8 @@ class Test_Rsvp_Rest extends Base {
 	 * not: `find()` returns null when no RSVP exists, `->comment->comment_ID`
 	 * casts that to `0`, and `wp_get_object_terms( 0, … )` returns `array()`.
 	 * That is identical to the expected value, so a refused write left it green
-	 * (rule 3a #8). The comment ID is asserted real first, and the RSVP is asserted
+	 * and the assertion could not fail for the reason it names. The comment ID
+	 * is asserted real first, and the RSVP is asserted
 	 * readable series-wide, which is the behavior "series-wide RSVP" actually
 	 * names rather than merely the absence of a term.
 	 *

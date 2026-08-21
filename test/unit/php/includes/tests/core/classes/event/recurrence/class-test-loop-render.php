@@ -1341,8 +1341,11 @@ class Test_Loop_Render extends Base {
 	/**
 	 * Coverage for the `timezone` column travelling on the result object.
 	 *
-	 * `timezone` is one of C-3's five columns and, unlike the four datetime
-	 * columns, it has a fallback that normally agrees with it: when the
+	 * `timezone` is one of the five occurrence columns a result object carries,
+	 * and the subsystem's standing rule is that an occurrence's time of day
+	 * comes from the occurrence record and never from the series anchor. Unlike
+	 * the four datetime columns it has a fallback that normally agrees with it:
+	 * when the
 	 * occurrence row's nullable `timezone` is empty, `occurrence_value()` reads
 	 * the series' own `gatherpress_timezone` meta. Every other fixture in this
 	 * suite gives the series and its occurrences the same timezone, so the
@@ -1678,8 +1681,8 @@ class Test_Loop_Render extends Base {
 	 * green. The partial revert is the dangerous shape: the RSVP button keys on
 	 * `42` while the counts beside it key on `42:20260823T180000`, so the button
 	 * collapses across the series, the counts stay right, and nothing notices.
-	 * The online-event-link emitter is the highest-consequence of the four --
-	 * that block reveals a private meeting URL.
+	 * The online-event-link emitter is the highest-consequence of the four.
+	 * That block reveals a private meeting URL.
 	 *
 	 * Every emitter renders inside the same loop iteration, so the vector each
 	 * one publishes is compared against the same loop order.
