@@ -115,9 +115,15 @@ final class Context {
 	/**
 	 * Request-scoped memo of `resolve_in_series()` results.
 	 *
-	 * Keyed `{post_id}:{recurrence_id}`. Values are the resolved row or null,
-	 * so a miss is remembered as cheaply as a hit. A fabricated identifier
-	 * costs one query per request rather than one per lookup.
+	 * Keyed `{blog_id}:{post_id}:{recurrence_id}`. Values are the resolved row
+	 * or null, so a miss is remembered as cheaply as a hit. A fabricated
+	 * identifier costs one query per request rather than one per lookup.
+	 *
+	 * The blog ID leads the key because the other two halves are blog-local: a
+	 * request that resolves on one blog and then calls `switch_to_blog()`
+	 * would otherwise be handed the first blog's row on the second blog, and
+	 * the leaked `series_post_id` would feed routing, authorization, term
+	 * slugs and cache keys there as a foreign owner.
 	 *
 	 * @since 0.36.0
 	 * @var array<string, array|null>
@@ -252,8 +258,9 @@ final class Context {
 	 * returns without touching the occurrence table, so a request carrying a
 	 * fabricated `recurrence_id` costs nothing there.
 	 *
-	 * The result is memoized per `(post_id, recurrence_id)` for the life of the
-	 * request. A REST dispatch resolves the same pair twice, once in the
+	 * The result is memoized per `(blog_id, post_id, recurrence_id)` for the
+	 * life of the request, blog first because the other two halves are
+	 * blog-local. A REST dispatch resolves the same pair twice, once in the
 	 * validate callback and once on entry. The two stay separate
 	 * deliberately: WordPress runs validate callbacks inside
 	 * `has_valid_params()`, which is *before* `permission_callback`, so
@@ -277,7 +284,7 @@ final class Context {
 			return null;
 		}
 
-		$key = sprintf( '%d:%s', $post_id, $recurrence_id );
+		$key = sprintf( '%d:%d:%s', get_current_blog_id(), $post_id, $recurrence_id );
 
 		if ( ! array_key_exists( $key, self::$resolved ) ) {
 			self::$resolved[ $key ] = Occurrences::get_instance()->find_in_series(
