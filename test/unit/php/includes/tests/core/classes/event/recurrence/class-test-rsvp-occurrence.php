@@ -839,49 +839,46 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
-	 * On a non-recurring site the cleanup never names the occurrence taxonomy.
+	 * A historical occurrence term is cleaned even when the site flag is off.
+	 *
+	 * `gatherpress_has_recurring_events` describes the current occurrence-table
+	 * state, not whether a comment already carries an occurrence relationship.
+	 * A site can remove its last recurrence, flip the flag to `0`, and still
+	 * hold RSVPs stamped while the series existed; gating the destructive
+	 * cleanup on the flag orphans those rows forever. The fixture reaches the
+	 * real flag-0 state through the production rule-removal path rather than by
+	 * forcing the option, so the recompute itself is part of what is driven.
 	 *
 	 * @covers \GatherPress\Core\Rsvp\Cleanup::delete_term_relationships
 	 *
 	 * @return void
 	 */
-	public function test_delete_term_relationships_skips_the_occurrence_taxonomy_off_a_recurring_site(): void {
-		global $wpdb;
+	public function test_hard_delete_cleans_a_historical_occurrence_term_when_the_flag_is_off(): void {
+		$post_id    = $this->create_and_project();
+		$user_id    = $this->factory->user->create();
+		$comment_id = (int) $this->save_in_occurrence( $post_id, self::OCCURRENCE_A, $user_id )['comment_id'];
 
-		$post_id = $this->factory->post->create(
-			array(
-				'post_type'   => Event::POST_TYPE,
-				'post_status' => 'publish',
-			)
+		Context::get_instance()->clear();
+
+		// Remove the rule the way a save with an emptied blob does: the mirrors
+		// are cleared and the flag is recomputed from storage.
+		update_post_meta( $post_id, Meta::META_KEY, '' );
+		Meta::get_instance()->set_recurrence( $post_id );
+		Meta::get_instance()->resolve_pending_recurrence();
+
+		$this->assertSame(
+			'0',
+			get_option( Recurrence_Query::HAS_RECURRING_OPTION ),
+			'Failed to arrange a genuine flag-0 site; the rule removal did not recompute the option.'
 		);
-		$user_id = $this->factory->user->create();
-
-		Recurrence_Query::refresh_has_recurring_events();
-
-		$comment_id = (int) ( new Rsvp( $post_id ) )->save( $user_id, 'attending' )['comment_id'];
-
-		$query_count_before = count( $wpdb->queries );
+		$this->assertSame(
+			1,
+			$this->relationship_count( $comment_id, Rsvp_Occurrence::TAXONOMY ),
+			'Failed to arrange a historical occurrence relationship surviving into the flag-0 state.'
+		);
 
 		wp_delete_comment( $comment_id, true );
 
-		$queries_since = array_slice( $wpdb->queries, $query_count_before );
-
-		$this->assertNotEmpty(
-			$queries_since,
-			'Failed to capture any queries; SAVEQUERIES must be on for this assertion to mean anything.'
-		);
-		$this->assertSame(
-			array(),
-			array_values(
-				array_filter(
-					$queries_since,
-					static function ( array $query ): bool {
-						return str_contains( $query[0], Rsvp_Occurrence::TAXONOMY );
-					}
-				)
-			),
-			'Failed to assert a non-recurring site never queries the occurrence taxonomy on delete.'
-		);
 		$this->assertSame(
 			array(
 				Status::TAXONOMY          => 0,
@@ -889,7 +886,7 @@ class Test_Rsvp_Occurrence extends Base {
 				Rsvp_Occurrence::TAXONOMY => 0,
 			),
 			$this->all_relationship_counts( $comment_id ),
-			'Failed to assert the pre-existing status and provider orphans are cleaned on a non-recurring site too.'
+			'Failed to assert a flag-0 hard delete removed every relationship, the historical occurrence term included.'
 		);
 	}
 
