@@ -1556,6 +1556,179 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Move one occurrence row's datetimes, in place, without touching its identity.
+	 *
+	 * The row keeps its `recurrence_id`, because identity never derives from the
+	 * stored datetimes; only the columns the skip-past comparison reads move.
+	 * Both the GMT and the local pair are written so the row stays internally
+	 * consistent.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int               $post_id       Post that owns the row.
+	 * @param string            $recurrence_id The row's identifier.
+	 * @param DateTimeImmutable $start_utc     New start, in UTC.
+	 * @param DateTimeImmutable $end_utc       New end, in UTC.
+	 *
+	 * @return void
+	 */
+	protected function reschedule_occurrence(
+		int $post_id,
+		string $recurrence_id,
+		DateTimeImmutable $start_utc,
+		DateTimeImmutable $end_utc
+	): void {
+		global $wpdb;
+
+		$local = new DateTimeZone( 'America/New_York' );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->update(
+			sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+			array(
+				'datetime_start'     => $start_utc->setTimezone( $local )->format( 'Y-m-d H:i:s' ),
+				'datetime_start_gmt' => $start_utc->format( 'Y-m-d H:i:s' ),
+				'datetime_end'       => $end_utc->setTimezone( $local )->format( 'Y-m-d H:i:s' ),
+				'datetime_end_gmt'   => $end_utc->format( 'Y-m-d H:i:s' ),
+			),
+			array(
+				'series_post_id' => $post_id,
+				'recurrence_id'  => $recurrence_id,
+			)
+		);
+	}
+
+	/**
+	 * A lapsed fragment's bare URL lands on the occurrence happening right now.
+	 *
+	 * The forward sibling's first occurrence started an hour ago and runs for
+	 * another hour, and a later occurrence follows it. The visitor opening the
+	 * lapsed origin's bare URL is on their way to the event currently in
+	 * progress, so skipping it and redirecting to the later date sends them a
+	 * week past the room they are looking for. The repository defines upcoming
+	 * inclusively elsewhere: `Occurrences::select_bounded_occurrence()` bounds
+	 * on `datetime_end_gmt`, and this redirect must agree with it.
+	 *
+	 * The fixture is chosen so the right answer and the wrong answer differ:
+	 * a skip-past comparison reading the start would answer with the later
+	 * occurrence's URL, and the assertion names the in-progress one.
+	 *
+	 * @covers ::maybe_follow_series
+	 * @covers ::next_upcoming_in_series
+	 *
+	 * @return void
+	 */
+	public function test_a_lapsed_fragments_bare_url_redirects_to_the_occurrence_in_progress(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		$now = new DateTimeImmutable( current_time( 'mysql', true ), new DateTimeZone( 'UTC' ) );
+
+		$this->reschedule_occurrence(
+			$forward,
+			$split_at,
+			$now->modify( '-1 hour' ),
+			$now->modify( '+1 hour' )
+		);
+
+		$expected = Rewrite::get_occurrence_url( $forward, $split_at );
+
+		$this->assertNotEmpty( $expected, 'Fixture setup: the in-progress occurrence must have a URL.' );
+
+		$this->assert_redirect_to(
+			$expected,
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			},
+			301
+		);
+	}
+
+	/**
+	 * An occurrence in progress wins over a later one.
+	 *
+	 * Direct coverage for the helper's skip-past bound, invoked directly
+	 * because xdebug does not trace a protected helper called through a short
+	 * same-class delegation (see the "Extracted same-class helpers" rule in
+	 * `AGENTS.md`). The sibling row that started an hour ago and has an hour
+	 * left must be the answer while a later row exists to be wrongly preferred.
+	 *
+	 * @covers ::next_upcoming_in_series
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_in_series_returns_the_occurrence_in_progress(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		$now = new DateTimeImmutable( current_time( 'mysql', true ), new DateTimeZone( 'UTC' ) );
+
+		$this->reschedule_occurrence(
+			$forward,
+			$split_at,
+			$now->modify( '-1 hour' ),
+			$now->modify( '+1 hour' )
+		);
+
+		$identity = Utility::invoke_hidden_method(
+			Rewrite::get_instance(),
+			'next_upcoming_in_series',
+			array( $post_id )
+		);
+
+		$this->assertNotNull( $identity, 'A series with an occurrence in progress has a row to follow.' );
+		$this->assertSame(
+			$split_at,
+			$identity->recurrence_id,
+			'An occurrence that has started but not finished is the series\' next row, not the one after it.'
+		);
+	}
+
+	/**
+	 * An occurrence whose end is exactly now is still upcoming.
+	 *
+	 * The boundary of the inclusive bound: `datetime_end_gmt >= now` keeps the
+	 * row when the two are equal. The clock cannot be frozen under
+	 * `current_time()`, so the arrangement retries until the helper provably
+	 * ran within the same second the row's end names, making the equality the
+	 * case actually exercised rather than a case a ticking clock skipped over.
+	 *
+	 * @covers ::next_upcoming_in_series
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_in_series_keeps_an_occurrence_ending_exactly_now(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		$attempts = 0;
+
+		do {
+			$now_string = current_time( 'mysql', true );
+			$now        = new DateTimeImmutable( $now_string, new DateTimeZone( 'UTC' ) );
+
+			$this->reschedule_occurrence( $forward, $split_at, $now->modify( '-2 hours' ), $now );
+
+			$identity = Utility::invoke_hidden_method(
+				Rewrite::get_instance(),
+				'next_upcoming_in_series',
+				array( $post_id )
+			);
+
+			++$attempts;
+		} while ( current_time( 'mysql', true ) !== $now_string && $attempts < 10 );
+
+		$this->assertSame(
+			$now_string,
+			current_time( 'mysql', true ),
+			'Fixture setup: the helper must have run within the second the row ends on.'
+		);
+		$this->assertNotNull( $identity, 'An occurrence ending exactly now must still be followed.' );
+		$this->assertSame(
+			$split_at,
+			$identity->recurrence_id,
+			'The boundary is inclusive: an end equal to now is not in the past.'
+		);
+	}
+
+	/**
 	 * A post that no longer exists is readable by nobody.
 	 *
 	 * The arm a live fixture cannot reach: an occurrence row whose owner has
