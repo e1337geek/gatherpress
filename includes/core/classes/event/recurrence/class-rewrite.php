@@ -5,7 +5,10 @@
  * Every occurrence of a series gets its own URL, so an attendee can
  * link a friend to the specific date they are attending. The URL is the
  * event's own permalink plus a segment identifying the occurrence's start:
- * `/{event-slug}/{postname}/{Ymd\THis}/`.
+ * `/{event-slug}/{postname}/{Ymd\THis}/`. On a site whose permalinks are
+ * query strings, the identifier travels as the `gatherpress_occurrence`
+ * query variable instead, because a query-string permalink has no path to
+ * append a segment to.
  *
  * The event post type's rewrite base is a **setting**, read from the
  * registered post type object at runtime (`WP_Post_Type::$rewrite['slug']`),
@@ -459,6 +462,17 @@ final class Rewrite {
 
 		if ( false === $permalink ) {
 			return '';
+		}
+
+		// A query-string permalink appears when the site has no permalink
+		// structure at all, or when the rewrite rules have not been
+		// regenerated for this post type yet. Appending a path segment there
+		// would push the identifier into the event query value, producing
+		// `?gatherpress_event=slug/{id}/`, which identifies no post. The
+		// occurrence rides as its own query variable instead, the same
+		// composition `Calendar::get_endpoint_url()` uses for its endpoints.
+		if ( str_contains( $permalink, '?' ) ) {
+			return add_query_arg( Context::QUERY_VAR, $recurrence_id, $permalink );
 		}
 
 		return trailingslashit( $permalink ) . $recurrence_id . '/';
