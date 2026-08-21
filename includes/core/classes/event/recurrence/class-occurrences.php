@@ -759,7 +759,11 @@ final class Occurrences {
 	 * is therefore treated as maximally stale rather than as "not a series".
 	 *
 	 * Excluded structurally, in SQL, so none of the following is ever a
-	 * candidate: a post with no recurrence rule at all, identified by an empty
+	 * candidate: a post whose status is in `Query::INACTIVE_POST_STATUSES`,
+	 * because WordPress keeps post meta on trash and a meta-only candidate
+	 * query would re-project a trashed series on every sweep for as long as
+	 * any other live recurrence keeps the sweep enabled; a post with no
+	 * recurrence rule at all, identified by an empty
 	 * `end_type` mirror and kept in parity with `is_series_stale()`'s own
 	 * empty-end-type branch, since the two predicates disagreeing would
 	 * silently make an unrecognized/blank end type a permanent hourly
@@ -812,9 +816,13 @@ final class Occurrences {
 		// `incompatible_sql_modes` back in would silently get an empty
 		// candidate list forever). Aliasing costs nothing and is correct
 		// under every SQL mode.
+		$status_placeholders = implode( ', ', array_fill( 0, count( Query::INACTIVE_POST_STATUSES ), '%s' ) );
+
 		$sql = 'SELECT end_type_meta.post_id AS series_post_id,'
 			. ' end_type_meta.meta_value AS et_value, until_meta.meta_value AS until_value'
 			. ' FROM %i end_type_meta'
+			. ' INNER JOIN %i live_post ON live_post.ID = end_type_meta.post_id'
+			. " AND live_post.post_status NOT IN ( {$status_placeholders} )"
 			. ' LEFT JOIN %i until_meta'
 			. ' ON until_meta.post_id = end_type_meta.post_id AND until_meta.meta_key = %s'
 			. ' LEFT JOIN %i o ON o.series_post_id = end_type_meta.post_id'
@@ -839,18 +847,23 @@ final class Occurrences {
 		$rows = $wpdb->get_col(
 			$wpdb->prepare(
 				$sql,
-				$wpdb->postmeta,
-				$wpdb->postmeta,
-				'gatherpress_recurrence_until',
-				$table,
-				'gatherpress_recurrence_end_type',
-				Rule::END_TYPE_COUNT,
-				'',
-				$cutoff,
-				Rule::END_TYPE_UNTIL,
-				'',
-				$today,
-				$limit
+				array_merge(
+					array( $wpdb->postmeta, $wpdb->posts ),
+					Query::INACTIVE_POST_STATUSES,
+					array(
+						$wpdb->postmeta,
+						'gatherpress_recurrence_until',
+						$table,
+						'gatherpress_recurrence_end_type',
+						Rule::END_TYPE_COUNT,
+						'',
+						$cutoff,
+						Rule::END_TYPE_UNTIL,
+						'',
+						$today,
+						$limit,
+					)
+				)
 			)
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching

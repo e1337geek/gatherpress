@@ -66,6 +66,26 @@ final class Query {
 	const FREQUENCY_META_KEY = 'gatherpress_recurrence_frequency';
 
 	/**
+	 * Post statuses that never count as a live recurring event.
+	 *
+	 * WordPress retains post meta on trash, so a status-blind recompute keeps
+	 * counting a trashed series and the sweep never learns the last recurrence
+	 * is gone. Trash and auto-draft are excluded because neither is a live
+	 * authoring state. Every other status, drafts and custom statuses
+	 * included, deliberately stays active: their projections are still
+	 * maintained by the sweep, and the read path applies its own `publish`
+	 * filter separately.
+	 *
+	 * Shared with `Occurrences::select_series_needing_top_up()`, so the flag
+	 * recompute and the top-up candidate selector always agree on what counts
+	 * as live.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	const INACTIVE_POST_STATUSES = array( 'trash', 'auto-draft' );
+
+	/**
 	 * Class constructor.
 	 *
 	 * This method initializes the object and sets up necessary hooks.
@@ -234,6 +254,11 @@ final class Query {
 	 * `'0'`, which would hide every recurring event from every query on the
 	 * site.
 	 *
+	 * The meta count is joined to `wp_posts` and scoped away from
+	 * `INACTIVE_POST_STATUSES`, because WordPress keeps post meta on trash:
+	 * without the join, trashing the site's last recurring event leaves the
+	 * frequency mirror in `wp_postmeta` and the flag stuck at `'1'` forever.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
@@ -241,16 +266,29 @@ final class Query {
 	public static function refresh_has_recurring_events(): void {
 		global $wpdb;
 
+		$status_placeholders = implode( ', ', array_fill( 0, count( self::INACTIVE_POST_STATUSES ), '%s' ) );
+
+		$sql = 'SELECT 1 FROM %i frequency_meta'
+			. ' INNER JOIN %i live_post ON live_post.ID = frequency_meta.post_id'
+			. " WHERE frequency_meta.meta_key = %s AND frequency_meta.meta_value != ''"
+			. " AND live_post.post_status NOT IN ( {$status_placeholders} )"
+			. ' LIMIT 1';
+
 		// A lifecycle-triggered recompute, not a read path query; caching it
 		// would only cache the flag it is itself in the process of producing.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from %i/%s placeholders only.
 		$has = (bool) $wpdb->get_var(
 			$wpdb->prepare(
-				"SELECT 1 FROM %i WHERE meta_key = %s AND meta_value != '' LIMIT 1",
-				$wpdb->postmeta,
-				self::FREQUENCY_META_KEY
+				$sql,
+				array_merge(
+					array( $wpdb->postmeta, $wpdb->posts, self::FREQUENCY_META_KEY ),
+					self::INACTIVE_POST_STATUSES
+				)
 			)
 		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
 		update_option( self::HAS_RECURRING_OPTION, $has ? '1' : '0', true );
 	}
