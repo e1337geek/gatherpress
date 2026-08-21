@@ -260,7 +260,11 @@ final class Rewrite {
 	 * canonical address and link equity follows the row. This is not in
 	 * tension with the 404-rather-than-301 rule above: that rule is about an
 	 * identifier that exists nowhere, and this is about one that still
-	 * exists, on a post of the same series.
+	 * exists, on a post of the same series. The redirect is gated by
+	 * `can_follow_to()` exactly as the bare-series forwarding is: a sibling
+	 * the visitor may not read is answered with the same non-revealing 404 a
+	 * nonexistent occurrence gets, because the redirect's Location header
+	 * would otherwise disclose the private post's existence and slug.
 	 *
 	 * The "a site with no recurring events pays nothing" guarantee is enforced
 	 * on the bare-series branch alone, because that branch is the one every
@@ -302,23 +306,52 @@ final class Rewrite {
 		);
 
 		if ( null === $row ) {
-			$wp->query_vars['error'] = '404';
-
-			// redirect_canonical() otherwise finds the series post by its
-			// `name` query var, decides the request is "close enough" to a
-			// real permalink, and 301s to the bare series URL instead of
-			// letting the 404 stand. That silently turns a stale or hand-typed
-			// occurrence link into "renders the series at its anchor date",
-			// exactly what a miss must not do.
-			add_filter( 'redirect_canonical', '__return_false' );
+			$this->refuse_with_404( $wp );
 		} elseif ( (int) $row['series_post_id'] !== $post_id ) {
-			wp_safe_redirect( self::get_occurrence_url( (int) $row['series_post_id'], $recurrence_id ), 301 );
-			// The PMC test harness intercepts wp_safe_redirect before this line runs.
-			// phpcs:ignore Squiz.Commenting.InlineComment.InvalidEndChar -- PHPUnit annotation.
-			// @codeCoverageIgnoreStart
-			exit;
-			// @codeCoverageIgnoreEnd
+			$owner_id = (int) $row['series_post_id'];
+
+			if ( $this->can_follow_to( $owner_id ) ) {
+				wp_safe_redirect( self::get_occurrence_url( $owner_id, $recurrence_id ), 301 );
+				// The PMC test harness intercepts wp_safe_redirect before this line runs.
+				// phpcs:ignore Squiz.Commenting.InlineComment.InvalidEndChar -- PHPUnit annotation.
+				// @codeCoverageIgnoreStart
+				exit;
+				// @codeCoverageIgnoreEnd
+			} else {
+				// The same guard the bare-series branch applies before following
+				// a sibling: a 301 naming a post the visitor may not read would
+				// disclose the private post's existence and slug. An unreadable
+				// owner is answered exactly as a nonexistent occurrence is.
+				$this->refuse_with_404( $wp );
+			}
 		}
+	}
+
+	/**
+	 * Answer the request with a non-revealing 404.
+	 *
+	 * Shared by the two refusals of the occurrence-segment branch: an
+	 * identifier that resolves nowhere in the series, and an identifier whose
+	 * owner the visitor may not read. Both must answer identically, or the
+	 * difference between them becomes an existence oracle for the unreadable
+	 * owner.
+	 *
+	 * `redirect_canonical()` otherwise finds the series post by its `name`
+	 * query var, decides the request is "close enough" to a real permalink,
+	 * and 301s to the bare series URL instead of letting the 404 stand. That
+	 * silently turns a stale or hand-typed occurrence link into "renders the
+	 * series at its anchor date", exactly what a miss must not do.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP $wp The main WP request object, mutated in place.
+	 *
+	 * @return void
+	 */
+	protected function refuse_with_404( WP $wp ): void {
+		$wp->query_vars['error'] = '404';
+
+		add_filter( 'redirect_canonical', '__return_false' );
 	}
 
 	/**

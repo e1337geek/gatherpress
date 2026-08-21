@@ -1037,6 +1037,37 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Direct coverage for the shared 404 refusal helper.
+	 *
+	 * Invoked directly because xdebug does not trace a protected helper called
+	 * through a short same-class delegation from `parse_request()` (see the
+	 * "Extracted same-class helpers" rule in `AGENTS.md`), even though both
+	 * refusal paths run it through real requests in the tests above.
+	 *
+	 * @covers ::refuse_with_404
+	 *
+	 * @return void
+	 */
+	public function test_refuse_with_404_sets_the_error_and_neutralizes_canonical(): void {
+		$wp             = new WP();
+		$wp->query_vars = array();
+
+		Utility::invoke_hidden_method( Rewrite::get_instance(), 'refuse_with_404', array( $wp ) );
+
+		$this->assertSame(
+			'404',
+			$wp->query_vars['error'],
+			'The refusal must mark the request a 404.'
+		);
+		$this->assertNotFalse(
+			has_filter( 'redirect_canonical', '__return_false' ),
+			'The refusal must suppress canonical redirection so the 404 stands.'
+		);
+
+		remove_filter( 'redirect_canonical', '__return_false' );
+	}
+
+	/**
 	 * Visiting a recurring series at its bare permalink, with no occurrence
 	 * segment, resolves to the next upcoming occurrence.
 	 *
