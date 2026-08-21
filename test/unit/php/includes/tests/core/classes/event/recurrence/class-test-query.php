@@ -698,6 +698,60 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * Coverage for the other compact field shape, `'fields' => 'id=>parent'`.
+	 *
+	 * `WP_Query` returns before `the_posts` for both compact shapes, so
+	 * occurrence identity cannot travel with either. An expanded id=>parent
+	 * result set is therefore a repeated, identity-less series ID that burns
+	 * `posts_per_page`, and it diverges from what the same query returns as
+	 * ids. The requirement is that both compact shapes return the same
+	 * unexpanded post list, with no occurrence join in the SQL.
+	 *
+	 * @covers ::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_id_parent_fields_query_is_never_expanded_over_occurrences(): void {
+		$this->build_scenario();
+
+		$ids = array_map( 'intval', $this->run_event_query( 'upcoming', array( 'fields' => 'ids' ) )->posts );
+
+		$request = '';
+		$capture = static function ( string $sql ) use ( &$request ): string {
+			$request = $sql;
+
+			return $sql;
+		};
+
+		add_filter( 'posts_request', $capture );
+		$pairs_query = $this->run_event_query( 'upcoming', array( 'fields' => 'id=>parent' ) );
+		remove_filter( 'posts_request', $capture );
+
+		$pairs = array_map(
+			static function ( $row ): int {
+				return (int) $row->ID;
+			},
+			$pairs_query->posts
+		);
+
+		$this->assertStringNotContainsString(
+			Query::OCCURRENCE_ALIAS,
+			$request,
+			'Failed to assert an id=>parent query joins no occurrence table.'
+		);
+		$this->assertSame(
+			$ids,
+			$pairs,
+			'Failed to assert both compact field shapes return the same unexpanded post list.'
+		);
+		$this->assertSame(
+			$pairs,
+			array_values( array_unique( $pairs ) ),
+			'Failed to assert no post ID repeats in an id=>parent result set.'
+		);
+	}
+
+	/**
 	 * Coverage for the iCal feed emitting one VEVENT per event, with unique UIDs.
 	 *
 	 * `Calendar\Setup::get_ical_list()` is the one production consumer of
