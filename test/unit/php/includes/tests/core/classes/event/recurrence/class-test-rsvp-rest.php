@@ -2002,6 +2002,267 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
+	 * A private owner's roster is refused when reached through a published sibling.
+	 *
+	 * The read routes authorized the post the request named and then read the
+	 * roster from the post that owns the occurrence. Once the series is
+	 * widened, by a forward split or by a companion plugin using the public
+	 * `gatherpress_series_post_ids` filter, those are different posts: an
+	 * anonymous caller could name a published sibling while asking for a
+	 * private owner's occurrence, authorization saw the sibling, and the
+	 * response carried the owner's full attendee list. The write route already
+	 * re-checks the resolved owner; the read routes must apply the same rule.
+	 *
+	 * The refusal must also be indistinguishable from the one a fabricated
+	 * identifier receives. A refusal that varied would tell the caller which
+	 * occurrences of the private owner exist, one candidate at a time.
+	 *
+	 * @covers ::can_read_event_rsvps
+	 * @covers ::rsvp_responses
+	 *
+	 * @return void
+	 */
+	public function test_a_private_owners_roster_is_not_served_through_a_published_sibling(): void {
+		$owner_post_id = $this->create_and_project();
+
+		// A stored response on the private owner's occurrence is what must not
+		// leak, and its responder name is the discriminating value below.
+		$this->issue_token( $owner_post_id, 'ada@example.test', $this->occurrence_a );
+
+		$sibling_post_id = $this->create_plain_event();
+
+		$this->widen_series( $sibling_post_id, $owner_post_id );
+
+		wp_update_post(
+			array(
+				'ID'          => $owner_post_id,
+				'post_status' => 'private',
+			)
+		);
+
+		wp_set_current_user( 0 );
+
+		$direct = $this->dispatch(
+			'GET',
+			'rsvp-responses',
+			array( 'post_id' => $owner_post_id )
+		);
+
+		$this->assertSame(
+			401,
+			$direct->get_status(),
+			'Failed to arrange a private owner whose direct roster read is refused.'
+		);
+
+		$via_sibling = $this->dispatch(
+			'GET',
+			'rsvp-responses',
+			array(
+				'post_id'       => $sibling_post_id,
+				'recurrence_id' => $this->occurrence_a,
+			)
+		);
+		$fabricated  = $this->dispatch(
+			'GET',
+			'rsvp-responses',
+			array(
+				'post_id'       => $sibling_post_id,
+				'recurrence_id' => self::UNKNOWN_OCCURRENCE,
+			)
+		);
+
+		$this->assertSame(
+			404,
+			$via_sibling->get_status(),
+			'Failed to assert a private owner\'s occurrence named through a published sibling is refused.'
+		);
+		$this->assertStringNotContainsString(
+			'Ada Lovelace',
+			(string) wp_json_encode( $via_sibling->get_data() ),
+			'Failed to assert the refusal carries none of the private owner\'s roster.'
+		);
+		$this->assertSame(
+			array( $fabricated->get_status(), $fabricated->get_data() ),
+			array( $via_sibling->get_status(), $via_sibling->get_data() ),
+			'Failed to assert a real and a fabricated occurrence of a private owner are indistinguishable.'
+		);
+	}
+
+	/**
+	 * A private owner's roster is not rendered as HTML through a published sibling.
+	 *
+	 * The same guard as the responses route, on the route that renders the
+	 * roster as block markup: `rsvp_status_html()` reads from the occurrence
+	 * owner too, so it disclosed the same records in rendered form.
+	 *
+	 * @covers ::can_read_event_rsvps
+	 * @covers ::rsvp_status_html
+	 *
+	 * @return void
+	 */
+	public function test_a_private_owners_roster_html_is_not_rendered_through_a_published_sibling(): void {
+		$owner_post_id = $this->create_and_project();
+
+		$this->issue_token( $owner_post_id, 'ada@example.test', $this->occurrence_a );
+
+		$sibling_post_id = $this->create_plain_event();
+
+		$this->widen_series( $sibling_post_id, $owner_post_id );
+
+		wp_update_post(
+			array(
+				'ID'          => $owner_post_id,
+				'post_status' => 'private',
+			)
+		);
+
+		wp_set_current_user( 0 );
+
+		$params = function ( string $recurrence_id ) use ( $sibling_post_id ): array {
+			return array(
+				'post_id'       => $sibling_post_id,
+				'status'        => 'attending',
+				'block_data'    => $this->block_data(),
+				'recurrence_id' => $recurrence_id,
+			);
+		};
+
+		$via_sibling = $this->dispatch( 'POST', 'rsvp-status-html', $params( $this->occurrence_a ) );
+		$fabricated  = $this->dispatch( 'POST', 'rsvp-status-html', $params( self::UNKNOWN_OCCURRENCE ) );
+
+		$this->assertSame(
+			404,
+			$via_sibling->get_status(),
+			'Failed to assert a private owner\'s roster is not rendered through a published sibling.'
+		);
+		$this->assertStringNotContainsString(
+			'Ada Lovelace',
+			(string) wp_json_encode( $via_sibling->get_data() ),
+			'Failed to assert the refusal renders none of the private owner\'s roster.'
+		);
+		$this->assertSame(
+			array( $fabricated->get_status(), $fabricated->get_data() ),
+			array( $via_sibling->get_status(), $via_sibling->get_data() ),
+			'Failed to assert the rendered refusal is indistinguishable from a fabricated occurrence\'s.'
+		);
+	}
+
+	/**
+	 * The public form route refuses a private owner's occurrence named through a sibling.
+	 *
+	 * `handle_rsvp_form_submission()` settles viewability of the post the
+	 * request names, then resolves the occurrence and writes against its
+	 * owner. Without an owner re-check, an anonymous visitor could post a
+	 * form naming a published sibling and a private owner's occurrence, and
+	 * the RSVP landed on the private owner nobody authorized.
+	 *
+	 * @covers ::handle_rsvp_form_submission
+	 *
+	 * @return void
+	 */
+	public function test_the_form_route_refuses_a_private_owners_occurrence_named_through_a_sibling(): void {
+		$owner_post_id   = $this->create_and_project();
+		$sibling_post_id = $this->create_plain_event();
+
+		$this->widen_series( $sibling_post_id, $owner_post_id );
+
+		wp_update_post(
+			array(
+				'ID'          => $owner_post_id,
+				'post_status' => 'private',
+			)
+		);
+
+		wp_set_current_user( 0 );
+
+		$params = static function ( string $recurrence_id ) use ( $sibling_post_id ): array {
+			return array(
+				'comment_post_ID' => $sibling_post_id,
+				'author'          => 'Ada Lovelace',
+				'email'           => 'ada@example.test',
+				'recurrence_id'   => $recurrence_id,
+			);
+		};
+
+		$via_sibling = $this->dispatch( 'POST', 'rsvp-form', $params( $this->occurrence_a ) );
+		$fabricated  = $this->dispatch( 'POST', 'rsvp-form', $params( self::UNKNOWN_OCCURRENCE ) );
+
+		$this->assertSame(
+			404,
+			$via_sibling->get_status(),
+			'Failed to assert the form route refuses a private owner\'s occurrence named through a sibling.'
+		);
+		$this->assertSame(
+			array( $fabricated->get_status(), $fabricated->get_data() ),
+			array( $via_sibling->get_status(), $via_sibling->get_data() ),
+			'Failed to assert the form refusal is indistinguishable from a fabricated occurrence\'s.'
+		);
+		$this->assertSame(
+			array(),
+			get_comments( array( 'post_id' => $owner_post_id ) ),
+			'Failed to assert the refused submission wrote nothing to the private owner.'
+		);
+	}
+
+	/**
+	 * A logged-in write naming a private owner's occurrence is refused as not found.
+	 *
+	 * The write route already refused this cross-owner write, but with a
+	 * refusal that differed from a fabricated identifier's: a forbidden
+	 * status for a real occurrence of an unreadable owner against a not-found
+	 * status for an invented one. That split let a caller authorized on the
+	 * sibling enumerate which occurrences of the private owner exist. Both
+	 * refusals must be one and the same.
+	 *
+	 * @covers ::can_update_rsvp
+	 * @covers ::can_read_event_rsvps
+	 *
+	 * @return void
+	 */
+	public function test_a_logged_in_write_naming_a_private_owners_occurrence_is_refused_as_not_found(): void {
+		$owner_post_id   = $this->create_and_project();
+		$sibling_post_id = $this->create_plain_event();
+
+		$this->widen_series( $sibling_post_id, $owner_post_id );
+
+		wp_update_post(
+			array(
+				'ID'          => $owner_post_id,
+				'post_status' => 'private',
+			)
+		);
+
+		wp_set_current_user( $this->factory->user->create() );
+
+		$params = static function ( string $recurrence_id ) use ( $sibling_post_id ): array {
+			return array(
+				'post_id'       => $sibling_post_id,
+				'status'        => 'attending',
+				'recurrence_id' => $recurrence_id,
+			);
+		};
+
+		$via_sibling = $this->dispatch( 'POST', 'rsvp', $params( $this->occurrence_a ) );
+		$fabricated  = $this->dispatch( 'POST', 'rsvp', $params( self::UNKNOWN_OCCURRENCE ) );
+
+		$this->assertSame(
+			404,
+			$via_sibling->get_status(),
+			'Failed to assert a write naming a private owner\'s occurrence is refused as not found.'
+		);
+		$this->assertSame(
+			array( $fabricated->get_status(), $fabricated->get_data() ),
+			array( $via_sibling->get_status(), $via_sibling->get_data() ),
+			'Failed to assert the write refusal is indistinguishable from a fabricated occurrence\'s.'
+		);
+		$this->assertSame(
+			array(),
+			get_comments( array( 'post_id' => $owner_post_id ) ),
+			'Failed to assert the refused write stored nothing on the private owner.'
+		);
+	}
+
+	/**
 	 * B3: an inner dispatch for another occurrence restores the outer one.
 	 *
 	 * The committed nested test covered only an inner request naming *no*
