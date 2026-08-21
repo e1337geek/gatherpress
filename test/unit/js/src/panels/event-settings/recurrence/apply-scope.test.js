@@ -29,12 +29,30 @@ jest.mock( '@wordpress/api-fetch', () => ( {
 } ) );
 
 const mockIsEditedPostDirty = jest.fn( () => false );
+const mockGetCurrentPostType = jest.fn( () => 'gatherpress_event' );
+const mockGetPostType = jest.fn( () => ( {
+	rest_base: 'gatherpress_events',
+	rest_namespace: 'wp/v2',
+} ) );
+const mockReceiveEntityRecords = jest.fn();
 
 jest.mock( '@wordpress/data', () => ( {
 	useSelect: ( callback ) =>
-		callback( () => ( {
-			isEditedPostDirty: mockIsEditedPostDirty,
-		} ) ),
+		callback( ( store ) => {
+			if ( 'core/editor' === store ) {
+				return {
+					isEditedPostDirty: mockIsEditedPostDirty,
+					getCurrentPostType: mockGetCurrentPostType,
+				};
+			}
+
+			return {
+				getPostType: mockGetPostType,
+			};
+		} ),
+	useDispatch: () => ( {
+		receiveEntityRecords: mockReceiveEntityRecords,
+	} ),
 } ) );
 
 jest.mock( '@wordpress/url', () => ( {
@@ -117,7 +135,16 @@ const rows = [
 
 beforeEach( () => {
 	jest.clearAllMocks();
+	// A queued mockResolvedValueOnce a test did not consume would otherwise
+	// leak into the next test: clearAllMocks() empties recorded calls but not
+	// the once-queue or base implementation.
+	mockApiFetch.mockReset();
 	mockIsEditedPostDirty.mockReturnValue( false );
+	mockGetCurrentPostType.mockReturnValue( 'gatherpress_event' );
+	mockGetPostType.mockReturnValue( {
+		rest_base: 'gatherpress_events',
+		rest_namespace: 'wp/v2',
+	} );
 } );
 
 describe( 'ApplyScope', () => {
@@ -232,6 +259,67 @@ describe( 'ApplyScope', () => {
 			method: 'POST',
 			data: { post_id: 42, recurrence_id: '20260917T180000' },
 		} );
+	} );
+
+	test( 'refreshes the origin entity in the store after a successful split', async () => {
+		// The server capped the origin at two occurrences; the stale store
+		// still carries the six-count rule the panel seeded from.
+		const freshRecord = {
+			id: 42,
+			meta: {
+				gatherpress_recurrence:
+					'{"frequency":"weekly","interval":2,"weekdays":[2,4],"end_type":"count","count":2}',
+				gatherpress_datetime:
+					'{"dateTimeStart":"2026-09-03 18:00:00","dateTimeEnd":"2026-09-03 20:00:00","timezone":"America/New_York"}',
+			},
+		};
+
+		mockApiFetch
+			.mockResolvedValueOnce( rows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 4,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( freshRecord );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'4 occurrences moved to a new event. Make your change there.',
+				),
+			).toBeInTheDocument(),
+		);
+
+		// The origin's entity is refetched with edit context and pushed into
+		// the core store, so the panel's meta effect re-parses the capped rule
+		// instead of holding the stale pre-split one for the next re-persist.
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledWith( {
+				path: '/wp/v2/gatherpress_events/42?context=edit',
+			} ),
+		);
+		await waitFor( () =>
+			expect( mockReceiveEntityRecords ).toHaveBeenCalledWith(
+				'postType',
+				'gatherpress_event',
+				freshRecord,
+			),
+		);
 	} );
 
 	test( 'reports the plain-event degradation when one date moves', async () => {
