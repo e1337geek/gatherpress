@@ -597,9 +597,11 @@ final class Occurrences {
 	 * and the lazy repair forever. The one exception is an `UNTIL`-bounded
 	 * series whose `until` is already in the past, which can only ever expand
 	 * to nothing and would otherwise be re-projected fruitlessly forever. That exception is
-	 * the same one `select_series_needing_top_up()` encodes in SQL; the two
-	 * predicates must agree or a series repaired by one path is re-selected
-	 * by the other.
+	 * the same one `select_series_needing_top_up()` encodes in SQL, in a
+	 * deliberately one-day-lenient form because SQL cannot see each series'
+	 * timezone; this per-series check is the precise one, and a boundary-day
+	 * series the SQL still selects settles into agreement after one
+	 * projection.
 	 *
 	 * @since 0.36.0
 	 *
@@ -654,6 +656,12 @@ final class Occurrences {
 	 * be asked. Such a series expands to nothing however many times it is
 	 * projected, so it is complete rather than stale.
 	 *
+	 * "Behind us" is measured in the series' own timezone, never UTC's.
+	 * `until` is a wall-clock calendar rule, and whenever the series' local
+	 * date and UTC's date differ a UTC comparison misclassifies the boundary
+	 * day: a western-zone series still on its final local day would be
+	 * declared expired here and its last occurrence never reprojected.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id  Series post ID.
@@ -672,7 +680,38 @@ final class Occurrences {
 			return false;
 		}
 
-		return $until < ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d' );
+		$today = ( new DateTimeImmutable( 'now', $this->resolve_series_timezone( $post_id ) ) )->format( 'Y-m-d' );
+
+		return $until < $today;
+	}
+
+	/**
+	 * Resolve the timezone a series' calendar rules are expressed in.
+	 *
+	 * Reads the same event datetime `Utility::normalize_timezone_string()`
+	 * path `resolve_anchor()` uses, so the two agree on what the series'
+	 * timezone is. Falls back to UTC when the stored value cannot construct
+	 * a `DateTimeZone` at all, e.g. when a misbehaving `gatherpress_timezone`
+	 * filter hands back garbage; a boundary comparison in UTC is then no
+	 * worse than the state the series is already in.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID.
+	 *
+	 * @return DateTimeZone The series timezone, or UTC when it cannot be resolved.
+	 */
+	protected function resolve_series_timezone( int $post_id ): DateTimeZone {
+		$event    = new Event( $post_id );
+		$datetime = $event->get_datetime();
+
+		$timezone_name = Utility::normalize_timezone_string( (string) $datetime['timezone'] );
+
+		try {
+			return new DateTimeZone( $timezone_name );
+		} catch ( Exception $e ) {
+			return new DateTimeZone( 'UTC' );
+		}
 	}
 
 	/**
@@ -801,7 +840,20 @@ final class Occurrences {
 
 		$table  = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$cutoff = $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
-		$today  = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d' );
+
+		// The rowless UNTIL bound is one calendar day behind UTC's date on
+		// purpose. Each series' `until` is a wall-clock date in its own
+		// timezone, which this site-wide query cannot see, and a series'
+		// local date can trail UTC's by up to a day (UTC-12). Bounding on
+		// UTC's own date would permanently drop a western-zone series whose
+		// final local day is still running; see is_expired_until() for the
+		// per-series precise form of the same comparison. The leniency is
+		// self-limiting: a genuinely expired boundary series projects its
+		// final rows once, gains rows, and completes via the
+		// reached-`until` predicate below.
+		$today = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '-1 day' )
+			->format( 'Y-m-d' );
 
 		// The joined meta columns are aliased (et_value, until_value) rather
 		// than referenced as bare `end_type_meta.meta_value` /

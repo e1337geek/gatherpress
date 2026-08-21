@@ -3065,6 +3065,7 @@ class Test_Occurrences extends Base {
 	 * time, so it exercises a real date split at any hour.
 	 *
 	 * @covers ::is_expired_until
+	 * @covers ::resolve_series_timezone
 	 *
 	 * @return void
 	 */
@@ -3168,6 +3169,46 @@ class Test_Occurrences extends Base {
 			$post_id,
 			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
 			'Failed to assert that a rowless until series bounded on UTC yesterday is still selectable.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `resolve_series_timezone()`'s two return paths. It
+	 * is called from `is_expired_until()`, a same-class delegation xdebug
+	 * does not trace into reliably.
+	 *
+	 * @covers ::resolve_series_timezone
+	 *
+	 * @return void
+	 */
+	public function test_resolve_series_timezone_covers_every_branch(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertSame(
+			'America/New_York',
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'resolve_series_timezone',
+				array( $post_id )
+			)->getName(),
+			'Failed to assert that the stored series timezone is resolved.'
+		);
+
+		$filter = static fn() => 'Not/AZone';
+		add_filter( 'gatherpress_timezone', $filter );
+
+		$fallback = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'resolve_series_timezone',
+			array( $post_id )
+		);
+
+		remove_filter( 'gatherpress_timezone', $filter );
+
+		$this->assertSame(
+			'UTC',
+			$fallback->getName(),
+			'Failed to assert that an unconstructable timezone string falls back to UTC.'
 		);
 	}
 
