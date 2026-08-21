@@ -606,6 +606,57 @@ class Test_Series extends Base {
 	}
 
 	/**
+	 * Direct coverage for every return shape of the relationship write helper.
+	 *
+	 * Invoked directly because xdebug does not trace a protected helper called
+	 * through a short same-class delegation from `join()` (see the "Extracted
+	 * same-class helpers" rule in `AGENTS.md`). The three shapes are a landed
+	 * write, an empty result after `wp_set_object_terms()` silently skips a
+	 * numeric term it cannot confirm, and a `WP_Error` from an unregistered
+	 * taxonomy.
+	 *
+	 * @covers ::set_series_term
+	 *
+	 * @return void
+	 */
+	public function test_set_series_term_reports_whether_the_relationship_write_landed(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Series::get_instance();
+
+		Series::register_taxonomy_for( Event::POST_TYPE );
+
+		$term = wp_insert_term( 'series-probe', Series::TAXONOMY );
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'set_series_term',
+				array( $post_id, (int) $term['term_id'] )
+			),
+			'A relationship write against a real term must report success.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'set_series_term',
+				array( $post_id, 999999 )
+			),
+			'A numeric term wp_set_object_terms() skipped must report failure, not success.'
+		);
+
+		$this->forget_series_taxonomy();
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'set_series_term',
+				array( $post_id, (int) $term['term_id'] )
+			),
+			'A WP_Error from the relationship write must report failure.'
+		);
+	}
+
+	/**
 	 * Membership resolution survives a term whose relationship rows are missing.
 	 *
 	 * @covers ::resolve_from_taxonomy

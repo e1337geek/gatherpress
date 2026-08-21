@@ -386,22 +386,47 @@ final class Series {
 		self::register_taxonomy_for( (string) get_post_type( $origin_post_id ) );
 
 		$term_id = $this->term_id_for_post( $origin_post_id );
+		$is_new  = 0 === $term_id;
 
-		if ( 0 === $term_id ) {
+		if ( $is_new ) {
 			$term_id = $this->create_term_for( $origin_post_id );
-
-			if ( 0 === $term_id ) {
-				return 0;
-			}
-
-			wp_set_object_terms( $origin_post_id, array( $term_id ), self::TAXONOMY );
 		}
 
-		wp_set_object_terms( $forward_post_id, array( $term_id ), self::TAXONOMY );
+		// Every write of the join must land, the relationship rows as much as
+		// the term itself. Reporting a term whose relationship write failed
+		// left the forward post outside the series with no error anywhere,
+		// while the caller treated the join phase as complete.
+		if ( 0 === $term_id
+			|| ( $is_new && ! $this->set_series_term( $origin_post_id, $term_id ) )
+			|| ! $this->set_series_term( $forward_post_id, $term_id )
+		) {
+			return 0;
+		}
 
 		$this->flush_memo();
 
 		return $term_id;
+	}
+
+	/**
+	 * Attach the series term to one post, reporting whether the write landed.
+	 *
+	 * `wp_set_object_terms()` reports failure two ways: a `WP_Error`, and an
+	 * empty result list, which is what it returns after silently *skipping* a
+	 * numeric term ID that `term_exists()` could not confirm. Both mean the
+	 * post is not in the series.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post to attach the term to.
+	 * @param int $term_id The series term.
+	 *
+	 * @return bool True when the relationship write landed.
+	 */
+	protected function set_series_term( int $post_id, int $term_id ): bool {
+		$result = wp_set_object_terms( $post_id, array( $term_id ), self::TAXONOMY );
+
+		return is_array( $result ) && array() !== $result;
 	}
 
 	/**
