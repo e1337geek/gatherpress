@@ -517,6 +517,44 @@ class Test_Series extends Base {
 	}
 
 	/**
+	 * Deleting the last fragment of a split series removes the series term.
+	 *
+	 * WordPress deletes a hard-deleted post's term relationships but never the
+	 * term itself, so every split series whose posts were all deleted used to
+	 * leave one unreachable `wp_terms`/`wp_term_taxonomy` row pair behind,
+	 * forever. The control half of the assertion matters as much: deleting one
+	 * fragment of a surviving series must keep the term, because the remaining
+	 * fragment still resolves through it.
+	 *
+	 * @covers ::remember_series_term
+	 * @covers ::maybe_delete_orphan_term
+	 *
+	 * @return void
+	 */
+	public function test_deleting_the_last_fragment_removes_the_series_term(): void {
+		$origin_id = $this->create_and_project();
+		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+		$term_id   = Series::get_instance()->term_id_for_post( $origin_id );
+
+		$this->assertGreaterThan( 0, $term_id, 'Fixture setup: the split must have created a series term.' );
+
+		wp_delete_post( $origin_id, true );
+
+		$this->assertInstanceOf(
+			\WP_Term::class,
+			get_term( $term_id, Series::TAXONOMY ),
+			'Deleting one fragment must keep the term: the surviving fragment still resolves through it.'
+		);
+
+		wp_delete_post( $forward, true );
+
+		$this->assertNull(
+			get_term( $term_id, Series::TAXONOMY ),
+			'Deleting the last fragment must remove the series term rather than leaving an orphan row pair.'
+		);
+	}
+
+	/**
 	 * Membership resolution survives a term whose relationship rows are missing.
 	 *
 	 * @covers ::resolve_from_taxonomy
