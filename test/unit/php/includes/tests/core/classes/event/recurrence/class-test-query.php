@@ -850,7 +850,7 @@ class Test_Query extends Base {
 	 * The two fixtures share an anchor to the second, so `MIN( COALESCE(...) )`
 	 * returns the same value for both groups and the aggregate alone cannot
 	 * separate them. MySQL's sort is not stable, which is what lets a tied pair
-	 * come back one way for the first page and the other way for the second --
+	 * come back one way for the first page and the other way for the second,
 	 * putting one series on both pages of an aggregate feed and the other on
 	 * neither.
 	 *

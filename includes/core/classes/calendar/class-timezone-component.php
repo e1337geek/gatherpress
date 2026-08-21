@@ -347,8 +347,9 @@ final class Timezone_Component {
 	 * Render one sub-component type from the transitions belonging to it.
 	 *
 	 * Regular transitions collapse to a single sub-component carrying a yearly
-	 * `RRULE`, which describes the zone from the first onset in range onward --
-	 * what an open-ended series needs, and what keeps the definition small. An
+	 * `RRULE`, which describes the zone from the first onset in range onward.
+	 * That is what an open-ended series needs, and it keeps the definition
+	 * small. An
 	 * `RRULE` generates nothing before its own `DTSTART`, which is why the
 	 * window is anchored to the range the body covers rather than to the
 	 * request: a rule that starts after the event it is meant to explain leaves

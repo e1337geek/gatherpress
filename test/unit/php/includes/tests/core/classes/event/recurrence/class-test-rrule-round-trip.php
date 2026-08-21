@@ -232,8 +232,8 @@ class Test_Rrule_Round_Trip extends Base {
 	/**
 	 * Read an `RRULE` value back into the decomposed value array, from RFC 5545.
 	 *
-	 * Deliberately not the inverse of `to_rrule_string()`'s implementation --
-	 * see the file docblock. `UNTIL` is required to be a UTC date-time,
+	 * Deliberately not the inverse of `to_rrule_string()`'s implementation.
+	 * See the file docblock. `UNTIL` is required to be a UTC date-time,
 	 * because the component this rule is attached to emits a `DATE-TIME`
 	 * `DTSTART` and RFC 5545 section 3.3.10 requires the two value types to
 	 * match. It is then converted into the series timezone, which is where the
