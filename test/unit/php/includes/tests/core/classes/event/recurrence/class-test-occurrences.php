@@ -3053,6 +3053,125 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * `is_expired_until()` compares the rule's date-only `until` with today in
+	 * the series' own timezone, never with UTC's calendar date.
+	 *
+	 * The `until` mirror is a wall-clock calendar rule. Whenever the series'
+	 * local date and UTC's date differ, a UTC comparison misclassifies the
+	 * boundary day: a western-zone series still on its final local day is
+	 * declared expired and its last occurrence is never reprojected, and an
+	 * eastern-zone series already past its bound locally is declared active.
+	 * The test picks whichever named zone differs from UTC's date at run
+	 * time, so it exercises a real date split at any hour.
+	 *
+	 * @covers ::is_expired_until
+	 *
+	 * @return void
+	 */
+	public function test_is_expired_until_compares_in_the_series_timezone_not_utc(): void {
+		$utc_now = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+
+		// Before 10:00 UTC, Pacific/Pago_Pago (UTC-11) is still on
+		// yesterday's local date; from 10:00 UTC on, Pacific/Kiritimati
+		// (UTC+14) is already on tomorrow's. One of the two always differs
+		// from UTC's date, so the fixture never degenerates into the case
+		// where both comparisons agree.
+		$zone_name = (int) $utc_now->format( 'G' ) < 10 ? 'Pacific/Pago_Pago' : 'Pacific/Kiritimati';
+		$zone      = new DateTimeZone( $zone_name );
+
+		$local_today = $utc_now->setTimezone( $zone )->format( 'Y-m-d' );
+		$utc_today   = $utc_now->format( 'Y-m-d' );
+
+		$this->assertNotSame(
+			$utc_today,
+			$local_today,
+			'Failed to assert the fixture zone is on a different calendar date than UTC.'
+		);
+
+		if ( $local_today < $utc_today ) {
+			// Western zone: the final local day is still running, so an
+			// `until` equal to it has not expired, whatever UTC says.
+			$until    = $local_today;
+			$expected = false;
+		} else {
+			// Eastern zone: the series is already past UTC's date locally,
+			// so an `until` equal to UTC's date has expired there.
+			$until    = $utc_today;
+			$expected = true;
+		}
+
+		$anchor  = $utc_now->setTimezone( $zone )->modify( '-3 weeks' );
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'until',
+				'until'     => $until,
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			$zone_name
+		);
+
+		$this->assertSame(
+			$expected,
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'is_expired_until',
+				array( $post_id, Rule::END_TYPE_UNTIL )
+			),
+			'Failed to assert that is_expired_until reads today in the series timezone rather than UTC.'
+		);
+	}
+
+	/**
+	 * A rowless `UNTIL` series whose bound is UTC's yesterday must stay a
+	 * sweep candidate.
+	 *
+	 * The candidate query cannot see each series' timezone, so its rowless
+	 * `UNTIL` bound is deliberately one calendar day lenient: a series' local
+	 * date can trail UTC's by up to a day (UTC-12), and a bound computed from
+	 * UTC's own date permanently drops a western-zone series whose final
+	 * local day is still running. The lenient bound keeps every such
+	 * boundary series selectable; a genuinely expired one projects its final
+	 * rows once and then completes through `has_reached_until()`.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_rowless_until_series_on_yesterdays_utc_date_stays_a_sweep_candidate(): void {
+		$utc_yesterday = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+			->modify( '-1 day' )
+			->format( 'Y-m-d' );
+
+		$zone   = new DateTimeZone( 'Pacific/Pago_Pago' );
+		$anchor = ( new DateTimeImmutable( 'now', $zone ) )->modify( '-3 weeks' );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'until',
+				'until'     => $utc_yesterday,
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'Pacific/Pago_Pago'
+		);
+
+		Occurrences::get_instance()->delete_for_post( $post_id );
+
+		$this->assertContains(
+			$post_id,
+			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
+			'Failed to assert that a rowless until series bounded on UTC yesterday is still selectable.'
+		);
+	}
+
+	/**
 	 * Direct coverage for `has_recurrence_rule()`'s two return paths. It is
 	 * called only from inside `maybe_lazy_repair()`'s loop, which xdebug does
 	 * not trace into reliably.
