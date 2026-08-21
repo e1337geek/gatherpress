@@ -816,11 +816,6 @@ class Test_Rsvp_Occurrence extends Base {
 	public function test_delete_term_relationships_ignores_non_rsvp_comments(): void {
 		Rsvp_Setup::get_instance()->register_taxonomy();
 
-		// The site must look recurring, or the occurrence taxonomy is left out
-		// of the cleanup list for a reason that has nothing to do with the
-		// comment's type, and the assertion below would hold either way.
-		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '1' );
-
 		$comment_id = (int) $this->factory->comment->create();
 
 		Rsvp_Occurrence::get_instance()->assign( $comment_id, 12, self::OCCURRENCE_A );

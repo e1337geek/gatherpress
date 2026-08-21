@@ -12,7 +12,6 @@ namespace GatherPress\Core\Rsvp;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
-use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Rsvp\Response\Provider\Base as Provider;
 use GatherPress\Core\Rsvp\Response\Status;
@@ -82,6 +81,16 @@ final class Cleanup {
 	 * read here, before the relationships below are removed; the hook fires
 	 * with no ambient occurrence context to fall back on.
 	 *
+	 * All three taxonomies are always named, `_gatherpress_occurrence`
+	 * included. The `gatherpress_has_recurring_events` option describes the
+	 * current occurrence-table state, not whether this comment carries an
+	 * occurrence relationship: a site can remove its last recurrence, flip the
+	 * option to `0`, and still hold historical RSVP occurrence terms, and
+	 * gating the destructive cleanup on the option would orphan those rows
+	 * forever. The taxonomy itself is registered unconditionally on `init` by
+	 * `Rsvp\Setup`, and core skips any taxonomy that is somehow unregistered
+	 * rather than failing.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param string|int      $comment_id The comment ID, as WordPress passes it.
@@ -96,13 +105,10 @@ final class Cleanup {
 
 		$occurrence = Rsvp_Occurrence::occurrence_for_comment( (int) $comment_id );
 
-		$taxonomies = array( Status::TAXONOMY, Provider::TAXONOMY );
-
-		if ( Recurrence_Query::site_has_recurring_events() ) {
-			$taxonomies[] = Rsvp_Occurrence::TAXONOMY;
-		}
-
-		wp_delete_object_term_relationships( (int) $comment_id, $taxonomies );
+		wp_delete_object_term_relationships(
+			(int) $comment_id,
+			array( Status::TAXONOMY, Provider::TAXONOMY, Rsvp_Occurrence::TAXONOMY )
+		);
 
 		$post_id = (int) $comment->comment_post_ID;
 
