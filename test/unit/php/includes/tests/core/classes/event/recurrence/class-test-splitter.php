@@ -1042,6 +1042,56 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * A stale rule re-persisted after a split cannot resurrect moved occurrences.
+	 *
+	 * The still-open origin editor holds the pre-split rule after a successful
+	 * split, and one touch of any rule control re-persists it through an
+	 * ordinary Update. Re-projecting the origin from that stale rule used to
+	 * re-upsert every original identifier under the origin while the forward
+	 * post still owned four of them, duplicating occurrence identity across
+	 * siblings: listings showed the moved dates twice, and `find_in_series()`
+	 * snapped permalinks and RSVP reads back to the origin's copy while the
+	 * RSVP terms lived on the forward post.
+	 *
+	 * The write is driven through `wp_update_post()`, the entry point an editor
+	 * Update actually takes, so the assertion covers the production
+	 * `wp_after_insert_post` wiring rather than a hand-assembled call order.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::project
+	 *
+	 * @return void
+	 */
+	public function test_a_stale_rule_re_persist_does_not_duplicate_identifiers_across_siblings(): void {
+		$origin_id = $this->create_and_project();
+		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+
+		// The stale editor state: the panel still holds the six-count rule the
+		// series had before the split capped it at two.
+		update_post_meta( $origin_id, Meta::META_KEY, wp_json_encode( self::SIX_WEEK_RULE ) );
+		wp_update_post( array( 'ID' => $origin_id ) );
+
+		$origin_ids  = $this->identifiers_for( $origin_id );
+		$forward_ids = $this->identifiers_for( $forward );
+
+		$this->assertSame(
+			array(),
+			array_values( array_intersect( $origin_ids, $forward_ids ) ),
+			'Failed to assert no occurrence identifier is owned by two posts of one series after a stale'
+				. ' rule re-persist.'
+		);
+		$this->assertSame(
+			array_slice( self::FULL_SET, 0, 2 ),
+			$origin_ids,
+			'Failed to assert the origin keeps exactly the rows the split left behind.'
+		);
+		$this->assertSame(
+			array_slice( self::FULL_SET, 2 ),
+			$forward_ids,
+			'Failed to assert the forward post still owns every row the split moved.'
+		);
+	}
+
+	/**
 	 * The site-wide calendar feed carries both sides of a split series.
 	 *
 	 * What that does and does not get for free is worth stating exactly. The
