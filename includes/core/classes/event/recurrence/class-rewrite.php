@@ -131,10 +131,7 @@ final class Rewrite {
 
 		$type_object = get_post_type_object( $post_type );
 
-		if ( ! $type_object instanceof WP_Post_Type
-			|| false === $type_object->rewrite
-			|| empty( $type_object->query_var )
-		) {
+		if ( ! $type_object instanceof WP_Post_Type || false === $type_object->rewrite ) {
 			return;
 		}
 
@@ -165,11 +162,22 @@ final class Rewrite {
 			self::RECURRENCE_ID_REGEX
 		);
 
+		// A post type registered with `query_var => false` still gets pretty
+		// permalinks; WordPress's own rewrite tag for it routes through the
+		// `post_type` plus `name` pair, or `post_type` plus `pagename` when
+		// hierarchical, so the occurrence rule targets the same pair.
+		if ( ! empty( $type_object->query_var ) ) {
+			$post_query = array( $type_object->query_var => '$matches[1]' );
+		} else {
+			$post_name_key = $type_object->hierarchical ? 'pagename' : 'name';
+			$post_query    = array(
+				'post_type'    => $post_type,
+				$post_name_key => '$matches[1]',
+			);
+		}
+
 		$rewrite_url = add_query_arg(
-			array(
-				$type_object->query_var => '$matches[1]',
-				Context::QUERY_VAR      => '$matches[2]',
-			),
+			array_merge( $post_query, array( Context::QUERY_VAR => '$matches[2]' ) ),
 			'index.php'
 		);
 
@@ -372,9 +380,11 @@ final class Rewrite {
 	/**
 	 * Resolve the series post ID a request's query vars point at.
 	 *
-	 * Iterates every event-date-supporting post type's own query var (the
-	 * one the occurrence rewrite rule was registered against) rather than
-	 * assuming `gatherpress_event`, matching `add_rewrite_rule_for_post_type()`.
+	 * Iterates every event-date-supporting post type and reads the query vars
+	 * its occurrence rewrite rule was registered against, matching
+	 * `add_rewrite_rule_for_post_type()`: the post type's own query var when
+	 * it has one, otherwise the `post_type` plus `name` or `pagename`
+	 * fallback pair.
 	 *
 	 * @since 0.36.0
 	 *
@@ -386,14 +396,26 @@ final class Rewrite {
 		foreach ( get_post_types_by_support( 'gatherpress-event-date' ) as $post_type ) {
 			$type_object = get_post_type_object( $post_type );
 
-			if ( ! $type_object instanceof WP_Post_Type
-				|| empty( $type_object->query_var )
-				|| ! isset( $query_vars[ $type_object->query_var ] )
-			) {
+			if ( ! $type_object instanceof WP_Post_Type ) {
 				continue;
 			}
 
-			$post = get_page_by_path( (string) $query_vars[ $type_object->query_var ], OBJECT, $post_type );
+			// A post type without a query var is resolved through the same
+			// `post_type` plus `name` or `pagename` pair its rewrite target
+			// carries; see `add_rewrite_rule_for_post_type()`.
+			if ( ! empty( $type_object->query_var ) ) {
+				$path = (string) ( $query_vars[ $type_object->query_var ] ?? '' );
+			} elseif ( ( $query_vars['post_type'] ?? '' ) === $post_type ) {
+				$path = (string) ( $query_vars[ $type_object->hierarchical ? 'pagename' : 'name' ] ?? '' );
+			} else {
+				$path = '';
+			}
+
+			if ( '' === $path ) {
+				continue;
+			}
+
+			$post = get_page_by_path( $path, OBJECT, $post_type );
 
 			if ( $post instanceof WP_Post ) {
 				return (int) $post->ID;

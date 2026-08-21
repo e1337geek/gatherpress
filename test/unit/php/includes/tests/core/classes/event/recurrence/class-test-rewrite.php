@@ -1288,6 +1288,15 @@ class Test_Rewrite extends Base {
 	 * target and the request resolution must both pick the key the post
 	 * type's own permastruct uses.
 	 *
+	 * The permalink structure is `/%year%/%monthnum%/%postname%/` rather than
+	 * this class's default `/%postname%/`, because a structure whose first
+	 * tag is postname-like turns on core's verbose page rules, and that mode
+	 * skips every rewrite rule targeting `pagename=$matches[]` unless a real
+	 * page exists at the captured path. Under such a structure WordPress
+	 * 404s this post type's own bare permalinks too, with no occurrence
+	 * involved, so the occurrence rule is exercised under a structure where
+	 * core itself can route the post type.
+	 *
 	 * @covers ::add_rewrite_rule_for_post_type
 	 * @covers ::parse_request
 	 * @covers ::resolve_post_id_from_query_vars
@@ -1296,6 +1305,10 @@ class Test_Rewrite extends Base {
 	 */
 	public function test_occurrence_url_routes_for_a_hierarchical_post_type_without_query_var(): void {
 		global $wp_rewrite;
+
+		$wp_rewrite->set_permalink_structure( '/%year%/%monthnum%/%postname%/' );
+		unregister_post_type( Event::POST_TYPE );
+		Event_Setup::get_instance()->register_post_type();
 
 		register_post_type(
 			'gp_no_qv_hier',
@@ -1384,6 +1397,47 @@ class Test_Rewrite extends Base {
 			$result,
 			'An unregistered post type declaring the support must be skipped, not fatal.'
 		);
+	}
+
+	/**
+	 * Coverage for `resolve_post_id_from_query_vars` on the two empty-path
+	 * arms of the query-var-disabled fallback: query vars naming a different
+	 * post type, and query vars naming the right post type with no name to
+	 * look up. Both must skip the lookup rather than resolve or fatal.
+	 *
+	 * @covers ::resolve_post_id_from_query_vars
+	 *
+	 * @return void
+	 */
+	public function test_resolve_post_id_from_query_vars_skips_incomplete_fallback_pairs(): void {
+		register_post_type(
+			'gp_no_qv_event',
+			array(
+				'public'    => true,
+				'supports'  => array( 'title', 'gatherpress-event-date' ),
+				'rewrite'   => array( 'slug' => 'gp-no-qv' ),
+				'query_var' => false,
+			)
+		);
+
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				Rewrite::get_instance(),
+				'resolve_post_id_from_query_vars',
+				array( array( 'post_type' => 'post', 'name' => 'unrelated' ) )
+			),
+			'Query vars naming a different post type must not resolve through the fallback pair.'
+		);
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				Rewrite::get_instance(),
+				'resolve_post_id_from_query_vars',
+				array( array( 'post_type' => 'gp_no_qv_event' ) )
+			),
+			'A matching post type with no name query var must be skipped, not looked up.'
+		);
+
+		unregister_post_type( 'gp_no_qv_event' );
 	}
 
 	/**
