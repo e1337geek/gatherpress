@@ -917,6 +917,55 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
+	 * A stray zero post_id does not blank the form route's occurrence resolution.
+	 *
+	 * `request_post_id()` fell back to `comment_post_ID` through `??`, which
+	 * only fires when `post_id` is absent entirely. The form route declares
+	 * only `comment_post_ID`, but an undeclared `post_id` posted alongside the
+	 * form, as a theme's hidden field or a stale embed can send, is still
+	 * readable through `get_param()`. A present-but-zero value therefore
+	 * suppressed the fallback, resolution ran against post zero, and the
+	 * submission was refused as an unknown occurrence even though the form
+	 * named a real one.
+	 *
+	 * @covers ::request_post_id
+	 * @covers ::handle_rsvp_form_submission
+	 *
+	 * @return void
+	 */
+	public function test_a_stray_zero_post_id_does_not_blank_the_form_routes_occurrence(): void {
+		$post_id = $this->create_and_project();
+
+		wp_set_current_user( 0 );
+
+		$response = $this->dispatch(
+			'POST',
+			'rsvp-form',
+			array(
+				'comment_post_ID' => $post_id,
+				'author'          => 'Ada Lovelace',
+				'email'           => 'ada@example.test',
+				'recurrence_id'   => $this->occurrence_a,
+				'post_id'         => 0,
+			)
+		);
+
+		$this->assertSame(
+			200,
+			$response->get_status(),
+			'Failed to assert a stray zero post_id leaves the occurrence resolvable from comment_post_ID.'
+		);
+
+		$comment_id = (int) $response->get_data()['comment_id'];
+
+		$this->assertSame(
+			array( Rsvp_Occurrence::term_slug( $post_id, $this->occurrence_a ) ),
+			$this->term_slugs( $comment_id, Rsvp_Occurrence::TAXONOMY ),
+			'Failed to assert the submission landed on the occurrence the form named.'
+		);
+	}
+
+	/**
 	 * `Form::process_rsvp()` stamps the occurrence when called in context.
 	 *
 	 * The REST tests above cover the wiring; this one pins the unit that does
