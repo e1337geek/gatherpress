@@ -983,11 +983,22 @@ class Test_Splitter extends Base {
 		$origin_id = $this->create_and_project();
 		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
 
-		// Widen the origin back over the forward post's dates, so both posts of
-		// the series carry a row for 2026-09-17.
-		update_post_meta( $origin_id, Meta::META_KEY, wp_json_encode( self::SIX_WEEK_RULE ) );
-		Meta::get_instance()->set_recurrence( $origin_id );
-		Occurrences::get_instance()->project( $origin_id );
+		// Projection can no longer manufacture a duplicate identifier across
+		// siblings, because `discard_sibling_owned()` skips rows a sibling
+		// already owns. The duplicate this test is about is therefore written
+		// directly, the shape a row predating that guard, or written by
+		// anything else with table access, would take. The ordering guarantee
+		// under test is precisely the defense for such rows.
+		global $wpdb;
+
+		$forward_row = Occurrences::get_instance()->get( $forward, '20260917T180000' );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->insert(
+			sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+			array_merge( $forward_row, array( 'series_post_id' => $origin_id ) )
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
 		$this->assertContains(
 			'20260917T180000',

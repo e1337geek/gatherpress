@@ -5620,6 +5620,131 @@ class Test_Occurrences extends Base {
 			'Failed to assert select_for_series() orders its rows rather than trusting the query plan.'
 		);
 	}
+
+	/**
+	 * Direct coverage for the empty-candidate bail of `discard_sibling_owned()`.
+	 *
+	 * The helper's four return paths are invoked directly because xdebug does
+	 * not trace a protected helper called through a short same-class delegation
+	 * from `run_projection()` (see the "Extracted same-class helpers" rule in
+	 * `AGENTS.md`), even though the stale-re-persist regression in
+	 * `Test_Splitter` drives the filtering path through a real save.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_returns_empty_candidates_unchanged(): void {
+		$this->assertSame(
+			array(),
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'discard_sibling_owned',
+				array( 123, array() )
+			),
+			'An empty candidate set must come back empty without a membership read.'
+		);
+	}
+
+	/**
+	 * A single-post series pays no sibling query and loses no rows.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_is_a_no_op_for_a_single_post_series(): void {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$rows    = array( array( 'recurrence_id' => '20260903T180000' ) );
+
+		$this->assertSame(
+			$rows,
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'discard_sibling_owned',
+				array( $post_id, $rows )
+			),
+			'A series of one post has no sibling that could own anything.'
+		);
+	}
+
+	/**
+	 * A sibling that owns no rows removes nothing.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_is_a_no_op_when_the_sibling_owns_nothing(): void {
+		$post_id    = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$sibling_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$rows       = array( array( 'recurrence_id' => '20260903T180000' ) );
+		$widen      = static function () use ( $post_id, $sibling_id ) {
+			return array( $post_id, $sibling_id );
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $widen );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'discard_sibling_owned',
+			array( $post_id, $rows )
+		);
+
+		remove_filter( 'gatherpress_series_post_ids', $widen );
+
+		$this->assertSame(
+			$rows,
+			$result,
+			'A sibling owning no occurrence rows must not cost the projection anything.'
+		);
+	}
+
+	/**
+	 * Only the rows a sibling owns are dropped; every other candidate survives.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_drops_only_the_rows_a_sibling_owns(): void {
+		$sibling_id = $this->create_recurring_event( self::WEEKLY_RULE );
+
+		Meta::get_instance()->set_recurrence( $sibling_id );
+		Occurrences::get_instance()->project( $sibling_id );
+
+		$owned = Occurrences::get_instance()->select_for_series( array( $sibling_id ) );
+
+		$this->assertNotEmpty( $owned, 'Fixture setup: the sibling must own projected rows.' );
+
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$taken    = (string) $owned[0]['recurrence_id'];
+		$free     = '19990101T000000';
+		$rows     = array(
+			array( 'recurrence_id' => $taken ),
+			array( 'recurrence_id' => $free ),
+		);
+		$expected = array( array( 'recurrence_id' => $free ) );
+		$widen    = static function () use ( $post_id, $sibling_id ) {
+			return array( $post_id, $sibling_id );
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $widen );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'discard_sibling_owned',
+			array( $post_id, $rows )
+		);
+
+		remove_filter( 'gatherpress_series_post_ids', $widen );
+
+		$this->assertSame(
+			$expected,
+			$result,
+			'Exactly the sibling-owned identifier must be dropped, and nothing else.'
+		);
+	}
 	/**
 	 * Consuming the queue entry must not consume the cleanup it carries.
 	 *
