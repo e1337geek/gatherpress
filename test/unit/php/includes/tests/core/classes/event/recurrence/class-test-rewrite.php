@@ -932,6 +932,111 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * A pre-split occurrence URL never reveals a private new owner to the public.
+	 *
+	 * The sibling-redirect branch of `parse_request()` must carry the same
+	 * `can_follow_to()` guard the bare-series branch already has: a logged-out
+	 * visitor requesting the public origin's pre-split occurrence URL must not
+	 * receive a redirect naming the private sibling's permalink. The response
+	 * has to be a non-revealing 404 with canonical redirection suppressed, the
+	 * same answer a nonexistent occurrence gets, so the response does not act
+	 * as an existence oracle for the private post.
+	 *
+	 * @covers ::parse_request
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_pre_split_permalink_does_not_reveal_a_private_new_owner(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 6 );
+
+		// Occurrences land at +5/+12/+19/+26/+33/+40 days. The split happens at
+		// the fourth, so the fifth is a row the split moves to the new owner.
+		$split_at = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
+		$moved    = Occurrences::recurrence_id( $anchor_start->modify( '+28 days' ) );
+		$before   = Rewrite::get_occurrence_url( $post_id, $moved );
+
+		$result  = Splitter::get_instance()->split_forward( $post_id, $split_at );
+		$forward = (int) $result['forward_post_id'];
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+		$this->assertSame(
+			$forward,
+			(int) Occurrences::get_instance()->find_in_series(
+				Series::get_instance()->resolve_post_ids( $post_id ),
+				$moved
+			)['series_post_id'],
+			'Fixture setup: the moved occurrence must genuinely be owned by the forward post, or the'
+				. ' guard under test is not the mechanism that decides this request.'
+		);
+
+		wp_update_post(
+			array(
+				'ID'          => $forward,
+				'post_status' => 'private',
+			)
+		);
+		wp_set_current_user( 0 );
+
+		$this->assert_not_redirect(
+			function () use ( $before ): void {
+				$this->go_to( $before );
+			}
+		);
+
+		$this->assertTrue(
+			is_404(),
+			'A pre-split URL whose new owner is private must answer the public with a plain 404.'
+		);
+		$this->assertNull(
+			redirect_canonical( $before, false ),
+			'redirect_canonical() must be neutralized, or WP would 301 the 404 back to the bare series URL.'
+		);
+	}
+
+	/**
+	 * An editor who may read the private new owner is still redirected to it.
+	 *
+	 * The authorization-side control for the test above: without it, that test
+	 * passes against a sibling branch that never redirects anybody anywhere.
+	 *
+	 * @covers ::parse_request
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_pre_split_permalink_follows_to_a_private_new_owner_for_a_reader_of_it(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 6 );
+
+		$split_at = Occurrences::recurrence_id( $anchor_start->modify( '+21 days' ) );
+		$moved    = Occurrences::recurrence_id( $anchor_start->modify( '+28 days' ) );
+		$before   = Rewrite::get_occurrence_url( $post_id, $moved );
+
+		$result  = Splitter::get_instance()->split_forward( $post_id, $split_at );
+		$forward = (int) $result['forward_post_id'];
+
+		wp_update_post(
+			array(
+				'ID'          => $forward,
+				'post_status' => 'private',
+			)
+		);
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$expected = Rewrite::get_occurrence_url( $forward, $moved );
+
+		$this->assert_redirect_to(
+			$expected,
+			function () use ( $before ): void {
+				$this->go_to( $before );
+			},
+			301
+		);
+
+		wp_set_current_user( 0 );
+	}
+
+	/**
 	 * Visiting a recurring series at its bare permalink, with no occurrence
 	 * segment, resolves to the next upcoming occurrence.
 	 *
