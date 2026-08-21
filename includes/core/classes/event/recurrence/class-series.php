@@ -387,20 +387,18 @@ final class Series {
 		self::register_taxonomy_for( (string) get_post_type( $origin_post_id ) );
 
 		$term_id = $this->term_id_for_post( $origin_post_id );
-		$is_new  = 0 === $term_id;
+		$landed  = true;
 
-		if ( $is_new ) {
+		if ( 0 === $term_id ) {
 			$term_id = $this->create_term_for( $origin_post_id );
+			$landed  = 0 !== $term_id && $this->set_series_term( $origin_post_id, $term_id );
 		}
 
 		// Every write of the join must land, the relationship rows as much as
 		// the term itself. Reporting a term whose relationship write failed
 		// left the forward post outside the series with no error anywhere,
 		// while the caller treated the join phase as complete.
-		if ( 0 === $term_id
-			|| ( $is_new && ! $this->set_series_term( $origin_post_id, $term_id ) )
-			|| ! $this->set_series_term( $forward_post_id, $term_id )
-		) {
+		if ( ! $landed || ! $this->set_series_term( $forward_post_id, $term_id ) ) {
 			return 0;
 		}
 

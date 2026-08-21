@@ -1068,5 +1068,4 @@ class Test_Series extends Base {
 			'Failed to assert filtered duplicates and numeric strings are cast, deduplicated and sorted.'
 		);
 	}
-
 }
