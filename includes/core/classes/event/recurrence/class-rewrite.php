@@ -366,7 +366,8 @@ final class Rewrite {
 	 * origin, or point at B's and the page contradicts the URL it was served
 	 * from. It would render B's title, content and RSVP form under A's slug and
 	 * A's authorization, which is precisely the shape of the sibling-authorization
-	 * defect W6 was dispatched to fix. And it would leave the visitor's address
+	 * defect that resolving an occurrence through its authoritative owner
+	 * exists to prevent. And it would leave the visitor's address
 	 * bar naming a fragment whose dates have all passed, so sharing it starts
 	 * the same detour again.
 	 *
@@ -434,8 +435,9 @@ final class Rewrite {
 	 * already-run query result and nothing else, which covers every series on a
 	 * site that has never split anything.
 	 *
-	 * The destination is an `Occurrence_Identity`, resolved by W6's seam rather
-	 * than read off the query row, so the post the visitor is sent to is the one
+	 * The destination is an `Occurrence_Identity`, resolved by the occurrence
+	 * ownership seam rather than read off the query row, so the post the
+	 * visitor is sent to is the one
 	 * the identity seam names as the owner.
 	 *
 	 * @since 0.36.0

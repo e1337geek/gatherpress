@@ -10,8 +10,8 @@
  *
  * The anchor is pinned rather than relative on purpose: every assertion here
  * compares against a fixed expected value rather than against the clock.
- * Every assertion here is rule + anchor -> occurrence set and row ownership --
- * a stated specification, compared against nothing that moves. Nothing in this
+ * Every assertion here is rule + anchor -> occurrence set and row ownership,
+ * a stated specification compared against nothing that moves. Nothing in this
  * file reads `current_time()`, so advancing the clock cannot change an expected
  * value.
  *
@@ -223,9 +223,9 @@ class Test_Splitter extends Base {
 	 * The constructor is empty but not pointless.
 	 *
 	 * `Traits\Singleton` declares no constructor, so deleting this one hands the
-	 * class PHP's implicit **public** one and `new Splitter()` becomes legal --
-	 * two instances of a singleton, which is the one thing `get_instance()`
-	 * exists to prevent.
+	 * class PHP's implicit **public** one and `new Splitter()` becomes legal,
+	 * allowing two instances of a singleton, which is the one thing
+	 * `get_instance()` exists to prevent.
 	 *
 	 * @covers ::__construct
 	 *
@@ -766,7 +766,7 @@ class Test_Splitter extends Base {
 		$rule      = Rule::from_array( self::SIX_WEEK_RULE );
 
 		// A fixed UTC offset carries no DST rules, so `Expander::expand()`
-		// refuses it. The filter is the reachable production route to one --
+		// refuses it. The filter is the reachable production route to one, because
 		// GatherPress's own validation runs before it.
 		$offset = static function (): string {
 			return '+05:30';
@@ -1047,8 +1047,8 @@ class Test_Splitter extends Base {
 	 * What that does and does not get for free is worth stating exactly. The
 	 * **aggregate** feeds (site-wide, archive, venue, taxonomy) enumerate
 	 * through `Event\Query::get_events_list()`, which matches
-	 * both posts of a split series because both are ordinary published events --
-	 * so no fragment is lost, and no change in the calendar layer is needed for
+	 * both posts of a split series because both are ordinary published events.
+	 * No fragment is lost, and no change in the calendar layer is needed for
 	 * that. What they do **not** do is enumerate occurrences: that query asks for
 	 * `fields => 'ids'`, which `Recurrence\Query::expand_event_clauses()`
 	 * deliberately exempts from expansion because a repeated bare post ID cannot

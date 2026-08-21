@@ -10,8 +10,9 @@
  * The durable relationship between the event posts a split produces is the
  * `_gatherpress_series` taxonomy on the **event posts**: a shared private
  * taxonomy term resolves every sibling in one lookup. Not a term on each
- * instance, which presupposes instances that are posts and is excluded by
- * #80's R1; not a Series post type, which is ECP's answer and which ECP needs
+ * instance, which presupposes instances that are posts and is excluded by the
+ * governing constraint that a series stays one event record rather than many
+ * duplicated post rows; not a Series post type, which is ECP's answer and which ECP needs
  * only because it allows multiple rules per event, which this subsystem does
  * not.
  *

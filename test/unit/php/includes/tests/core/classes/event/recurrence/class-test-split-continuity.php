@@ -914,8 +914,9 @@ class Test_Split_Continuity extends Base {
 
 		// The field list is written out rather than read from
 		// `COPIED_POST_FIELDS`, because deriving it from the constant would make
-		// removing a field from the constant remove it from the assertion too --
-		// a test that can never fail for the one defect it exists to catch.
+		// removing a field from the constant remove it from the assertion too,
+		// leaving a test that can never fail for the one defect it exists to
+		// catch.
 		$fields   = array(
 			'comment_status',
 			'menu_order',

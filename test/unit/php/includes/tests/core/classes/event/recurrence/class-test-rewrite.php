@@ -932,8 +932,8 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for D-4: visiting a recurring series at its bare permalink
-	 * (no occurrence segment) resolves to the next upcoming occurrence.
+	 * Visiting a recurring series at its bare permalink, with no occurrence
+	 * segment, resolves to the next upcoming occurrence.
 	 *
 	 * @covers ::parse_request
 	 * @covers ::maybe_resolve_bare_series
@@ -1213,7 +1213,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * W7 acceptance 5: a lapsed fragment's bare URL follows the logical series.
+	 * A lapsed fragment's bare URL follows the logical series.
 	 *
 	 * The origin's own dates have all passed while the same logical series has
 	 * upcoming dates on the post a forward split created. Rendering the origin's
@@ -1282,7 +1282,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * W7 acceptance 6: a private sibling is never revealed by a bare URL.
+	 * A private sibling is never revealed by a bare URL.
 	 *
 	 * A visitor who may not read the forward post must not be sent to it, and
 	 * must not be able to tell from the response that it exists. The request
@@ -1354,7 +1354,7 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * W7 acceptance 6: a password-protected sibling is followed, not bypassed.
+	 * A password-protected sibling is followed, not bypassed.
 	 *
 	 * The password gate belongs to the destination's own rendering and still
 	 * runs there. Refusing the redirect would instead hide a date the series

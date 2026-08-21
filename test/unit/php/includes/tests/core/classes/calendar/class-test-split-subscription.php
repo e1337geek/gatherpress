@@ -318,7 +318,7 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * W7 acceptance 1: the stable subscription still yields every date, once.
+	 * A subscription taken out before the split still yields every date, once.
 	 *
 	 * @covers ::get_ical_file
 	 * @covers ::series_component_post_ids
@@ -377,11 +377,11 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * W7 acceptance 2: a change on either fragment moves the stable validators.
+	 * A change on either fragment moves the stable URL's validators.
 	 *
 	 * `Last-Modified` has one-second resolution and a test runs well inside one,
-	 * so the entity tag and the cache namespace are what carry the assertion --
-	 * they are what a revalidating client and the stored body are compared by.
+	 * so the entity tag and the cache namespace are what carry the assertion.
+	 * They are what a revalidating client and the stored body are compared by.
 	 *
 	 * @covers ::get_ical_file
 	 * @covers ::get_ics_cache_key
@@ -458,7 +458,7 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * W7 acceptance 3: the capped component announces itself as newer.
+	 * The capped origin component announces itself as newer.
 	 *
 	 * The measurement is taken **at the rule-cap phase**, not across the whole
 	 * split. Moving the occurrence rows already advances the revision through
@@ -528,7 +528,7 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * W7 acceptance 4: a client merge replaces the old expansion.
+	 * A client merge of the new bytes replaces the old expansion.
 	 *
 	 * The merge follows RFC 5545 section 3.8.7.4: an incoming component with a
 	 * known `UID` replaces the held one when its `SEQUENCE` is greater, and an
@@ -583,7 +583,7 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * W7 acceptance 6: a private fragment is not exported to a visitor.
+	 * A private fragment is not exported to a visitor.
 	 *
 	 * @covers ::series_component_post_ids
 	 * @covers ::is_readable_fragment
@@ -636,7 +636,7 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * W7 acceptance 6: a password-protected fragment stays behind its password.
+	 * A password-protected fragment stays behind its password.
 	 *
 	 * @covers ::series_component_post_ids
 	 * @covers ::is_readable_fragment
