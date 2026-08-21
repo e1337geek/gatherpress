@@ -734,6 +734,49 @@ class Test_Rsvp_Occurrence extends Base {
 	}
 
 	/**
+	 * The explicit-scope requirement holds exactly for recurring series.
+	 *
+	 * Three arms, one per branch: a site with no recurring events answers from
+	 * the autoloaded option alone, a non-recurring event on a recurring site
+	 * is not required to carry a scope, and the recurring series itself is.
+	 * The middle arm is the one that matters: were the requirement keyed on
+	 * the site flag rather than on the event's own rule, every ordinary
+	 * event's classic submission would be refused the moment any other event
+	 * on the site became recurring.
+	 *
+	 * @covers ::requires_explicit_scope
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::has_recurrence_rule
+	 *
+	 * @return void
+	 */
+	public function test_requires_explicit_scope_holds_exactly_for_recurring_series(): void {
+		$plain_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		Recurrence_Query::refresh_has_recurring_events();
+
+		$this->assertFalse(
+			Rsvp_Occurrence::requires_explicit_scope( $plain_id ),
+			'Failed to assert no event requires a scope on a site with no recurring events.'
+		);
+
+		$series_id = $this->create_and_project();
+
+		$this->assertFalse(
+			Rsvp_Occurrence::requires_explicit_scope( $plain_id ),
+			'Failed to assert a non-recurring event requires no scope even on a recurring site.'
+		);
+		$this->assertTrue(
+			Rsvp_Occurrence::requires_explicit_scope( $series_id ),
+			'Failed to assert a recurring series requires an explicit scope.'
+		);
+	}
+
+	/**
 	 * The attendance limit and the waiting list are counted per occurrence.
 	 *
 	 * @covers ::assign

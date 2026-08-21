@@ -56,6 +56,21 @@ final class Form {
 	const RECURRENCE_ID_FIELD = 'gatherpress_recurrence_id';
 
 	/**
+	 * Posted marker value that means the whole series, deliberately.
+	 *
+	 * A recurring event's form always posts a scope: an occurrence identifier
+	 * inside occurrence context, and this value everywhere else. That is what
+	 * lets `posted_occurrence()` tell an intentional series-wide submission
+	 * apart from a stale pre-upgrade page posting with no field at all, which
+	 * is refused rather than silently widened. The value cannot collide with a
+	 * real identifier, which is always in `Ymd\THis` form.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const RECURRENCE_SCOPE_SERIES = 'series';
+
+	/**
 	 * The occurrence context standing before this submission entered one.
 	 *
 	 * `wp-comments-post.php` ends in a redirect rather than in a teardown hook,
@@ -566,7 +581,7 @@ final class Form {
 	}
 
 	/**
-	 * Resolve the occurrence a classic form submission names, or refuse it.
+	 * Resolve the scope a classic form submission names, or refuse it.
 	 *
 	 * The hidden field is user-controllable, so it is validated against the
 	 * event's own series exactly as the REST layer validates its argument, and
@@ -576,25 +591,50 @@ final class Form {
 	 * all of them, and nothing afterwards can tell that apart from a deliberate
 	 * series RSVP.
 	 *
+	 * A recurring event's form always carries the field, with an occurrence
+	 * identifier or with the explicit `series` value, so on such an event a
+	 * submission with no field at all can only come from markup rendered
+	 * before the field existed: a reverse proxy or page cache holding
+	 * pre-upgrade occurrence-page HTML, posted natively with JavaScript
+	 * unavailable. That submission is refused with a reload-oriented error
+	 * rather than widened, for the same reason an unresolvable identifier is.
+	 * A fresh render carries the marker and goes through.
+	 *
 	 * `HTTP_REFERER` is deliberately not consulted. It is attacker-controlled
 	 * and routinely stripped by privacy tooling, so scoping a write by it would
 	 * be a worse failure mode than the honest series-wide behavior.
 	 *
-	 * On a site with no recurring events no field is rendered and the resolver
-	 * short-circuits before touching occurrence storage, so this returns null
-	 * and the submission runs the SQL it always ran.
+	 * On a site with no recurring events no field is rendered, the missing
+	 * field is legitimate, and `requires_explicit_scope()` short-circuits on
+	 * the autoloaded option before touching occurrence storage, so this
+	 * returns null and the submission runs the SQL it always ran.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id The event post ID the submission names.
 	 *
-	 * @return Occurrence_Identity|null The resolved occurrence, or null when the submission names none.
+	 * @return Occurrence_Identity|null The resolved occurrence, or null for a series-wide submission.
 	 */
 	private function posted_occurrence( int $post_id ): ?Occurrence_Identity {
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing
 		$recurrence_id = (string) Utility::get_http_input( INPUT_POST, self::RECURRENCE_ID_FIELD );
 
+		if ( self::RECURRENCE_SCOPE_SERIES === $recurrence_id ) {
+			return null;
+		}
+
 		if ( '' === $recurrence_id ) {
+			if ( Rsvp_Occurrence::requires_explicit_scope( $post_id ) ) {
+				wp_die(
+					esc_html__(
+						'This RSVP form is out of date. Please reload the page and try again.',
+						'gatherpress'
+					),
+					esc_html__( 'Reload Required', 'gatherpress' ),
+					409
+				);
+			}
+
 			return null;
 		}
 

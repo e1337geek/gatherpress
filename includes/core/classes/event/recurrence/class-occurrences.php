@@ -763,13 +763,18 @@ final class Occurrences {
 	 * served from the post meta cache `maybe_lazy_repair()` primes in one
 	 * batch for the whole read.
 	 *
+	 * Public because `Rsvp_Occurrence::requires_explicit_scope()` keys the
+	 * classic RSVP form's scope requirement on the same presence test, so the
+	 * renderer and the submission handler cannot drift from what the lazy
+	 * repair treats as a series.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID to check.
 	 *
 	 * @return bool True when the post has a non-empty recurrence end-type mirror.
 	 */
-	protected function has_recurrence_rule( int $post_id ): bool {
+	public function has_recurrence_rule( int $post_id ): bool {
 		return '' !== (string) get_post_meta( $post_id, 'gatherpress_recurrence_end_type', true );
 	}
 

@@ -178,7 +178,7 @@ final class Rsvp_Form {
 	}
 
 	/**
-	 * Emit the occurrence this form was rendered for as a posted field.
+	 * Emit the scope this form was rendered for as a posted field.
 	 *
 	 * The block form submits through the REST route, which carries the
 	 * occurrence as a request argument. The **no-JavaScript fallback** posts
@@ -193,6 +193,13 @@ final class Rsvp_Form {
 	 * interactivity runtime reads it, which is exactly the runtime this path
 	 * exists for the absence of.
 	 *
+	 * A recurring event's form emits the field on **every** render, not only
+	 * inside occurrence context: outside one it carries the explicit series
+	 * value. That is what lets `Rsvp\Form::posted_occurrence()` tell an
+	 * intentional series-wide submission apart from a stale pre-upgrade page
+	 * posting with no field at all, which it refuses with a reload error
+	 * rather than silently widening.
+	 *
 	 * The value is user-controllable, which is why `Rsvp\Form` validates it
 	 * against the event's own series rather than trusting it. That is the same
 	 * trust model `comment_post_ID` beside it already operates under. The
@@ -201,21 +208,27 @@ final class Rsvp_Form {
 	 * stripped, so scoping a write by it is a worse failure mode than the
 	 * honest series-wide behavior it would replace.
 	 *
-	 * Outside occurrence context, and on every site with no recurring events,
+	 * For a non-recurring event, and on every site with no recurring events,
 	 * this returns an empty string and the emitted form is byte-identical to
-	 * the one this block has always rendered.
+	 * the one this block has always rendered;
+	 * `Rsvp_Occurrence::requires_explicit_scope()` decides from the autoloaded
+	 * option before touching occurrence storage.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id The event post ID the form belongs to.
 	 *
-	 * @return string The hidden input, or an empty string outside occurrence context.
+	 * @return string The hidden input, or an empty string for a non-recurring event.
 	 */
 	private function occurrence_input( int $post_id ): string {
 		$recurrence_id = Rsvp_Occurrence::current_recurrence_id( $post_id );
 
 		if ( null === $recurrence_id ) {
-			return '';
+			if ( ! Rsvp_Occurrence::requires_explicit_scope( $post_id ) ) {
+				return '';
+			}
+
+			$recurrence_id = Rsvp_Form_Handler::RECURRENCE_SCOPE_SERIES;
 		}
 
 		return sprintf(

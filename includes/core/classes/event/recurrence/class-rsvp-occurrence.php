@@ -191,6 +191,36 @@ final class Rsvp_Occurrence {
 	}
 
 	/**
+	 * Report whether an event's classic RSVP writes need an explicit scope.
+	 *
+	 * True exactly when the event is a recurring series, which is when a
+	 * response can mean either one date or all of them and the two must never
+	 * be conflated. `Blocks\Rsvp_Form` renders a scope marker on every such
+	 * form, an occurrence identifier or the explicit series value, and
+	 * `Rsvp\Form` refuses a submission that carries neither: a marker-less
+	 * submission to a recurring event can only come from markup rendered
+	 * before the marker existed, and treating it as an intentional series-wide
+	 * RSVP writes data nothing can afterwards tell apart from one.
+	 *
+	 * The presence test is `Occurrences::has_recurrence_rule()`, the same
+	 * mirror every other series-shaped decision reads, so the renderer and the
+	 * handler cannot disagree about which events require the marker. The site
+	 * flag guard runs first: on a site with no recurring events this returns
+	 * false from the autoloaded option alone, and both callers keep the exact
+	 * behavior they had before the marker existed.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Event post ID the form belongs to.
+	 *
+	 * @return bool True when submissions must carry an explicit scope marker.
+	 */
+	public static function requires_explicit_scope( int $post_id ): bool {
+		return Query::site_has_recurring_events()
+			&& Occurrences::get_instance()->has_recurrence_rule( $post_id );
+	}
+
+	/**
 	 * Build the interactivity block context one rendered row publishes to the client.
 	 *
 	 * The single source of truth for that payload, and the reason it exists is
