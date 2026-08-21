@@ -94,7 +94,9 @@ const ApplyScope = ( { postId } ) => {
 		}
 
 		apiFetch( {
-			path: `${ EVENT_REST_API }/occurrences?post_id=${ postId }`,
+			path: addQueryArgs( `${ EVENT_REST_API }/occurrences`, {
+				post_id: postId,
+			} ),
 		} )
 			.then( ( rows ) => {
 				if ( ! isCurrent() ) {

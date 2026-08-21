@@ -9,12 +9,13 @@
  *
  * The durable relationship between the event posts a split produces is the
  * `_gatherpress_series` taxonomy on the **event posts**: a shared private
- * taxonomy term resolves every sibling in one lookup. Not a term on each
- * instance, which presupposes instances that are posts and is excluded by the
- * governing constraint that a series stays one event record rather than many
- * duplicated post rows; not a Series post type, which is ECP's answer and which ECP needs
- * only because it allows multiple rules per event, which this subsystem does
- * not.
+ * taxonomy term resolves every fragment of a split series in one lookup. An
+ * occurrence stays a table row rather than a post, so the term relates the
+ * few posts splitting created, never one record per date. A term on each
+ * occurrence was rejected because it presupposes occurrences that are posts;
+ * a dedicated Series post type, which is how The Events Calendar Pro models
+ * recurrence, was rejected because that plugin needs it only to support
+ * several rules per event, which this subsystem does not allow.
  *
  * Two properties of that choice are load-bearing and are asserted by tests
  * rather than left to the reader:

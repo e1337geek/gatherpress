@@ -163,7 +163,7 @@ class Test_Series extends Base {
 		$this->assertSame(
 			$expected,
 			$instance->resolve_post_ids( $origin_id ),
-			'Failed to assert the original post resolves to both halves of the split series.'
+			'Failed to assert the original post resolves to both fragments of the split series.'
 		);
 
 		$instance->flush_memo();
@@ -171,7 +171,7 @@ class Test_Series extends Base {
 		$this->assertSame(
 			$expected,
 			$instance->resolve_post_ids( $forward ),
-			'Failed to assert the forward post resolves to both halves of the split series.'
+			'Failed to assert the forward post resolves to both fragments of the split series.'
 		);
 	}
 

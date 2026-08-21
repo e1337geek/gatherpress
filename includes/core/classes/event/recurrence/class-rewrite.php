@@ -371,21 +371,21 @@ final class Rewrite {
 	 * the logical series.**
 	 *
 	 * Concretely: `next_upcoming_recurrence_id()` scopes its read to the post
-	 * the request named, so the only rows it can answer with are that post's
-	 * own. Today that is indistinguishable from reading the whole series,
-	 * because `Series::resolve_post_ids()` returns `array( $post_id )` and one
-	 * post is the whole series. They separate the moment the forward split
-	 * makes a series span several posts, and the scoping is what decides the
-	 * behavior then:
+	 * the request named, in SQL, so the only rows it can answer with are that
+	 * post's own. On a series that has never been split the scoping is
+	 * indistinguishable from reading the whole series, because
+	 * `Series::resolve_post_ids()` returns `array( $post_id )` and one post is
+	 * the whole series. They separate the moment a forward split makes a series
+	 * span several posts, and the scoping is what decides the behavior then:
 	 *
-	 * - **Fragment semantics (resolution).** `/{slug-of-piece-A}/` resolves to
+	 * - **Fragment semantics (resolution).** `/{slug-of-fragment-A}/` resolves to
 	 *   A's own next upcoming occurrence, in place, under A's slug.
 	 * - **Logical-series semantics (redirect).** Once A has nothing upcoming of
 	 *   its own, the request is answered by a `301` to the occurrence URL of the
 	 *   series' earliest upcoming row, wherever in the series it lives.
 	 *
 	 * **Both, in that order, and the second is a redirect rather than a
-	 * resolution.** The narrowing comparison in `next_upcoming_recurrence_id()`
+	 * resolution.** The post scoping in `next_upcoming_recurrence_id()`
 	 * still decides what may be rendered under the requested slug, so invariant
 	 * 2 below holds exactly as written: a bare request never *resolves* into
 	 * another post's occurrence. When A has nothing left, the alternative to
