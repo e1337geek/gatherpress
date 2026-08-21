@@ -4,7 +4,7 @@
 import { __, _n, sprintf } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
 import { Button, RadioControl, SelectControl } from '@wordpress/components';
-import { useSelect } from '@wordpress/data';
+import { useDispatch, useSelect } from '@wordpress/data';
 import { dateI18n, getSettings } from '@wordpress/date';
 import { useEffect, useRef, useState } from '@wordpress/element';
 import { addQueryArgs } from '@wordpress/url';
@@ -56,6 +56,19 @@ const ApplyScope = ( { postId } ) => {
 		( select ) => select( 'core/editor' ).isEditedPostDirty(),
 		[]
 	);
+
+	const { postType, restBase, restNamespace } = useSelect( ( select ) => {
+		const type = select( 'core/editor' )?.getCurrentPostType?.();
+		const typeObject = type ? select( 'core' )?.getPostType?.( type ) : undefined;
+
+		return {
+			postType: type,
+			restBase: typeObject?.rest_base,
+			restNamespace: typeObject?.rest_namespace ?? 'wp/v2',
+		};
+	}, [] );
+
+	const { receiveEntityRecords } = useDispatch( 'core' );
 
 	const latestRequest = useRef( 0 );
 
@@ -146,6 +159,46 @@ const ApplyScope = ( { postId } ) => {
 	};
 
 	/**
+	 * Refresh the origin post's stored entity after a split rewrote it.
+	 *
+	 * The split caps the origin's rule server side (and can rewrite its
+	 * datetime when a side demotes) while the editor's copy of the post stays
+	 * as it was before the split. The recurrence panel seeds from that stale
+	 * `gatherpress_recurrence`, so without this refresh one touch of any rule
+	 * control re-persists the pre-split rule and re-projects the moved
+	 * occurrences under the origin while the forward post still owns them.
+	 * Receiving the fresh record updates `gatherpress_recurrence` and
+	 * `gatherpress_datetime` in the store, and the panel's own meta effect
+	 * re-parses the capped rule from it.
+	 *
+	 * @param {Function} isCurrent Whether the panel still shows this post.
+	 *
+	 * @return {Promise|undefined} The refresh request, when one can be built.
+	 */
+	const refreshOriginEntity = ( isCurrent ) => {
+		// A post type whose REST base has not resolved leaves nothing to
+		// fetch; the next full entity resolution catches the editor up.
+		if ( ! postType || ! restBase ) {
+			return undefined;
+		}
+
+		return apiFetch( {
+			path: addQueryArgs( `/${ restNamespace }/${ restBase }/${ postId }`, {
+				context: 'edit',
+			} ),
+		} )
+			.then( ( record ) => {
+				if ( isCurrent() && record ) {
+					receiveEntityRecords( 'postType', postType, record );
+				}
+			} )
+			.catch( () => {
+				// The split itself succeeded. A failed refresh leaves the
+				// notice in place and the stale panel to the next resolution.
+			} );
+	};
+
+	/**
 	 * Split the series at the chosen occurrence.
 	 *
 	 * @return {void}
@@ -172,11 +225,18 @@ const ApplyScope = ( { postId } ) => {
 		} )
 			.then( ( result ) => {
 				if ( ! isCurrent() ) {
-					return;
+					return undefined;
 				}
 
 				setNotice( describe( result ) );
 				setForwardPostId( result.forward_post_id ?? 0 );
+
+				// Nothing changed server side when nothing was split, so
+				// there is nothing to refresh. Returning the refresh keeps
+				// the button busy until the store is consistent again.
+				return result.split
+					? refreshOriginEntity( isCurrent )
+					: undefined;
 			} )
 			.catch( () => {
 				if ( isCurrent() ) {
