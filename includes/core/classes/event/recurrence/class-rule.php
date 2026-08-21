@@ -265,12 +265,19 @@ final class Rule {
 	/**
 	 * Build a rule from a decoded value array.
 	 *
-	 * Coerces and clamps values that have a safe, unambiguous coercion (a
-	 * sub-one interval becomes 1) and rejects, by returning null, anything
-	 * that cannot be honestly expanded or that violates RFC 5545 (`UNTIL` and
-	 * `COUNT` both present, `COUNT` or `INTERVAL` above their authoring caps,
-	 * or a `COUNT` rule whose worst-case iteration budget would exceed
-	 * `Expander::MAX_ITERATIONS`).
+	 * Coerces and clamps only values that have a safe, unambiguous coercion (a
+	 * sub-one integer interval becomes 1) and rejects, by returning null,
+	 * anything else: a non-integer value in an integer field (via
+	 * `to_int()`, so `'not-a-number'` never becomes interval 1 and
+	 * `'not-a-weekday'` never becomes Sunday), a nonempty `until` that is not
+	 * a canonical `Y-m-d` date, anything that cannot be honestly expanded, and
+	 * anything that violates RFC 5545 (`UNTIL` and `COUNT` both present,
+	 * `COUNT` or `INTERVAL` above their authoring caps, or a `COUNT` rule
+	 * whose worst-case iteration budget would exceed
+	 * `Expander::MAX_ITERATIONS`). The `UNTIL`/`COUNT` mutual exclusion runs
+	 * against the raw field's presence, never against its parse result, so a
+	 * malformed `until` cannot slip a `COUNT` rule past the check by failing
+	 * to parse.
 	 *
 	 * @since 0.36.0
 	 *
@@ -279,25 +286,36 @@ final class Rule {
 	 * @return Rule|null The rule, or null when the values do not describe one.
 	 */
 	public static function from_array( array $values ): ?Rule {
-		$frequency = (string) ( $values['frequency'] ?? '' );
-		$interval  = (int) ( $values['interval'] ?? 1 );
-		$interval  = $interval < 1 ? 1 : $interval;
+		$valid = true;
 
-		$weekdays = array_values(
-			array_unique(
-				array_map( 'intval', is_array( $values['weekdays'] ?? null ) ? $values['weekdays'] : array() )
-			)
+		$integer_defaults = array(
+			'interval'        => 1,
+			'monthly_day'     => 0,
+			'monthly_ordinal' => 0,
+			'monthly_weekday' => 0,
+			'count'           => 0,
 		);
+		$integers         = array();
+
+		foreach ( $integer_defaults as $field => $default ) {
+			$integer            = self::to_int( $values[ $field ] ?? $default );
+			$valid              = $valid && null !== $integer;
+			$integers[ $field ] = $integer ?? 0;
+		}
+
+		$weekdays = array();
+
+		foreach ( is_array( $values['weekdays'] ?? null ) ? $values['weekdays'] : array() as $weekday ) {
+			$weekday_int = self::to_int( $weekday );
+			$valid       = $valid && null !== $weekday_int;
+			$weekdays[]  = $weekday_int ?? 0;
+		}
+
+		$weekdays = array_values( array_unique( $weekdays ) );
 		sort( $weekdays );
 
-		$monthly_mode    = (string) ( $values['monthly_mode'] ?? '' );
-		$monthly_day     = (int) ( $values['monthly_day'] ?? 0 );
-		$monthly_ordinal = (int) ( $values['monthly_ordinal'] ?? 0 );
-		$monthly_weekday = (int) ( $values['monthly_weekday'] ?? 0 );
-		$end_type        = (string) ( $values['end_type'] ?? '' );
-		$count           = (int) ( $values['count'] ?? 0 );
-
 		$raw_until = $values['until'] ?? '';
+		$has_until = null !== $raw_until && '' !== $raw_until;
 		$until     = null;
 
 		if ( is_string( $raw_until ) && '' !== $raw_until ) {
@@ -315,27 +333,60 @@ final class Rule {
 			$until = ( false !== $parsed && $clean ) ? $parsed : null;
 		}
 
-		// RFC 5545 forbids a rule that carries both an end date and an
-		// occurrence count, so reject at the boundary rather than silently
-		// preferring one.
-		if ( null !== $until && $count > 0 ) {
+		// A nonempty `until` that did not parse, whether malformed or not a
+		// string at all, is rejected rather than erased. RFC 5545 also forbids
+		// a rule carrying both an end date and an occurrence count; that
+		// exclusion is checked on the raw field's presence so an unparseable
+		// `until` cannot evade it.
+		if ( ! $valid
+			|| ( $has_until && null === $until )
+			|| ( $has_until && $integers['count'] > 0 )
+		) {
 			return null;
 		}
 
 		$rule = new self(
-			$frequency,
-			$interval,
+			(string) ( $values['frequency'] ?? '' ),
+			$integers['interval'] < 1 ? 1 : $integers['interval'],
 			$weekdays,
-			$monthly_mode,
-			$monthly_day,
-			$monthly_ordinal,
-			$monthly_weekday,
-			$end_type,
+			(string) ( $values['monthly_mode'] ?? '' ),
+			$integers['monthly_day'],
+			$integers['monthly_ordinal'],
+			$integers['monthly_weekday'],
+			(string) ( $values['end_type'] ?? '' ),
 			$until,
-			$count
+			$integers['count']
 		);
 
 		return $rule->is_valid() ? $rule : null;
+	}
+
+	/**
+	 * Read a decoded scalar as an integer, or null when it is not one.
+	 *
+	 * Accepts a real integer or a complete-match canonical integer string
+	 * (`'3'`, `'-1'`), the two forms a JSON body and a form serialization
+	 * legitimately produce for the same field. Everything else, including
+	 * booleans, floats, zero-padded strings, and arbitrary words, returns
+	 * null so the caller rejects the value instead of `intval()` silently
+	 * turning it into a different schedule.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param mixed $value Decoded value to read.
+	 *
+	 * @return int|null The integer, or null when the value is not an integer.
+	 */
+	private static function to_int( $value ): ?int {
+		$result = null;
+
+		if ( is_int( $value ) ) {
+			$result = $value;
+		} elseif ( is_string( $value ) && 1 === preg_match( '/^-?(?:0|[1-9][0-9]*)$/', $value ) ) {
+			$result = (int) $value;
+		}
+
+		return $result;
 	}
 
 	/**

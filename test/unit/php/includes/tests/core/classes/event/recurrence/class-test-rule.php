@@ -890,6 +890,32 @@ class Test_Rule extends Base {
 	}
 
 	/**
+	 * Direct coverage for `to_int()`'s three outcomes. It is called from
+	 * loops inside `from_array()` in the same class, which xdebug does not
+	 * trace into reliably.
+	 *
+	 * @covers ::to_int
+	 *
+	 * @return void
+	 */
+	public function test_to_int_covers_every_branch(): void {
+		$to_int = new \ReflectionMethod( Rule::class, 'to_int' );
+		$to_int->setAccessible( true );
+
+		$this->assertSame( 3, $to_int->invoke( null, 3 ), 'Failed to assert that a real integer passes through.' );
+		$this->assertSame(
+			-1,
+			$to_int->invoke( null, '-1' ),
+			'Failed to assert that a canonical negative integer string is read.'
+		);
+		$this->assertSame( 0, $to_int->invoke( null, '0' ), 'Failed to assert that the canonical zero string is read.' );
+		$this->assertNull( $to_int->invoke( null, '007' ), 'Failed to assert that a zero-padded string is rejected.' );
+		$this->assertNull( $to_int->invoke( null, true ), 'Failed to assert that a boolean is rejected.' );
+		$this->assertNull( $to_int->invoke( null, 2.5 ), 'Failed to assert that a float is rejected.' );
+		$this->assertNull( $to_int->invoke( null, null ), 'Failed to assert that null is rejected.' );
+	}
+
+	/**
 	 * A malformed nonempty `until` alongside a `count` is rejected, never
 	 * silently resolved into a valid `COUNT` rule.
 	 *
