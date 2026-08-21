@@ -671,9 +671,131 @@ class Test_Series extends Base {
 				'priority' => 11,
 				'callback' => array( $instance, 'register' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'before_delete_post',
+				'priority' => 10,
+				'callback' => array( $instance, 'remember_series_term' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'after_delete_post',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_delete_orphan_term' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );
+	}
+
+	/**
+	 * The deletion capture ignores post types without event-date support.
+	 *
+	 * @covers ::remember_series_term
+	 *
+	 * @return void
+	 */
+	public function test_remember_series_term_ignores_unsupported_post_types(): void {
+		$post_id  = $this->factory->post->create( array( 'post_type' => 'post' ) );
+		$instance = Series::get_instance();
+
+		$instance->remember_series_term( $post_id, get_post( $post_id ) );
+
+		$this->assertSame(
+			array(),
+			Utility::get_hidden_property( $instance, 'terms_pending_deletion' ),
+			'A post type without event-date support must never be remembered for term cleanup.'
+		);
+	}
+
+	/**
+	 * A supported post with no series term leaves nothing pending.
+	 *
+	 * The unsplit series, which is every series on a site that has never split
+	 * anything: its deletion must not queue term work it has no term for.
+	 *
+	 * @covers ::remember_series_term
+	 *
+	 * @return void
+	 */
+	public function test_remember_series_term_skips_a_post_without_a_term(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Series::get_instance();
+
+		Series::register_taxonomy_for( Event::POST_TYPE );
+
+		$instance->remember_series_term( $post_id, get_post( $post_id ) );
+
+		$this->assertSame(
+			array(),
+			Utility::get_hidden_property( $instance, 'terms_pending_deletion' ),
+			'An unsplit series has no term, so nothing must be remembered.'
+		);
+	}
+
+	/**
+	 * A deletion nothing was remembered for is a no-op.
+	 *
+	 * @covers ::maybe_delete_orphan_term
+	 *
+	 * @return void
+	 */
+	public function test_maybe_delete_orphan_term_ignores_an_unremembered_post(): void {
+		$origin_id = $this->create_and_project();
+		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+		$term_id   = Series::get_instance()->term_id_for_post( $origin_id );
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+
+		Series::get_instance()->maybe_delete_orphan_term( $origin_id );
+
+		$this->assertInstanceOf(
+			\WP_Term::class,
+			get_term( $term_id, Series::TAXONOMY ),
+			'A post the capture never remembered must not cost its live series the term.'
+		);
+	}
+
+	/**
+	 * A pending term whose taxonomy vanished mid-request is left alone.
+	 *
+	 * `get_objects_in_term()` answers a `WP_Error` for an unregistered
+	 * taxonomy, and acting on that answer as though it were an empty
+	 * membership would delete a term whose membership was never actually read.
+	 *
+	 * @covers ::maybe_delete_orphan_term
+	 *
+	 * @return void
+	 */
+	public function test_maybe_delete_orphan_term_leaves_the_term_on_a_membership_error(): void {
+		$origin_id = $this->create_and_project();
+		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+		$term_id   = Series::get_instance()->term_id_for_post( $origin_id );
+		$instance  = Series::get_instance();
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+
+		Utility::set_and_get_hidden_property(
+			$instance,
+			'terms_pending_deletion',
+			array( $origin_id => $term_id )
+		);
+		$this->forget_series_taxonomy();
+
+		$instance->maybe_delete_orphan_term( $origin_id );
+
+		Series::register_taxonomy_for( Event::POST_TYPE );
+
+		$this->assertInstanceOf(
+			\WP_Term::class,
+			get_term( $term_id, Series::TAXONOMY ),
+			'A membership read that errors must never be treated as an empty membership.'
+		);
+		$this->assertSame(
+			array(),
+			Utility::get_hidden_property( $instance, 'terms_pending_deletion' ),
+			'The pending entry must be consumed even when the membership read errors.'
+		);
 	}
 
 	/**

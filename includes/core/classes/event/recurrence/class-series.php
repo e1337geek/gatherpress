@@ -38,6 +38,7 @@ namespace GatherPress\Core\Event\Recurrence;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Traits\Singleton;
+use WP_Post;
 
 /**
  * Class Series.
@@ -75,6 +76,20 @@ final class Series {
 	protected array $memo = array();
 
 	/**
+	 * Series terms of posts mid-hard-delete, keyed by post ID.
+	 *
+	 * The term has to be read on `before_delete_post`, while the relationship
+	 * row still exists, and acted on at `after_delete_post`, once WordPress
+	 * has removed it: `wp_delete_post()` deletes the relationships but never
+	 * the term, so the last fragment of a deleted split series would otherwise
+	 * strand one unreachable term row pair per series, forever.
+	 *
+	 * @since 0.36.0
+	 * @var array<int, int>
+	 */
+	protected array $terms_pending_deletion = array();
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -96,6 +111,69 @@ final class Series {
 	 */
 	protected function setup_hooks(): void {
 		add_action( 'registered_post_type', array( $this, 'register' ), 11 );
+		add_action( 'before_delete_post', array( $this, 'remember_series_term' ), 10, 2 );
+		add_action( 'after_delete_post', array( $this, 'maybe_delete_orphan_term' ) );
+	}
+
+	/**
+	 * Note the series term of a supported post about to be hard-deleted.
+	 *
+	 * On a site with no recurring events the taxonomy is never registered, so
+	 * the term read answers a `WP_Error` without touching the database and
+	 * nothing is remembered: an ordinary event's deletion stays free of series
+	 * work.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int     $post_id Post ID being deleted.
+	 * @param WP_Post $post    The post itself.
+	 *
+	 * @return void
+	 */
+	public function remember_series_term( int $post_id, WP_Post $post ): void {
+		if ( ! post_type_supports( $post->post_type, 'gatherpress-event-date' ) ) {
+			return;
+		}
+
+		$term_id = $this->term_id_for_post( $post_id );
+
+		if ( 0 !== $term_id ) {
+			$this->terms_pending_deletion[ $post_id ] = $term_id;
+		}
+	}
+
+	/**
+	 * Delete a series term once its last member post is gone.
+	 *
+	 * Idempotent by construction: the pending entry is consumed before the
+	 * membership read, and a term that still has members, or was already
+	 * deleted by the sibling's own deletion, is left alone. A term with
+	 * members is the surviving-fragment case, and deleting it would break the
+	 * survivors' resolution.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID that was deleted.
+	 *
+	 * @return void
+	 */
+	public function maybe_delete_orphan_term( int $post_id ): void {
+		if ( ! isset( $this->terms_pending_deletion[ $post_id ] ) ) {
+			return;
+		}
+
+		$term_id = $this->terms_pending_deletion[ $post_id ];
+
+		unset( $this->terms_pending_deletion[ $post_id ] );
+
+		// A `WP_Error` (the taxonomy vanished mid-request) and a non-empty
+		// member list both mean the term is not this callback's to delete.
+		$members = get_objects_in_term( array( $term_id ), self::TAXONOMY );
+
+		if ( is_array( $members ) && array() === $members ) {
+			wp_delete_term( $term_id, self::TAXONOMY );
+			$this->flush_memo();
+		}
 	}
 
 	/**
