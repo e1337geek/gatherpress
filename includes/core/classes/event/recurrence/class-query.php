@@ -566,7 +566,8 @@ final class Query {
 	 * still partition on the anchor, so a part-elapsed series can be filed
 	 * under Past while showing an upcoming date. Fixing that needs the *paired*
 	 * start and end of one chosen occurrence rather than two independent
-	 * aggregates, and it is not what REQ-17 asks for. The All view, which is
+	 * aggregates. It is a known residual of dating the column from the
+	 * occurrence, deliberately left for its own change. The All view, which is
 	 * where `edit.php` opens, is correct.
 	 *
 	 * @since 0.36.0

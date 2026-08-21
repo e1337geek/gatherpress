@@ -3,8 +3,8 @@
  * Class handles unit tests for the PHPUnit bootstrap's build-freshness guard.
  *
  * The guard itself lives at `test/unit/php/build-freshness.php` and runs before
- * WordPress loads, so it cannot be exercised end to end from inside a test --
- * it calls `exit( 1 )`. Its two directory-walking helpers are pure, though, and
+ * WordPress loads, so it cannot be exercised end to end from inside a test,
+ * because it calls `exit( 1 )`. Its two directory-walking helpers are pure, though, and
  * they are where the "is this build complete" decision is actually made, so
  * they are what these tests drive against real temporary directories.
  *

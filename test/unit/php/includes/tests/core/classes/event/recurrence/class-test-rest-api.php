@@ -403,8 +403,9 @@ class Test_Rest_Api extends Base {
 	 * own permission callback, and before `update_occurrence_status()` itself,
 	 * ever runs. This is not a property of our route: `rest_cookie_check_errors()`
 	 * gates every REST request the same way, so this test would pass even
-	 * against a completely unregistered route. It stays because the brief
-	 * asks for it and it does drive real dispatch machinery, but it proves
+	 * against a completely unregistered route. It stays because the nonce path
+	 * is worth exercising end to end and it does drive real dispatch
+	 * machinery, but it proves
 	 * the inherited protection holds rather than something specific to this
 	 * class, so it makes no `@covers` claim on our own callback.
 	 *

@@ -168,7 +168,7 @@ function parseRecurrenceBlob( raw ) {
  * day-of-month rule whose day field has been cleared or filled with something
  * that carries no day at all, or an end condition whose companion field
  * (`until`/`count`) has not been filled in yet. `applyRuleChange()` withholds the write while this is `false` rather
- * than persisting a blob the server would reject and silently discard --
+ * than persisting a blob the server would reject and silently discard.
  * `Meta::write_recurrence()` clears all ten mirrors when `Rule::from_array()`
  * rejects the decoded blob, and that rejection surfaces nowhere in the
  * editor, so the last known-good blob is left in place instead.

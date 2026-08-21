@@ -705,7 +705,7 @@ class Test_Meta extends Base {
 	/**
 	 * `write_recurrence()` defers to `shutdown` rather than clearing the
 	 * mirrors when the recurrence blob is present but the
-	 * `gatherpress_datetime` blob has not been written yet on this pass --
+	 * `gatherpress_datetime` blob has not been written yet on this pass. That is
 	 * the same race `set_recurrence()` already defends against for a missing
 	 * recurrence blob, mirrored for a missing timezone. `meta_input` on
 	 * `wp_insert_post()`, a WXR import, or a duplication plugin can all write
