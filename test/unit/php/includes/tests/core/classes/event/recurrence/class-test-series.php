@@ -740,4 +740,71 @@ class Test_Series extends Base {
 			$constructor->invoke( $class_name::get_instance() );
 		}
 	}
+
+	/**
+	 * The public resolver keeps its self-membership guarantee across the filter seam.
+	 *
+	 * The committed `test_resolution_always_includes_the_resolving_post()` drives
+	 * the protected, unfiltered helper, so it cannot catch a
+	 * `gatherpress_series_post_ids` filter that strips the resolving post.
+	 * The documented `@return` contract says the result always includes
+	 * `$post_id`; a filtered set omitting it would make every occurrence query
+	 * silently skip the post's own rows.
+	 *
+	 * @covers ::resolve_post_ids
+	 *
+	 * @return void
+	 */
+	public function test_a_filtered_resolution_still_includes_the_resolving_post(): void {
+		$post_id        = $this->factory->post->create();
+		$companion_id   = $this->factory->post->create();
+		$only_companion = static function () use ( $companion_id ) {
+			return array( $companion_id );
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $only_companion );
+
+		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+
+		remove_filter( 'gatherpress_series_post_ids', $only_companion );
+
+		$this->assertSame(
+			array( $post_id, $companion_id ),
+			$post_ids,
+			'Failed to assert the resolving post survives a filter that returned only its companion.'
+		);
+	}
+
+	/**
+	 * A filtered resolution is normalized rather than returned verbatim.
+	 *
+	 * Duplicates and numeric-string IDs are the shapes an integration most
+	 * plausibly hands back. The consumers of this set build `series_post_id
+	 * IN (…)` lists and compare members with `===`, so a string `'42'` or a
+	 * repeated member is a latent defect in every one of them.
+	 *
+	 * @covers ::resolve_post_ids
+	 *
+	 * @return void
+	 */
+	public function test_a_filtered_resolution_is_normalized(): void {
+		$post_id      = $this->factory->post->create();
+		$companion_id = $this->factory->post->create();
+		$messy        = static function () use ( $post_id, $companion_id ) {
+			return array( (string) $companion_id, $companion_id, (string) $post_id, $post_id );
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $messy );
+
+		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+
+		remove_filter( 'gatherpress_series_post_ids', $messy );
+
+		$this->assertSame(
+			array( $post_id, $companion_id ),
+			$post_ids,
+			'Failed to assert filtered duplicates and numeric strings are cast, deduplicated and sorted.'
+		);
+	}
+
 }
