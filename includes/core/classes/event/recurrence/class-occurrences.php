@@ -1658,6 +1658,24 @@ final class Occurrences {
 	/**
 	 * Delete a series' occurrence rows that the current rule no longer produces.
 	 *
+	 * Deliberately one statement, where the insert beside it chunks to
+	 * `UPSERT_CHUNK_SIZE`. Two reasons, and the first is correctness rather
+	 * than preference:
+	 *
+	 * `NOT IN` is a conjunction over the whole produced set, so it does not
+	 * decompose the way the insert's `VALUES` list does. Splitting the set in
+	 * half and running two deletes would delete every row named in the other
+	 * half, which is the live-data loss this method exists to avoid. Bounding
+	 * it means selecting the stale identifiers first and deleting them by `IN`,
+	 * which trades one statement for two round trips plus a result set.
+	 *
+	 * Nor is it the binding constraint. Each identifier contributes
+	 * `'Ymd\THis', ` to the statement, 19 bytes, against roughly 400 bytes for
+	 * the same row in the insert. A 1,000-identifier delete is about 18 KB
+	 * where a 1,000-row insert chunk is about 0.4 MB, so the delete stays
+	 * inside the same `max_allowed_packet` floor the chunk size was picked
+	 * against with more than an order of magnitude to spare.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param string   $table          Occurrence table name.
