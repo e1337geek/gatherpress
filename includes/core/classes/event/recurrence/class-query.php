@@ -15,8 +15,9 @@
  *
  * Two scope limits are deliberate and worth knowing before extending this:
  *
- * - A `'fields' => 'ids'` query is never expanded. `WP_Query` returns before
- *   `the_posts` for that shape, so identity cannot ride along, and the one
+ * - A compact-fields query, `'fields' => 'ids'` or `'id=>parent'`, is never
+ *   expanded. `WP_Query` returns before
+ *   `the_posts` for either shape, so identity cannot ride along, and the one
  *   production consumer emits one VEVENT per entry from the anchor datetime.
  *   That consumer is `Calendar\Setup::get_ical_list()`, reached through
  *   `Event\Query::get_events_list()`. Expanding it produced duplicate VEVENTs sharing a UID.
@@ -340,10 +341,11 @@ final class Query {
 		// Arm 1: a site that never authors a recurring event runs
 		// byte-identical SQL and pays nothing.
 		//
-		// Arm 2 exempts an `'ids'` result set from expansion entirely, not
-		// merely from the SELECT alias. `WP_Query` returns before `the_posts`
-		// for that field shape, so occurrence identity cannot travel with the
-		// rows, and an expanded ids list is a repeated bare post ID its caller
+		// Arm 2 exempts both compact field shapes, `'ids'` and `'id=>parent'`,
+		// from expansion entirely, not merely from the SELECT alias.
+		// `WP_Query` returns before `the_posts` for either shape, so
+		// occurrence identity cannot travel with the rows, and an expanded
+		// compact list is a repeated bare post ID its caller
 		// cannot disambiguate. `Calendar\Setup::get_ical_list()` is the live
 		// consumer of `Event\Query::get_events_list()`: it emits one VEVENT per
 		// entry, read from the post's *anchor* datetime, so expanding that
@@ -388,7 +390,7 @@ final class Query {
 		// byte-identical SQL is unaffected.
 		if (
 			! self::site_has_recurring_events()
-			|| 'ids' === $query->get( 'fields' )
+			|| in_array( $query->get( 'fields' ), array( 'ids', 'id=>parent' ), true )
 			|| is_admin()
 			|| ! str_contains( (string) $pieces['join'], $events_table )
 			|| ! Occurrences::get_instance()->table_exists()
