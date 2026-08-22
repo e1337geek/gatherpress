@@ -642,16 +642,23 @@ final class Admin_List {
 		// non-recurring event needs: the anchor is the only date it has.
 		$context->restore( $occurrence );
 
-		// The occurrence row names the post it belongs to. Reading that rather
-		// than the row's own post ID is what keeps a split series working, since
-		// `Context::resolve()` only serves an occurrence to the post that owns it.
-		$event = new Event(
-			( null !== $occurrence ) ? (int) $occurrence['series_post_id'] : $post_id
-		);
+		// The restore must survive a throw: `Event` initialization and
+		// `get_display_datetime()` are both documented to throw, and a
+		// plugin's format filter can too. If an outer list-table extension
+		// catches the exception and continues, the next render would
+		// otherwise inherit this row's context.
+		try {
+			// The occurrence row names the post it belongs to. Reading that rather
+			// than the row's own post ID is what keeps a split series working, since
+			// `Context::resolve()` only serves an occurrence to the post that owns it.
+			$event = new Event(
+				( null !== $occurrence ) ? (int) $occurrence['series_post_id'] : $post_id
+			);
 
-		$datetime = $event->get_display_datetime();
-
-		$context->restore( $previous );
+			$datetime = $event->get_display_datetime();
+		} finally {
+			$context->restore( $previous );
+		}
 
 		echo esc_html( $datetime );
 
