@@ -786,6 +786,78 @@ class Test_Backcompat extends Base {
 	}
 
 	/**
+	 * A running event is upcoming, never past, on the anchor-only fallback.
+	 *
+	 * The repository defines upcoming inclusively, matching
+	 * `Event\Query::get_datetime_comparison_column()`: the buckets split at
+	 * `datetime_end_gmt`, so an event that has started but not finished is
+	 * still what an upcoming list should be showing, and it appears in
+	 * exactly one bucket. The fallback arm must apply the same boundary as
+	 * the joined arm, or the same running event flips buckets depending on
+	 * whether some other event on the site happens to recur. The SQL capture
+	 * pins the arm under test: no query may name the occurrence table, so
+	 * this cannot be satisfied by the joined arm.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_upcoming
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_past
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_a_running_event_is_upcoming_not_past_when_option_is_zero(): void {
+		$start   = $this->now()->modify( '-1 hour' );
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$upcoming = array();
+		$past     = array();
+		$sql      = $this->capture_sql(
+			static function () use ( &$upcoming, &$past ): void {
+				$upcoming = Occurrences::get_instance()->select_upcoming( 50 );
+				$past     = Occurrences::get_instance()->select_past( 50 );
+			}
+		);
+
+		$this->assertSame(
+			array(),
+			$this->queries_touching( $sql, $this->occurrence_table() ),
+			'Failed to arrange the anchor-only fallback as the arm under test; the read named the occurrence table.'
+		);
+		$this->assertContains(
+			$post_id,
+			wp_list_pluck( $upcoming, 'post_id' ),
+			'Failed to assert a running event still counts as upcoming on the anchor-only fallback.'
+		);
+		$this->assertNotContains(
+			$post_id,
+			wp_list_pluck( $past, 'post_id' ),
+			'Failed to assert a running event is not classified as past on the anchor-only fallback.'
+		);
+	}
+
+	/**
 	 * Coverage for the guard's other side: once the site does have recurring
 	 * events, `select_upcoming()` expands the series.
 	 *
