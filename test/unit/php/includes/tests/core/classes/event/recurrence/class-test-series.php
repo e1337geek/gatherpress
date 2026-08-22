@@ -8,8 +8,12 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use GatherPress\Core\Event\Recurrence\Context;
+use GatherPress\Core\Event\Recurrence\Rest_Api;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
 use GatherPress\Core\Event\Recurrence\Series;
 use GatherPress\Tests\Base;
+use ReflectionClass;
 
 /**
  * Class Test_Series.
@@ -73,5 +77,40 @@ class Test_Series extends Base {
 			$post_ids,
 			'Failed to assert that resolve_post_ids returns both post IDs when the filter adds a second one.'
 		);
+	}
+
+	/**
+	 * Every recurrence singleton declares a protected constructor of its own.
+	 *
+	 * The `Singleton` trait supplies only `get_instance()`, so a class that
+	 * declares no constructor gets PHP's implicit public one and `new Foo()`
+	 * quietly works, against both the project guidance and, for `Series`,
+	 * its own docblock's claim of a protected constructor. Once later stack
+	 * parts add state or hook registration, an independently constructed
+	 * instance diverges from the singleton or duplicates hooks, and locking
+	 * the constructor down after release changes a public contract.
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_singletons_declare_protected_constructors(): void {
+		$singletons = array(
+			Context::class,
+			Rest_Api::class,
+			Rsvp_Occurrence::class,
+			Series::class,
+		);
+
+		foreach ( $singletons as $class_name ) {
+			$constructor = ( new ReflectionClass( $class_name ) )->getConstructor();
+
+			$this->assertNotNull(
+				$constructor,
+				sprintf( 'Failed to assert that %s declares its own constructor.', $class_name )
+			);
+			$this->assertTrue(
+				$constructor->isProtected(),
+				sprintf( 'Failed to assert that the %s constructor is protected.', $class_name )
+			);
+		}
 	}
 }
