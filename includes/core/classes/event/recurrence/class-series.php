@@ -487,11 +487,13 @@ final class Series {
 		self::register_taxonomy_for( (string) get_post_type( $origin_post_id ) );
 
 		$term_id = $this->term_id_for_post( $origin_post_id );
+		$minted  = false;
 		$landed  = true;
 
 		if ( 0 === $term_id ) {
 			$term_id = $this->create_term_for( $origin_post_id );
-			$landed  = 0 !== $term_id && $this->set_series_term( $origin_post_id, $term_id );
+			$minted  = 0 !== $term_id;
+			$landed  = $minted && $this->set_series_term( $origin_post_id, $term_id );
 		}
 
 		// Every write of the join must land, the relationship rows as much as
@@ -499,6 +501,21 @@ final class Series {
 		// left the forward post outside the series with no error anywhere,
 		// while the caller treated the join phase as complete.
 		if ( ! $landed || ! $this->set_series_term( $forward_post_id, $term_id ) ) {
+			// A term minted by this call must not survive its failed join.
+			// This frame is the only one that knows the term is new: the
+			// caller records its term undo only after a non-zero return, and
+			// the orphan-term sweep fires only when a member post is deleted,
+			// which a member-less term never sees. The deletion also fires
+			// the term lifecycle hook that recomputes the split-series flag
+			// `create_term_for()` just turned on, so a failed first split
+			// leaves the flag off rather than permanently widening four read
+			// paths on a site that never split.
+			if ( $minted ) {
+				wp_remove_object_terms( $origin_post_id, array( $term_id ), self::TAXONOMY );
+				wp_delete_term( $term_id, self::TAXONOMY );
+				$this->flush_memo();
+			}
+
 			return 0;
 		}
 
