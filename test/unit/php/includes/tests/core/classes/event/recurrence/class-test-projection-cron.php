@@ -347,6 +347,91 @@ class Test_Projection_Cron extends Base {
 	}
 
 	/**
+	 * Coverage for `deactivate()` clearing every scheduled sweep timestamp,
+	 * not only the earliest one `wp_next_scheduled()` can see.
+	 *
+	 * @covers ::deactivate
+	 *
+	 * @return void
+	 */
+	public function test_deactivation_clears_every_sweep_timestamp(): void {
+		$instance = Projection_Cron::get_instance();
+
+		// Two entries an hour apart, past core's ten-minute duplicate window,
+		// the shape a drifted schedule or a misbehaving integration leaves
+		// behind. Unscheduling only wp_next_scheduled()'s earliest timestamp
+		// would leave the second entry dispatching after deactivation.
+		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
+		wp_schedule_event(
+			time() + ( 2 * HOUR_IN_SECONDS ),
+			Projection_Cron::SWEEP_RECURRENCE,
+			Projection_Cron::SWEEP_ACTION
+		);
+
+		$this->assertSame(
+			2,
+			$this->count_scheduled_sweeps(),
+			'Failed to assert the fixture scheduled two distinct sweep timestamps.'
+		);
+
+		$instance->deactivate( false );
+
+		$this->assertSame(
+			0,
+			$this->count_scheduled_sweeps(),
+			'Failed to assert that deactivation cleared every scheduled sweep timestamp.'
+		);
+	}
+
+	/**
+	 * Coverage for network-wide deactivation clearing the sweep on every
+	 * site, not only the one the network admin request runs on.
+	 *
+	 * Each subsite stores its own cron option, so a deactivation that never
+	 * iterates sites orphans every child site's hourly sweep for as long as
+	 * the plugin stays inactive. Unrelated cron hooks must survive.
+	 *
+	 * @group multisite
+	 * @covers ::deactivate
+	 *
+	 * @return void
+	 */
+	public function test_network_deactivation_clears_the_sweep_on_every_site(): void {
+		$instance  = Projection_Cron::get_instance();
+		$site_id_2 = $this->factory()->blog->create();
+
+		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
+		wp_schedule_single_event( time() + HOUR_IN_SECONDS, 'gatherpress_unrelated_probe' );
+
+		switch_to_blog( $site_id_2 );
+		wp_schedule_event( time() + HOUR_IN_SECONDS, Projection_Cron::SWEEP_RECURRENCE, Projection_Cron::SWEEP_ACTION );
+		restore_current_blog();
+
+		$instance->deactivate( true );
+
+		$this->assertFalse(
+			wp_next_scheduled( Projection_Cron::SWEEP_ACTION ),
+			'Failed to assert that network deactivation cleared the sweep on the main site.'
+		);
+		$this->assertNotFalse(
+			wp_next_scheduled( 'gatherpress_unrelated_probe' ),
+			'Failed to assert that an unrelated cron hook survived network deactivation.'
+		);
+
+		switch_to_blog( $site_id_2 );
+		$sweep_on_child = wp_next_scheduled( Projection_Cron::SWEEP_ACTION );
+		wp_clear_scheduled_hook( Projection_Cron::SWEEP_ACTION );
+		restore_current_blog();
+
+		wp_clear_scheduled_hook( 'gatherpress_unrelated_probe' );
+
+		$this->assertFalse(
+			$sweep_on_child,
+			'Failed to assert that network deactivation cleared the sweep on the child site.'
+		);
+	}
+
+	/**
 	 * Coverage for `setup_hooks()`'s `register_deactivation_hook()` call.
 	 * Both deactivation tests above call `deactivate()` directly, so neither
 	 * would fail if the `register_deactivation_hook()` line were removed.
