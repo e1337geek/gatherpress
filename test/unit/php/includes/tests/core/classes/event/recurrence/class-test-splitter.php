@@ -1112,6 +1112,133 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * A forward-only relationship failure leaves no term and no flag behind.
+	 *
+	 * The complement of the test above, which suppresses every numeric term
+	 * lookup so the origin attachment fails before the forward-only state is
+	 * ever reached. Here the injection permits the term creation and the
+	 * origin relationship write and rejects only the forward one, by acting
+	 * on the first series term lookup made after the origin's relationship
+	 * row exists and then standing down, so the compensation's own term
+	 * operations run untouched.
+	 *
+	 * The rollback entry that deletes a minted term is recorded only after
+	 * `join()` reports success, so this exact path used to strand a
+	 * member-less term no member deletion could ever orphan, and with it a
+	 * permanently-on `gatherpress_has_split_series` flag, widening four read
+	 * paths on a site that never completed a split.
+	 *
+	 * @covers ::run_phases
+	 * @covers ::join_series
+	 * @covers \GatherPress\Core\Event\Recurrence\Series::join
+	 *
+	 * @return void
+	 */
+	public function test_a_forward_only_relationship_failure_leaves_no_term_and_no_flag(): void {
+		global $wpdb;
+
+		$origin_id = $this->create_and_project();
+		$fired     = false;
+
+		$reject_forward = static function ( $terms, $query ) use ( &$fired, $origin_id, $wpdb ) {
+			$taxonomies = (array) ( $query->query_vars['taxonomy'] ?? array() );
+
+			if ( $fired
+				|| ! in_array( Series::TAXONOMY, $taxonomies, true )
+				|| empty( $query->query_vars['include'] )
+			) {
+				return $terms;
+			}
+
+			// The origin's relationship row is what separates the two writes:
+			// it does not exist yet while the origin attach confirms its term,
+			// and it does exist when the forward attach makes the same lookup.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$origin_attached = (int) $wpdb->get_var(
+				$wpdb->prepare(
+					'SELECT COUNT(*) FROM %i AS tr INNER JOIN %i AS tt'
+						. ' ON tt.term_taxonomy_id = tr.term_taxonomy_id'
+						. ' WHERE tt.taxonomy = %s AND tr.object_id = %d',
+					$wpdb->term_relationships,
+					$wpdb->term_taxonomy,
+					Series::TAXONOMY,
+					$origin_id
+				)
+			);
+
+			if ( 0 === $origin_attached ) {
+				return $terms;
+			}
+
+			$fired = true;
+
+			return array();
+		};
+
+		add_filter( 'terms_pre_query', $reject_forward, 10, 2 );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' );
+
+		remove_filter( 'terms_pre_query', $reject_forward, 10 );
+
+		$this->assertTrue(
+			$fired,
+			'Fixture setup: the injection must have rejected the forward write, and nothing before it.'
+		);
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'A split whose forward relationship write failed must abort rather than report success.'
+		);
+		$this->assertSame(
+			'gatherpress_split_series_not_joined',
+			$result->get_error_code(),
+			'The abort must name the join phase as the failure.'
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$terms = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT COUNT(*) FROM %i WHERE taxonomy = %s',
+				$wpdb->term_taxonomy,
+				Series::TAXONOMY
+			)
+		);
+
+		$relationships = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT COUNT(*) FROM %i AS tr INNER JOIN %i AS tt'
+					. ' ON tt.term_taxonomy_id = tr.term_taxonomy_id WHERE tt.taxonomy = %s',
+				$wpdb->term_relationships,
+				$wpdb->term_taxonomy,
+				Series::TAXONOMY
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->assertSame(
+			0,
+			$terms,
+			'The term minted for the failed join must not survive it.'
+		);
+		$this->assertSame(
+			0,
+			$relationships,
+			'Neither post may keep a relationship to the deleted series term.'
+		);
+		$this->assertSame(
+			'0',
+			get_option( 'gatherpress_has_split_series' ),
+			'A failed first split must leave the split-series flag off, recomputed from the deleted term.'
+		);
+		$this->assertSame(
+			self::FULL_SET,
+			$this->identifiers_for( $origin_id ),
+			'The rollback must leave the origin owning its full occurrence set again.'
+		);
+	}
+
+	/**
 	 * A stale rule re-persisted after a split cannot resurrect moved occurrences.
 	 *
 	 * The still-open origin editor holds the pre-split rule after a successful
