@@ -2283,14 +2283,21 @@ final class Occurrences {
 	 * also reports zero, so only that case pays a follow-up existence read:
 	 * row present means a no-op success, row gone means gone.
 	 *
+	 * The announcement is gated on the row having changed, matching
+	 * `move_to_post()`: writing the status a row already has is a write on
+	 * paper only, and announcing it advances the series' `SEQUENCE` and
+	 * invalidates every calendar response cache for a change no client can
+	 * observe.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
 	 * @param string $status        One of the `STATUS_*` constants.
 	 *
-	 * @return bool True when the row holds the status; false when the composite
-	 *              key matched nothing or the status is not one of the constants.
+	 * @return bool True when the composite key matched a row, whether or not the
+	 *              value changed; false when it matched nothing or the status is
+	 *              not one of the constants.
 	 */
 	public function set_status( int $post_id, string $recurrence_id, string $status ): bool {
 		global $wpdb;
@@ -2341,10 +2348,6 @@ final class Occurrences {
 			)
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-
-		if ( $exists ) {
-			$this->announce_change( $post_id );
-		}
 
 		return $exists;
 	}
