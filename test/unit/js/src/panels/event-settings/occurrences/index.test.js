@@ -1,7 +1,7 @@
 /**
  * External dependencies
  */
-import { render, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, render, fireEvent, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, jest, test } from '@jest/globals';
 import '@testing-library/jest-dom';
 
@@ -389,6 +389,159 @@ describe( 'OccurrencesPanel', () => {
 		expect( screen.getByText( 'Canceled' ) ).toBeInTheDocument();
 
 		keyWarnings.mockRestore();
+	} );
+
+	test( 'ignores a late list response for the previous post', async () => {
+		// Gutenberg can change the current post without unmounting the
+		// sidebar. A response that raced across that switch must never
+		// replace the current post's rows: its Cancel buttons would submit
+		// the previous post's owner.
+		let currentPostId = 42;
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( ( storeName ) =>
+				'core/editor' === storeName
+					? { getCurrentPostId: () => currentPostId }
+					: undefined,
+			),
+		);
+
+		let resolveOld;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve ) => {
+				resolveOld = resolve;
+			} ),
+		);
+
+		const { rerender } = render( <OccurrencesPanel /> );
+
+		let resolveNew;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve ) => {
+				resolveNew = resolve;
+			} ),
+		);
+
+		currentPostId = 84;
+		rerender( <OccurrencesPanel /> );
+
+		// The new post's response arrives first and renders.
+		resolveNew( [
+			occurrence( {
+				series_post_id: 84,
+				datetime_start_gmt: '2026-10-01 22:00:00',
+			} ),
+		] );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText( 'formatted:2026-10-01T22:00:00Z' ),
+			).toBeInTheDocument(),
+		);
+
+		// The previous post's response arrives late. Its rows must not
+		// reappear over the current post's. `act` flushes the resolution's
+		// microtasks before the assertions run.
+		await act( async () => {
+			resolveOld( [
+				occurrence( {
+					series_post_id: 42,
+					datetime_start_gmt: '2026-09-03 22:00:00',
+				} ),
+			] );
+		} );
+
+		expect(
+			screen.getByText( 'formatted:2026-10-01T22:00:00Z' ),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText( 'formatted:2026-09-03T22:00:00Z' ),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'ignores a late list rejection for the previous post', async () => {
+		// The error arm of the race: a stale failure must not surface an
+		// error state over the current post's healthy list.
+		let currentPostId = 42;
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( ( storeName ) =>
+				'core/editor' === storeName
+					? { getCurrentPostId: () => currentPostId }
+					: undefined,
+			),
+		);
+
+		let rejectOld;
+
+		mockApiFetch.mockReturnValueOnce(
+			new Promise( ( resolve, reject ) => {
+				rejectOld = reject;
+			} ),
+		);
+
+		const { rerender } = render( <OccurrencesPanel /> );
+
+		mockApiFetch.mockResolvedValueOnce( [
+			occurrence( { series_post_id: 84 } ),
+		] );
+
+		currentPostId = 84;
+		rerender( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument(),
+		);
+
+		// `act` flushes the rejection's microtasks before the assertions
+		// run, so a stale error application cannot hide behind the queue.
+		await act( async () => {
+			rejectOld( new Error( 'stale failure' ) );
+		} );
+
+		expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument();
+		expect(
+			screen.queryByText( 'stale failure' ),
+		).not.toBeInTheDocument();
+	} );
+
+	test( "clears the previous post's rows the moment the post changes", async () => {
+		// Between the switch and the new response, the old rows must not
+		// stay rendered and actionable: a click during that window submits
+		// an occurrence of a post no longer open.
+		let currentPostId = 42;
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( ( storeName ) =>
+				'core/editor' === storeName
+					? { getCurrentPostId: () => currentPostId }
+					: undefined,
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( [
+			occurrence( { series_post_id: 42 } ),
+		] );
+
+		const { rerender } = render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument(),
+		);
+
+		// The new post's fetch never resolves within this test.
+		mockApiFetch.mockReturnValueOnce( new Promise( () => {} ) );
+
+		currentPostId = 84;
+		rerender( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect(
+				screen.queryByText( 'Cancel' ),
+			).not.toBeInTheDocument(),
+		);
 	} );
 
 	test( 'shows an error notice and leaves the row unchanged when the status update fails', async () => {
