@@ -769,15 +769,91 @@ final class Query {
 			return $orderby;
 		}
 
-		$expression = trim( (string) preg_replace( '/\s+(ASC|DESC)\s*$/i', '', $orderby ) );
-		$descending = (bool) preg_match( '/\s+DESC\s*$/i', $orderby );
+		// Key by key, never the clause as a whole: an integration can append a
+		// tie-breaker between the event rewrite and this fold, and wrapping
+		// both keys in one aggregate is `MIN( <key> ASC, <key> )`, a syntax
+		// error that empties every aggregate feed. Only the keys the fold
+		// rewrote reference the grouped-away occurrence rows; the rest are
+		// functionally dependent on the group key and pass through unchanged,
+		// which also keeps the clause valid under `ONLY_FULL_GROUP_BY`.
+		$keys = array_map(
+			array( $this, 'aggregate_orderby_key' ),
+			$this->split_orderby( $orderby )
+		);
+
+		return implode( ', ', $keys ) . $wpdb->prepare( ', %i.ID ASC', $wpdb->posts );
+	}
+
+	/**
+	 * Aggregate one ordering key when it references the occurrence columns.
+	 *
+	 * `MIN()` on an ascending key picks the series' next occurrence and
+	 * `MAX()` on a descending one its most recent, which is what each bucket
+	 * means. A key without the fold's `COALESCE()` marker orders by a value
+	 * functionally dependent on the group key and needs no aggregate.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $key One ordering key, e.g. `<expression> ASC`.
+	 *
+	 * @return string The key, aggregated when it needs to be.
+	 */
+	private function aggregate_orderby_key( string $key ): string {
+		$key = trim( $key );
+
+		if ( ! str_contains( $key, 'COALESCE(' ) ) {
+			return $key;
+		}
+
+		$expression = trim( (string) preg_replace( '/\s+(ASC|DESC)\s*$/i', '', $key ) );
+		$descending = (bool) preg_match( '/\s+DESC\s*$/i', $key );
 
 		return sprintf(
 			'%s( %s ) %s',
 			$descending ? 'MAX' : 'MIN',
 			$expression,
 			$descending ? 'DESC' : 'ASC'
-		) . $wpdb->prepare( ', %i.ID ASC', $wpdb->posts );
+		);
+	}
+
+	/**
+	 * Split an `ORDER BY` clause into keys on its top-level commas.
+	 *
+	 * The commas inside `COALESCE( a, b )` separate arguments, not keys, so a
+	 * plain explode would cut the fold's own rewrite in half. Parenthesis
+	 * depth is what tells the two apart.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $orderby The full ordering clause.
+	 *
+	 * @return string[] The individual keys, in order.
+	 */
+	private function split_orderby( string $orderby ): array {
+		$keys    = array();
+		$current = '';
+		$depth   = 0;
+
+		foreach ( str_split( $orderby ) as $character ) {
+			if ( ',' === $character && 0 === $depth ) {
+				$keys[]  = $current;
+				$current = '';
+
+				continue;
+			}
+
+			if ( '(' === $character ) {
+				++$depth;
+			} elseif ( ')' === $character ) {
+				$depth = max( 0, $depth - 1 );
+			}
+
+			$current .= $character;
+		}
+
+		$keys[] = $current;
+
+		return $keys;
 	}
 
 	/**

@@ -997,6 +997,55 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * Direct coverage for the per-key ordering helpers.
+	 *
+	 * Invoked directly because xdebug does not trace private helpers reached
+	 * through a same-class call, and each branch needs a case of its own.
+	 *
+	 * @covers ::aggregate_orderby_key
+	 * @covers ::split_orderby
+	 *
+	 * @return void
+	 */
+	public function test_the_ordering_helpers_split_and_wrap_key_by_key(): void {
+		$instance = Query::get_instance();
+
+		$this->assertSame(
+			array( 'COALESCE( a, b ) ASC', ' t.c DESC' ),
+			Utility::invoke_hidden_method(
+				$instance,
+				'split_orderby',
+				array( 'COALESCE( a, b ) ASC, t.c DESC' )
+			),
+			'Commas inside a function call separate arguments, not keys.'
+		);
+		$this->assertSame(
+			array( 't.c ASC' ),
+			Utility::invoke_hidden_method( $instance, 'split_orderby', array( 't.c ASC' ) ),
+			'A single key is one key.'
+		);
+		$this->assertSame(
+			array( 'a )', ' b' ),
+			Utility::invoke_hidden_method( $instance, 'split_orderby', array( 'a ), b' ) ),
+			'An unbalanced closing parenthesis cannot drive the depth negative and swallow the split.'
+		);
+		$this->assertSame(
+			'MAX( COALESCE( a, b ) ) DESC',
+			Utility::invoke_hidden_method(
+				$instance,
+				'aggregate_orderby_key',
+				array( 'COALESCE( a, b ) DESC' )
+			),
+			'A descending occurrence key takes the greatest value in the group.'
+		);
+		$this->assertSame(
+			't.c DESC',
+			Utility::invoke_hidden_method( $instance, 'aggregate_orderby_key', array( ' t.c DESC ' ) ),
+			'A key without the fold marker passes through, trimmed.'
+		);
+	}
+
+	/**
 	 * A plugin tie-breaker degrades the ordering at worst, never the results.
 	 *
 	 * The production path for the case above. `Event\Query` rewrites the
