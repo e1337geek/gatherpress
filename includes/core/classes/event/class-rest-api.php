@@ -1353,6 +1353,16 @@ final class Rest_Api {
 	 *
 	 * @since 0.34.0
 	 *
+	 * Just over PHPMD's NPath threshold (9,232 against 9,217). The branches are
+	 * the submission's own gates, and their order is load bearing: the owner's
+	 * viewability is checked before the occurrence is resolved and before the
+	 * context is entered, which is what stops a submission naming a viewable
+	 * sibling from landing on an unviewable owner. A refactor to shed paths
+	 * could reorder that silently, so the count is suppressed rather than
+	 * chased. Restructuring it remains open for the maintainers.
+	 *
+	 * @SuppressWarnings(PHPMD.NPathComplexity)
+	 *
 	 * @param WP_REST_Request $request The REST API request object.
 	 *
 	 * @return WP_REST_Response|WP_Error Success or failure, or a 404 when the named occurrence no longer resolves.

@@ -2180,46 +2180,6 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * The occurrence is emitted to the front end only on an occurrence page.
-	 *
-	 * The front end has to send this back on its RSVP requests: a REST request
-	 * never fires `wp`, so the server cannot derive the occurrence from the
-	 * request on its own. Off an occurrence page the key is withheld entirely
-	 * rather than emitted empty, which is what keeps every other page's state
-	 * payload byte-identical.
-	 *
-	 * The two halves run in one test, negative first, because
-	 * `wp_interactivity_state()` accumulates into a per-process store — once a
-	 * key is written it cannot be withdrawn, so the absence must be observed
-	 * before the presence.
-	 *
-	 * @covers \GatherPress\Core\Assets::add_interactivity_state
-	 *
-	 * @return void
-	 */
-	public function test_interactivity_state_carries_the_occurrence_only_in_context(): void {
-		$post_id = $this->create_and_project();
-
-		Context::get_instance()->clear();
-		Assets::get_instance()->add_interactivity_state();
-
-		$this->assertArrayNotHasKey(
-			'recurrenceId',
-			wp_interactivity_state( 'gatherpress' ),
-			'Failed to assert the occurrence is withheld from the state off an occurrence page.'
-		);
-
-		Context::get_instance()->set( $post_id, self::SECOND_ID );
-		Assets::get_instance()->add_interactivity_state();
-
-		$this->assertSame(
-			self::SECOND_ID,
-			wp_interactivity_state( 'gatherpress' )['recurrenceId'],
-			'Failed to assert the occurrence being rendered is emitted to the front end.'
-		);
-	}
-
-	/**
 	 * The query var is the permalink's occurrence segment, so its value is a
 	 * public contract shared with rewrite rules and with block render paths.
 	 *

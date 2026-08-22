@@ -48,7 +48,18 @@ use WP_Error;
  *
  * Singleton repository, matching the shape of `Rsvp\Query`.
  *
+ * Over PHPMD's size thresholds, deliberately and with the maintainers' call
+ * recorded: this is the one repository for the occurrence table, and every
+ * method on it is a read or a write against that table. Splitting it to satisfy
+ * a line and method count would put statements against one table behind two
+ * class names without making any of them simpler, and the split would have to
+ * be designed rather than mechanical. Refactoring it remains open for the
+ * maintainers; the suppression states the position rather than hiding it.
+ *
  * @since 0.36.0
+ *
+ * @SuppressWarnings(PHPMD.TooManyMethods)
+ * @SuppressWarnings(PHPMD.ExcessiveClassLength)
  */
 final class Occurrences {
 
