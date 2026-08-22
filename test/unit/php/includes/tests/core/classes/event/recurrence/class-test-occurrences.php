@@ -3360,31 +3360,45 @@ class Test_Occurrences extends Base {
 	 * @return void
 	 */
 	public function test_rowless_until_series_on_yesterdays_utc_date_stays_a_sweep_candidate(): void {
-		$utc_yesterday = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
-			->modify( '-1 day' )
-			->format( 'Y-m-d' );
+		$zone = new DateTimeZone( 'Pacific/Pago_Pago' );
 
-		$zone   = new DateTimeZone( 'Pacific/Pago_Pago' );
-		$anchor = ( new DateTimeImmutable( 'now', $zone ) )->modify( '-3 weeks' );
+		// The fixture's until sits exactly on the candidate query's lenient
+		// bound, which the query recomputes from its own clock read. That
+		// boundary placement is the property under test, so it cannot be
+		// widened. A UTC midnight passing between building the fixture and
+		// running the query would instead move the bound past the fixture
+		// and fail the assertion for a reason unrelated to the leniency it
+		// proves, so when the day provably rolled mid-arrangement, rebuild
+		// once: consecutive midnights are a day apart, and a second pass
+		// cannot straddle one.
+		do {
+			$day_at_start  = gmdate( 'Y-m-d' );
+			$utc_yesterday = ( new DateTimeImmutable( $day_at_start, new DateTimeZone( 'UTC' ) ) )
+				->modify( '-1 day' )
+				->format( 'Y-m-d' );
+			$anchor        = ( new DateTimeImmutable( 'now', $zone ) )->modify( '-3 weeks' );
 
-		$post_id = $this->create_relative_recurring_event(
-			array(
-				'frequency' => 'weekly',
-				'interval'  => 1,
-				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
-				'end_type'  => 'until',
-				'until'     => $utc_yesterday,
-			),
-			$anchor,
-			$anchor->modify( '+2 hours' ),
-			'Pacific/Pago_Pago'
-		);
+			$post_id = $this->create_relative_recurring_event(
+				array(
+					'frequency' => 'weekly',
+					'interval'  => 1,
+					'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+					'end_type'  => 'until',
+					'until'     => $utc_yesterday,
+				),
+				$anchor,
+				$anchor->modify( '+2 hours' ),
+				'Pacific/Pago_Pago'
+			);
 
-		Occurrences::get_instance()->delete_for_post( $post_id );
+			Occurrences::get_instance()->delete_for_post( $post_id );
+
+			$candidates = Occurrences::get_instance()->select_series_needing_top_up( 100 );
+		} while ( gmdate( 'Y-m-d' ) !== $day_at_start );
 
 		$this->assertContains(
 			$post_id,
-			Occurrences::get_instance()->select_series_needing_top_up( 100 ),
+			$candidates,
 			'Failed to assert that a rowless until series bounded on UTC yesterday is still selectable.'
 		);
 	}
