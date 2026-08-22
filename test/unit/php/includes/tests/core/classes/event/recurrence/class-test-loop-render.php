@@ -1926,5 +1926,4 @@ class Test_Loop_Render extends Base {
 			'Failed to assert permalink() degrades to the permalink it was handed rather than to an empty href.'
 		);
 	}
-
 }
