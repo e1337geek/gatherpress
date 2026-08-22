@@ -621,11 +621,22 @@ final class Admin_List {
 	 */
 	protected function render_datetime_column( int $post_id ): void {
 		$occurrences = Occurrences::get_instance();
-		$occurrence  = $occurrences->select_display_for_series(
-			Series::get_instance()->resolve_post_ids( $post_id )
-		);
-		$context     = Context::get_instance();
-		$previous    = $context->current();
+		$post_ids    = Series::get_instance()->resolve_post_ids( $post_id );
+
+		// Probe the occurrence table only when some post of the series
+		// actually carries a rule. `has_recurrence_rule()` is a post-meta
+		// read the list query's cache priming has already paid for, where
+		// the probes are one or two uncached `LIMIT 1` queries per row: on a
+		// site with a single recurring series, every ordinary row of a
+		// twenty-row page would otherwise pay them for queries that cannot
+		// match.
+		$has_rule = array_filter( $post_ids, array( $occurrences, 'has_recurrence_rule' ) );
+
+		$occurrence = array() !== $has_rule
+			? $occurrences->select_display_for_series( $post_ids )
+			: null;
+		$context    = Context::get_instance();
+		$previous   = $context->current();
 
 		// A null occurrence restores "no context", which is exactly what a
 		// non-recurring event needs: the anchor is the only date it has.
