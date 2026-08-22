@@ -529,6 +529,63 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * Every phase of a split names the split's own pair of posts.
+	 *
+	 * `gatherpress_split_phase_complete` is a published extension point whose
+	 * third argument is documented as the post the split created. Two phases
+	 * act on the origin alone, and reporting the post they happen to write
+	 * hands a listener the origin twice under a parameter named for the forward
+	 * post. An integration keyed on `origin_rule` or `advance_revision` would
+	 * then tag, notify or edit the wrong event, and nothing in the payload
+	 * would tell it so.
+	 *
+	 * The assertion is the whole ordered map rather than the two arguments,
+	 * which also states that each phase fires exactly once and in the order the
+	 * rollback stack unwinds.
+	 *
+	 * @covers ::phase
+	 * @covers ::rule_phase
+	 * @covers ::advance_revision
+	 * @covers ::run_phases
+	 *
+	 * @return void
+	 */
+	public function test_every_phase_reports_the_post_the_split_created(): void {
+		$origin_id = $this->create_and_project();
+		$reported  = array();
+		$observe   = static function ( $outcome, string $phase, int $origin, int $forward ) use ( &$reported ) {
+			$reported[ $phase ] = array( $origin, $forward );
+
+			return $outcome;
+		};
+
+		add_filter( 'gatherpress_split_phase_complete', $observe, 10, 4 );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, self::FULL_SET[2] );
+
+		remove_filter( 'gatherpress_split_phase_complete', $observe, 10 );
+
+		$this->assertTrue( $result['split'], 'Fixture setup: the split must succeed.' );
+
+		$pair = array( $origin_id, (int) $result['forward_post_id'] );
+
+		$this->assertSame(
+			array(
+				'create_forward_post' => $pair,
+				'move_occurrences'    => $pair,
+				'migrate_rsvps'       => $pair,
+				'join_series'         => $pair,
+				'forward_rule'        => $pair,
+				'origin_rule'         => $pair,
+				'verify_partition'    => $pair,
+				'advance_revision'    => $pair,
+			),
+			$reported,
+			'Failed to assert every phase reported the origin and the post the split created, in that order.'
+		);
+	}
+
+	/**
 	 * A split projects each rewritten rule once, and leaves no shutdown re-projection queued.
 	 *
 	 * The splitter writes each side's rule blob and projects immediately, in

@@ -395,6 +395,7 @@ final class Splitter {
 			$forward_post_id,
 			$forward_ids,
 			$origin_post_id,
+			$forward_post_id,
 			fn () => $this->apply_forward_rule( $forward_post_id, $rule, $index, $forward_rows )
 		);
 
@@ -407,6 +408,7 @@ final class Splitter {
 			$origin_post_id,
 			$origin_ids,
 			$origin_post_id,
+			$forward_post_id,
 			fn () => $this->apply_capped_rule( $origin_post_id, $rule, $index, $rows[0] )
 		);
 
@@ -425,7 +427,7 @@ final class Splitter {
 			return $failure;
 		}
 
-		$failure = $this->advance_revision( $origin_post_id );
+		$failure = $this->advance_revision( $origin_post_id, $forward_post_id );
 
 		if ( null !== $failure ) {
 			return $failure;
@@ -595,13 +597,19 @@ final class Splitter {
 	 * the time its projection is refused, and only a recorded undo takes it off
 	 * again.
 	 *
+	 * The seam is reported the split's own pair of posts, not the one side this
+	 * rewrite happens to touch. `origin_rule` writes the origin, so passing the
+	 * post being written would hand a listener the origin twice and leave the
+	 * forward post unnameable from the phase that caps the origin against it.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param string   $phase          Phase name, for the failure-injection seam.
-	 * @param int      $post_id        Post whose rule is being written.
-	 * @param string[] $recurrence_ids Identifiers that post is meant to keep.
-	 * @param int      $origin_post_id Origin post, reported to the phase seam.
-	 * @param callable $write          Writes the rule and reports whether the post stays recurring, or the failure.
+	 * @param string   $phase           Phase name, for the failure-injection seam.
+	 * @param int      $post_id         Post whose rule is being written.
+	 * @param string[] $recurrence_ids  Identifiers that post is meant to keep.
+	 * @param int      $origin_post_id  Origin post, reported to the phase seam.
+	 * @param int      $forward_post_id Forward post, reported to the phase seam.
+	 * @param callable $write           Writes the rule and reports whether the post stays recurring, or the failure.
 	 *
 	 * @return bool|WP_Error Whether the post remains recurring, or the failure.
 	 */
@@ -610,6 +618,7 @@ final class Splitter {
 		int $post_id,
 		array $recurrence_ids,
 		int $origin_post_id,
+		int $forward_post_id,
 		callable $write
 	) {
 		$snapshot = $this->snapshot( $post_id, $recurrence_ids );
@@ -626,7 +635,7 @@ final class Splitter {
 			return $recurring;
 		}
 
-		$failure = $this->phase( $phase, $origin_post_id, $post_id );
+		$failure = $this->phase( $phase, $origin_post_id, $forward_post_id );
 
 		return null === $failure ? (bool) $recurring : $failure;
 	}
@@ -744,16 +753,22 @@ final class Splitter {
 	 * `UID` acquires a shorter rule while reporting the same `SEQUENCE`, and a
 	 * subscriber keeps the dates the split just moved away.
 	 *
+	 * The advance is a whole-series operation, so it needs only one post to
+	 * reach the others. The seam is still reported both of the split's posts,
+	 * because a listener keyed on this phase is told about the same split every
+	 * other phase reported and must be able to name the same pair.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param int $origin_post_id Any post of the series.
+	 * @param int $origin_post_id  Any post of the series.
+	 * @param int $forward_post_id Forward post, reported to the phase seam.
 	 *
 	 * @return WP_Error|null The failure, or null.
 	 */
-	protected function advance_revision( int $origin_post_id ): ?WP_Error {
+	protected function advance_revision( int $origin_post_id, int $forward_post_id ): ?WP_Error {
 		Revision::get_instance()->advance( $origin_post_id );
 
-		return $this->phase( 'advance_revision', $origin_post_id, $origin_post_id );
+		return $this->phase( 'advance_revision', $origin_post_id, $forward_post_id );
 	}
 
 	/**
@@ -893,11 +908,16 @@ final class Splitter {
 	 * point as well. An integration that must veto a split part-way through
 	 * gets a full rollback rather than a half-migrated series.
 	 *
+	 * Every phase reports the same pair of posts, whichever side it acted on.
+	 * The forward post is inserted before the first phase fires, so there is no
+	 * phase at which it does not exist yet and none that may report anything
+	 * else in its place.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param string $phase           Name of the phase that just completed.
 	 * @param int    $origin_post_id  Post being split.
-	 * @param int    $forward_post_id Post the split created, when it exists yet.
+	 * @param int    $forward_post_id Post the split created.
 	 *
 	 * @return WP_Error|null The failure a listener reported, or null.
 	 */
@@ -909,12 +929,16 @@ final class Splitter {
 		 * phase back, leaving posts, occurrence rows, RSVP comments, terms,
 		 * meta and caches as they were before the split began.
 		 *
+		 * The two post IDs name the same pair of posts at every phase, so a
+		 * listener can act on either side from any phase name. Both are always
+		 * real: the forward post is inserted before the first phase fires.
+		 *
 		 * @since 0.36.0
 		 *
 		 * @param WP_Error|null $outcome         Null to continue, a WP_Error to abort and roll back.
 		 * @param string        $phase           Name of the phase that just completed.
 		 * @param int           $origin_post_id  Post being split.
-		 * @param int           $forward_post_id Post the split created, or 0 before it exists.
+		 * @param int           $forward_post_id Post the split created.
 		 *
 		 * @return WP_Error|null The outcome.
 		 */
