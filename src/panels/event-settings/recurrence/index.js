@@ -258,7 +258,7 @@ function isValidMonthlyShape( rule ) {
  * Mirror `Rule::is_valid_end_shape()`, plus `from_array()`'s rejection of a
  * rule carrying both an end date and a count, on a server-coerced rule.
  *
- * An unparseable `until` reads as no end date at all, exactly as it does on
+ * An unparsable `until` reads as no end date at all, exactly as it does on
  * the PHP side, so it neither satisfies an until rule nor collides with a
  * count one.
  *
@@ -385,7 +385,7 @@ function parseRecurrenceBlob( raw ) {
 			interval: coerced.interval,
 			weekdays: coerced.weekdays,
 			count: coerced.count,
-			// An unparseable date is no date to the server; displaying the
+			// An unparsable date is no date to the server; displaying the
 			// raw string would hand it back to the user on a switch to
 			// "On date".
 			until: isParseableUntil( coerced.until ) ? coerced.until : '',

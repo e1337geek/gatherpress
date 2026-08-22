@@ -1185,8 +1185,8 @@ describe( 'RecurrencePanel', () => {
 			);
 		} );
 
-		test( 'accepts an unparseable end date on a count rule and blanks it for display', () => {
-			// `from_array()` treats an unparseable `until` as no date at all,
+		test( 'accepts an unparsable end date on a count rule and blanks it for display', () => {
+			// `from_array()` treats an unparsable `until` as no date at all,
 			// so it does not collide with the count and the rule stands.
 			// Displaying the garbage string would hand it back to the user
 			// the moment they switch to "On date", so it is blanked instead.

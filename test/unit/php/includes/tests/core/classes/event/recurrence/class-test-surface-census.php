@@ -386,7 +386,7 @@ class Test_Surface_Census extends Base {
 
 		// Separation 2: rewrite one row's stored datetime, five hours earlier
 		// than the rule would place it. Still upcoming, and still ordered
-		// between its two neighbours, so the move changes the row's own clock
+		// between its two neighbors, so the move changes the row's own clock
 		// without reordering the vector the other surfaces assert.
 		$moved_start = $series_anchor->modify( sprintf( '+%d days', self::MOVED_INDEX ) )->modify( '-5 hours' );
 		$table       = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
