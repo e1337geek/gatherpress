@@ -2339,17 +2339,27 @@ class Test_Occurrences extends Base {
 		$filter = static fn() => 0;
 		add_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
 
+		// The cutoff's own "now" is read inside the method, so the expected
+		// value cannot be a second clock read compared for equality: any
+		// minute boundary between the two reads fails the test. Bracketing
+		// the call bounds the cutoff at full second precision instead.
+		$before = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
 		$cutoff = Utility::invoke_hidden_method( Occurrences::get_instance(), 'resolve_top_up_cutoff' );
+		$after  = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
 
 		remove_filter( 'gatherpress_recurrence_top_up_margin_days', $filter );
 
-		$expected = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
-			->modify( '+' . Occurrences::PROJECTION_HORIZON_MONTHS . ' months' );
+		$horizon = '+' . Occurrences::PROJECTION_HORIZON_MONTHS . ' months';
 
-		$this->assertSame(
-			$expected->format( 'Y-m-d H:i' ),
-			$cutoff->format( 'Y-m-d H:i' ),
-			'Failed to assert that a zero margin leaves the cutoff at the horizon itself.'
+		$this->assertGreaterThanOrEqual(
+			$before->modify( $horizon ),
+			$cutoff,
+			'Failed to assert that a zero margin leaves the cutoff no earlier than the horizon itself.'
+		);
+		$this->assertLessThanOrEqual(
+			$after->modify( $horizon ),
+			$cutoff,
+			'Failed to assert that a zero margin leaves the cutoff no later than the horizon itself.'
 		);
 	}
 
