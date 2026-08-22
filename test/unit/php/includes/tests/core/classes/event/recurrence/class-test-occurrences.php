@@ -146,6 +146,24 @@ class Test_Occurrences extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'maybe_delete_for_post' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'added_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_queue_projection' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'updated_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_queue_projection' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'deleted_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_queue_projection' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );

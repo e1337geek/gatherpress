@@ -349,7 +349,9 @@ class Test_Reconciliation extends Base {
 	 * the request at all (WP-CLI's `wp post meta update`, an importer touching
 	 * an existing post), is reconciled by the shutdown pass.
 	 *
+	 * @covers ::maybe_queue_reconciliation
 	 * @covers ::resolve_pending_recurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::maybe_queue_projection
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::resolve_pending_projection
 	 *
 	 * @return void
@@ -375,7 +377,9 @@ class Test_Reconciliation extends Base {
 	 * A rule removed by a bare `delete_post_meta()` call is reconciled by the
 	 * shutdown pass: mirrors cleared, rows deleted, flag off.
 	 *
+	 * @covers ::maybe_queue_reconciliation
 	 * @covers ::resolve_pending_recurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::maybe_queue_projection
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::resolve_pending_projection
 	 *
 	 * @return void
@@ -395,7 +399,9 @@ class Test_Reconciliation extends Base {
 	 * A rule overwritten with an invalid blob by a bare `update_post_meta()`
 	 * call is reconciled by the shutdown pass to the cleared state.
 	 *
+	 * @covers ::maybe_queue_reconciliation
 	 * @covers ::resolve_pending_recurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::maybe_queue_projection
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::resolve_pending_projection
 	 *
 	 * @return void
@@ -470,7 +476,9 @@ class Test_Reconciliation extends Base {
 	 * site whose saves never touch the recurrence blob must not gain
 	 * occurrence-table work from the meta watchers.
 	 *
+	 * @covers ::maybe_queue_reconciliation
 	 * @covers ::resolve_pending_recurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::maybe_queue_projection
 	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::resolve_pending_projection
 	 *
 	 * @return void
@@ -502,6 +510,32 @@ class Test_Reconciliation extends Base {
 				'Failed to assert the shutdown pass never touches the occurrence table for an unrelated meta write.'
 			);
 		}
+	}
+
+	/**
+	 * A recurrence-blob write on a post type without `gatherpress-event-date`
+	 * support queues nothing for either watcher.
+	 *
+	 * @covers ::maybe_queue_reconciliation
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::maybe_queue_projection
+	 *
+	 * @return void
+	 */
+	public function test_blob_write_on_unsupported_post_type_queues_no_reconciliation(): void {
+		$post_id = $this->factory->post->create( array( 'post_type' => 'post' ) );
+
+		update_post_meta( $post_id, Meta::META_KEY, wp_json_encode( self::RULE_A ) );
+
+		$this->assertArrayNotHasKey(
+			$post_id,
+			\PMC\Unit_Test\Utility::get_hidden_property( Meta::get_instance(), 'pending_recurrence' ),
+			'Failed to assert no recurrence reconciliation was queued for an unsupported post type.'
+		);
+		$this->assertArrayNotHasKey(
+			$post_id,
+			\PMC\Unit_Test\Utility::get_hidden_property( Occurrences::get_instance(), 'pending_projection' ),
+			'Failed to assert no projection was queued for an unsupported post type.'
+		);
 	}
 
 	/**

@@ -162,14 +162,20 @@ final class Occurrences {
 	const LAZY_REPAIR_READ_BATCH_SIZE = 1;
 
 	/**
-	 * Posts whose recurrence blob had not landed yet when a save tried to project it.
+	 * Posts whose occurrence rows still need a late projection pass.
 	 *
-	 * `wp_after_insert_post` can fire before the request's meta writes have
-	 * all landed. REST, duplication, and import all write the blob with a
-	 * separate `add_post_meta()` call after the insert completes, the same
-	 * race `Recurrence\Meta::$pending_recurrence` guards. Rather than guess,
-	 * the post is noted here and decided again on `shutdown`, once every
-	 * write this request is going to make has already happened.
+	 * Two writers land a post here, mirroring
+	 * `Recurrence\Meta::$pending_recurrence`. `maybe_project()` queues a post
+	 * whose blob was empty at `wp_after_insert_post` time, because REST,
+	 * duplication, and import can all write the blob after the insert
+	 * completes. And `maybe_queue_projection()` queues a post on any write to
+	 * the blob itself, which is what catches writers that never fire the save
+	 * hook at all: WP-CLI, an importer updating an existing post, or a direct
+	 * `update_post_meta()` call. Rather than guess, the post is noted here
+	 * and decided again on `shutdown`, once every write this request is going
+	 * to make has already happened. A save-path projection that runs after
+	 * the queueing write removes the entry again, so the ordinary editor save
+	 * projects once, not twice.
 	 *
 	 * Each value is whether the post already had valid recurrence mirrors at
 	 * the moment it was deferred. It is captured before `Meta`'s own deferred
@@ -212,6 +218,11 @@ final class Occurrences {
 	 * handling of the same event, so the mirrors `Rule::from_post()` reads are
 	 * already whatever this save produced by the time projection runs.
 	 *
+	 * The three meta hooks watch writes to the canonical blob itself, the
+	 * same watcher `Recurrence\Meta` registers, so a writer that fires no
+	 * save hook still gets its occurrence rows reconciled on `shutdown`. The
+	 * callbacks bail on the meta-key comparison alone for every other key.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
@@ -219,6 +230,9 @@ final class Occurrences {
 	protected function setup_hooks(): void {
 		add_action( 'wp_after_insert_post', array( $this, 'maybe_project' ), 20 );
 		add_action( 'delete_post', array( $this, 'maybe_delete_for_post' ) );
+		add_action( 'added_post_meta', array( $this, 'maybe_queue_projection' ), 10, 3 );
+		add_action( 'updated_post_meta', array( $this, 'maybe_queue_projection' ), 10, 3 );
+		add_action( 'deleted_post_meta', array( $this, 'maybe_queue_projection' ), 10, 3 );
 	}
 
 	/**
@@ -246,6 +260,13 @@ final class Occurrences {
 		if ( ! empty( $data ) ) {
 			$this->project( $post_id );
 
+			// This projection consumed the blob as it stands right now, so a
+			// reconciliation queued by an earlier write this request (a blob
+			// landed before the save hook fired, or a creation-time deferral
+			// followed by a second save) is already satisfied. A blob write
+			// after this point re-queues the post.
+			unset( $this->pending_projection[ $post_id ] );
+
 			return;
 		}
 
@@ -259,7 +280,49 @@ final class Occurrences {
 	}
 
 	/**
-	 * Project every post that finished its save without a recurrence blob landed yet.
+	 * Queue a late projection when the recurrence blob itself is written.
+	 *
+	 * The occurrence-row counterpart to
+	 * `Recurrence\Meta::maybe_queue_reconciliation()`: a blob replaced or
+	 * removed by a writer that never fires `wp_after_insert_post` (WP-CLI, an
+	 * importer updating an existing post, a direct `update_post_meta()` call)
+	 * would otherwise leave the projected rows describing the old rule
+	 * forever. Whether the post was recurring is captured at queue time,
+	 * before `Meta`'s own shutdown pass can clear the mirrors, so an
+	 * ordinary never-recurring post still resolves without ever touching the
+	 * occurrence table while a genuinely removed rule gets its rows cleaned
+	 * up. The capture is unconditional, matching `maybe_project()`'s own
+	 * deferral: the mirrors only ever change on the save hook (which removes
+	 * the entry) or at shutdown (after all queueing), so the latest capture
+	 * and the earliest are the same value on every reachable path.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int|int[] $meta_id  Meta ID, or an array of meta IDs for `deleted_post_meta`.
+	 * @param int       $post_id  Post ID the meta belongs to.
+	 * @param string    $meta_key Meta key that changed.
+	 *
+	 * @return void
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 */
+	public function maybe_queue_projection( $meta_id, $post_id, $meta_key = '' ): void {
+		$post_id = (int) $post_id;
+
+		if (
+			Meta::META_KEY !== $meta_key
+			|| ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' )
+		) {
+			return;
+		}
+
+		$this->pending_projection[ $post_id ] = Rule::from_post( $post_id ) instanceof Rule;
+
+		add_action( 'shutdown', array( $this, 'resolve_pending_projection' ), 20 );
+	}
+
+	/**
+	 * Project every post whose occurrence rows still need reconciling.
 	 *
 	 * Runs on `shutdown` at priority 20, strictly after
 	 * `Recurrence\Meta::resolve_pending_recurrence()`'s own default-priority-10

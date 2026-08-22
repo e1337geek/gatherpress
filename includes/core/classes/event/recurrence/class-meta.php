@@ -73,14 +73,20 @@ final class Meta {
 	);
 
 	/**
-	 * Posts whose recurrence blob was empty when `set_recurrence()` ran.
+	 * Posts whose recurrence blob still needs a late reconciliation pass.
 	 *
-	 * `wp_after_insert_post` can fire before the request's meta writes have
-	 * all landed. REST, duplication, and import all write the blob with a
-	 * separate `add_post_meta()` call after the insert completes. Mirrors
-	 * `Event\Setup::$pending_datetimes`: rather than guess, note the post and
-	 * decide once more on `shutdown`, when every write this request is going
-	 * to make has already happened.
+	 * Two writers land a post here. `set_recurrence()` queues a post whose
+	 * blob was empty at `wp_after_insert_post` time, because REST,
+	 * duplication, and import can all write the blob after the insert
+	 * completes (mirrors `Event\Setup::$pending_datetimes`). And
+	 * `maybe_queue_reconciliation()` queues a post on any write to the blob
+	 * itself, which is what catches writers that never fire the save hook at
+	 * all: WP-CLI's `wp post meta update`, an importer updating an existing
+	 * post, or any direct `update_post_meta()` call. Rather than guess, the
+	 * post is noted and decided once more on `shutdown`, when every write
+	 * this request is going to make has already happened. A save-path
+	 * derivation that runs after the queueing write removes the entry again,
+	 * so the ordinary editor save derives once, not twice.
 	 *
 	 * @since 0.36.0
 	 * @var array<int, bool>
@@ -99,6 +105,13 @@ final class Meta {
 	/**
 	 * Set up hooks for recurrence meta registration and projection.
 	 *
+	 * The three meta hooks watch writes to the canonical blob itself, so a
+	 * writer that never fires `wp_after_insert_post` after the blob lands
+	 * (WP-CLI, an importer updating an existing post, direct
+	 * `update_post_meta()` calls) still gets its mirrors reconciled on
+	 * `shutdown`. The callbacks bail on the meta-key comparison alone for
+	 * every other key, so they add no query and no write to unrelated saves.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
@@ -106,6 +119,9 @@ final class Meta {
 	protected function setup_hooks(): void {
 		add_action( 'registered_post_type', array( $this, 'register' ), 11 );
 		add_action( 'wp_after_insert_post', array( $this, 'set_recurrence' ) );
+		add_action( 'added_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
+		add_action( 'updated_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
+		add_action( 'deleted_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
 	}
 
 	/**
@@ -214,6 +230,13 @@ final class Meta {
 		if ( ! empty( $data ) ) {
 			$this->write_recurrence( $post_id, (string) $data );
 
+			// This derivation consumed the blob as it stands right now, so a
+			// reconciliation queued by an earlier write this request (the
+			// classic-editor shape: meta box writes the blob, then the save
+			// hook fires) is already satisfied. A blob write that happens
+			// after this point re-queues the post.
+			unset( $this->pending_recurrence[ $post_id ] );
+
 			return;
 		}
 
@@ -229,12 +252,51 @@ final class Meta {
 	}
 
 	/**
-	 * Resolve every post that finished its save without a stored recurrence blob.
+	 * Queue a late reconciliation when the recurrence blob itself is written.
+	 *
+	 * `wp_after_insert_post` only covers writers that fire it after their
+	 * meta writes land. A blob replaced or removed by WP-CLI, an importer
+	 * updating an existing post, or a direct `update_post_meta()` call fires
+	 * no save hook at all, and without this watcher its mirrors and
+	 * occurrence rows would keep describing the old rule forever. The
+	 * meta-key comparison runs first so every unrelated meta write bails
+	 * with no query and no state change, keeping a site with no recurring
+	 * events byte-identical on its save paths.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int|int[] $meta_id  Meta ID, or an array of meta IDs for `deleted_post_meta`.
+	 * @param int       $post_id  Post ID the meta belongs to.
+	 * @param string    $meta_key Meta key that changed.
+	 *
+	 * @return void
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 */
+	public function maybe_queue_reconciliation( $meta_id, $post_id, $meta_key = '' ): void {
+		$post_id = (int) $post_id;
+
+		if (
+			self::META_KEY !== $meta_key
+			|| ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' )
+		) {
+			return;
+		}
+
+		$this->pending_recurrence[ $post_id ] = true;
+
+		add_action( 'shutdown', array( $this, 'resolve_pending_recurrence' ) );
+	}
+
+	/**
+	 * Resolve every post whose recurrence blob still needs reconciling.
 	 *
 	 * Runs on shutdown, so the meta read here is whatever the request actually
-	 * ended up with rather than what existed mid-insert. A blob that is still
-	 * empty here means the rule was genuinely removed (or never existed), so
-	 * the mirrors are cleared rather than left stale.
+	 * ended up with rather than what existed mid-insert or mid-write. A blob
+	 * that is still empty here means the rule was genuinely removed (or never
+	 * existed), so the mirrors are cleared rather than left stale; a nonempty
+	 * one is derived, which covers a rule replaced by a writer that fired no
+	 * save hook.
 	 *
 	 * @since 0.36.0
 	 *

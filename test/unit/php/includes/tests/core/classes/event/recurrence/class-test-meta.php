@@ -50,6 +50,24 @@ class Test_Meta extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'set_recurrence' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'added_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_queue_reconciliation' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'updated_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_queue_reconciliation' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'deleted_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_queue_reconciliation' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );
