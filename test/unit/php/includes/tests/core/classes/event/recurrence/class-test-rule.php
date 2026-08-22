@@ -908,7 +908,11 @@ class Test_Rule extends Base {
 			$to_int->invoke( null, '-1' ),
 			'Failed to assert that a canonical negative integer string is read.'
 		);
-		$this->assertSame( 0, $to_int->invoke( null, '0' ), 'Failed to assert that the canonical zero string is read.' );
+		$this->assertSame(
+			0,
+			$to_int->invoke( null, '0' ),
+			'Failed to assert that the canonical zero string is read.'
+		);
 		$this->assertNull( $to_int->invoke( null, '007' ), 'Failed to assert that a zero-padded string is rejected.' );
 		$this->assertNull( $to_int->invoke( null, true ), 'Failed to assert that a boolean is rejected.' );
 		$this->assertNull( $to_int->invoke( null, 2.5 ), 'Failed to assert that a float is rejected.' );
