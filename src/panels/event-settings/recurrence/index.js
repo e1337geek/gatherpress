@@ -399,7 +399,11 @@ function isServerValidRule( rule ) {
  */
 function parseRecurrenceBlob( raw ) {
 	if ( ! raw ) {
-		return { enabled: false, rule: { ...DEFAULT_RULE }, invalidStored: false };
+		return {
+			enabled: false,
+			rule: { ...DEFAULT_RULE },
+			invalidStored: false,
+		};
 	}
 
 	try {
@@ -438,7 +442,11 @@ function parseRecurrenceBlob( raw ) {
 
 		return { enabled: true, rule, invalidStored: false };
 	} catch {
-		return { enabled: false, rule: { ...DEFAULT_RULE }, invalidStored: false };
+		return {
+			enabled: false,
+			rule: { ...DEFAULT_RULE },
+			invalidStored: false,
+		};
 	}
 }
 
@@ -531,9 +539,9 @@ const RecurrencePanel = () => {
 	const { postId, recurrenceMeta, timezone } = useSelect( ( select ) => {
 		return {
 			postId: select( 'core/editor' )?.getCurrentPostId(),
-			recurrenceMeta: select( 'core/editor' )
-				?.getEditedPostAttribute( 'meta' )
-				?.gatherpress_recurrence,
+			recurrenceMeta:
+				select( 'core/editor' )?.getEditedPostAttribute( 'meta' )
+					?.gatherpress_recurrence,
 			timezone: select( 'gatherpress/datetime' )?.getTimezone(),
 		};
 	}, [] );
@@ -744,9 +752,7 @@ const RecurrencePanel = () => {
 									onChange={ applyRuleChange }
 								/>
 								{ 'day_of_month' === rule.monthly_mode &&
-									! Number.isInteger(
-										rule.monthly_day,
-									) && (
+									! Number.isInteger( rule.monthly_day ) && (
 									<output>
 										{ __(
 											'Enter a day of the month between 1 and 31.',
@@ -771,8 +777,7 @@ const RecurrencePanel = () => {
 								) }
 							</output>
 						) }
-						{ 'count' === rule.end_type &&
-							! ( 1 <= rule.count ) && (
+						{ 'count' === rule.end_type && ! ( 1 <= rule.count ) && (
 							<output>
 								{ __(
 									'Enter how many times this event repeats.',
