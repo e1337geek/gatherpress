@@ -226,8 +226,10 @@ final class Query {
 		// range predicates are there to be rewritten.
 		add_filter( 'posts_clauses', array( $this, 'expand_event_clauses' ), 11, 2 );
 		// Also priority 11, and registered after `expand_event_clauses()` so it
-		// runs after it. The two are mutually exclusive by their guards:
-		// expansion is exempt in the admin, and this one only ever runs there.
+		// runs after it. `is_admin()` alone does not separate the two:
+		// expansion deliberately carves admin-ajax back in because those
+		// requests serve front-end reads, so this one excludes admin-ajax
+		// explicitly and expansion is the only filter that runs there.
 		add_filter( 'posts_clauses', array( $this, 'adjust_admin_occurrence_sorting' ), 11, 2 );
 		add_filter( 'the_posts', array( $this, 'attach_occurrences' ), 10, 2 );
 	}
@@ -553,8 +555,9 @@ final class Query {
 	 * Both aggregates are taken over the same `status = scheduled` set, so a
 	 * canceled occurrence never becomes the date a series sorts on.
 	 *
-	 * The guards, in the order they are cheapest: this is admin-only, because
-	 * front-end lists get real expansion instead; a site with no recurring
+	 * The guards, in the order they are cheapest: this is admin-only and never
+	 * admin-ajax, because front-end lists, including the ones admin-ajax
+	 * serves, get real expansion instead; a site with no recurring
 	 * events runs byte-identical SQL; the query has to be for an event post
 	 * type; the clause has to actually carry the anchor ordering, which is
 	 * false whenever the reader has sorted by title, author or RSVP count and
@@ -585,6 +588,7 @@ final class Query {
 
 		if (
 			! is_admin()
+			|| wp_doing_ajax() // Admin-ajax serves front-end reads; those get real expansion.
 			|| ! self::site_has_recurring_events()
 			|| ! $this->is_event_query( $query )
 			|| ! str_contains( (string) ( $pieces['orderby'] ?? '' ), $anchor_order )
