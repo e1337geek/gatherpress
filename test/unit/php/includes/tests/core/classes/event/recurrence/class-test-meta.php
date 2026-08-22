@@ -128,6 +128,12 @@ class Test_Meta extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'maybe_queue_reconciliation' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'deleted_post_meta',
+				'priority' => 10,
+				'callback' => array( $instance, 'maybe_revalidate_for_datetime' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );

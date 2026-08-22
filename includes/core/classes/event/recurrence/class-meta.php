@@ -137,6 +137,7 @@ final class Meta {
 		add_action( 'deleted_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
 		add_action( 'added_post_meta', array( $this, 'maybe_revalidate_for_datetime' ), 10, 3 );
 		add_action( 'updated_post_meta', array( $this, 'maybe_revalidate_for_datetime' ), 10, 3 );
+		add_action( 'deleted_post_meta', array( $this, 'maybe_revalidate_for_datetime' ), 10, 3 );
 	}
 
 	/**
@@ -441,16 +442,22 @@ final class Meta {
 	 * back to a named identifier re-derives the mirrors and re-projects,
 	 * rather than losing the rule to a timezone edit.
 	 *
+	 * Deletion queues the same pass: removing the blob leaves the series'
+	 * timezone unknowable, which the final validation reads as a rejection
+	 * and clears. `deleted_post_meta` passes an array of meta IDs as its
+	 * first argument where the write hooks pass one ID, which is why the
+	 * parameter is untyped and unread.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param int    $meta_id  ID of the metadata row that was written.
-	 * @param int    $post_id  Post the metadata belongs to.
-	 * @param string $meta_key Meta key that was written.
+	 * @param int|int[] $meta_id  ID (or, from `deleted_post_meta`, IDs) of the metadata row(s) affected.
+	 * @param int       $post_id  Post the metadata belongs to.
+	 * @param string    $meta_key Meta key that was written or deleted.
 	 *
 	 * @return void
 	 *
 	 * @SuppressWarnings(PHPMD.UnusedFormalParameter) `$meta_id` is required by WP's
-	 *                                                `added_post_meta`/`updated_post_meta` signature.
+	 *                                                `added_post_meta`/`updated_post_meta`/`deleted_post_meta` signature.
 	 */
 	public function maybe_revalidate_for_datetime( $meta_id, $post_id, $meta_key = '' ): void {
 		$post_id = (int) $post_id;
