@@ -180,6 +180,21 @@ describe( 'resolveWpEnvPort', () => {
 			resolveWpEnvPort( { env: {}, configDir: configDir() } ),
 		).toBe( 8888 );
 	} );
+
+	test( 'defaults to the real process env and repo config directory', () => {
+		// The bare calls `playwright.config.js` makes must resolve exactly
+		// what an explicit call against the repo root and the live process
+		// env resolves. The port itself varies per checkout (a local
+		// override file is the point of the mechanism), so the assertion
+		// pins the equivalence rather than a number.
+		const expected = resolveWpEnvPort( {
+			env: process.env,
+			configDir: path.join( __dirname, '..', '..', '..', '..' ),
+		} );
+
+		expect( resolveWpEnvPort() ).toBe( expected );
+		expect( resolveBaseUrl() ).toBe( `http://localhost:${ expected }` );
+	} );
 } );
 
 describe( 'resolveBaseUrl', () => {
