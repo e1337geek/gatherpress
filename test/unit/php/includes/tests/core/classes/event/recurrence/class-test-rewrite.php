@@ -1113,30 +1113,32 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
-	 * Coverage for the same guarantee on the occurrence-segment branch of
-	 * `parse_request()`.
+	 * Coverage for the cost of the occurrence-segment branch of
+	 * `parse_request()` on a site whose recurring flag is off.
 	 *
-	 * The sibling of the bare-series test above. That one probes the branch
-	 * taken when a URL carries no occurrence segment; this one drives a real
-	 * occurrence URL, which takes the other branch and reaches
-	 * `Occurrences::get()`, a raw and uncached `$wpdb->get_row()`. Probing only
-	 * one branch leaves the other free to lose its guard, so both are pinned
-	 * here.
+	 * The sibling of the bare-series test above. That one proves the branch
+	 * every ordinary request falls through to pays nothing; this one drives a
+	 * real occurrence URL, whose branch is deliberately unguarded: a request
+	 * already carrying an occurrence identifier pays exactly one primary-key
+	 * `Occurrences::get()` read, because that read is what lets a stale link
+	 * 404 instead of silently rendering the series at its anchor date after
+	 * the flag flips off.
 	 *
 	 * @covers ::parse_request
 	 *
 	 * @return void
 	 */
-	public function test_occurrence_url_skips_occurrence_query_without_recurring_events(): void {
+	public function test_occurrence_url_pays_one_primary_key_read_without_recurring_events(): void {
 		global $wpdb;
 
 		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
 
-		$url = Rewrite::get_occurrence_url( $post_id, Occurrences::recurrence_id( $anchor_start ) );
+		$recurrence_id = Occurrences::recurrence_id( $anchor_start );
+		$url           = Rewrite::get_occurrence_url( $post_id, $recurrence_id );
 
 		// Flipped only after projection, so a real occurrence row exists and the
-		// URL is genuinely well-formed: what is asserted is the guard, not a
-		// missing fixture.
+		// URL is genuinely well-formed: what is asserted is the branch's cost,
+		// not a missing fixture.
 		update_option( Query::HAS_RECURRING_OPTION, '0' );
 
 		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
@@ -1155,10 +1157,76 @@ class Test_Rewrite extends Base {
 
 		remove_filter( 'query', $count_queries );
 
+		$this->assertFalse(
+			is_404(),
+			'A real occurrence URL must keep resolving when only the flag has flipped off.'
+		);
 		$this->assertSame(
-			0,
+			1,
 			$query_count,
-			'An occurrence URL must not query the occurrence table when the site has no recurring events.'
+			'The occurrence-segment branch pays exactly its one primary-key read on a flag-off site.'
+		);
+	}
+
+	/**
+	 * A stale occurrence URL keeps 404ing after the site's last recurrence
+	 * rule goes away.
+	 *
+	 * `refresh_has_recurring_events()` writes the flag option to `'0'` when
+	 * the last live recurring rule is removed or trashed, while the rewrite
+	 * rule stays registered on `wp_loaded` unconditionally. Every previously
+	 * shared occurrence URL still matches the rule, so the miss must still
+	 * 404 instead of silently rendering the series at its anchor date, which
+	 * is the exact outcome this class's docblock promises never happens.
+	 *
+	 * @covers ::parse_request
+	 *
+	 * @return void
+	 */
+	public function test_stale_occurrence_url_404s_after_the_recurring_flag_flips_off(): void {
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
+
+		// Positive control: a real occurrence URL resolves while the flag is on.
+		$real_recurrence_id = Occurrences::recurrence_id( $anchor_start );
+		$this->go_to( Rewrite::get_occurrence_url( $post_id, $real_recurrence_id ) );
+
+		$this->assertFalse(
+			is_404(),
+			'A real occurrence URL must resolve while the flag is on.'
+		);
+		$this->assertSame(
+			$real_recurrence_id,
+			get_query_var( Context::QUERY_VAR ),
+			'The real occurrence URL should carry its recurrence ID into the query.'
+		);
+
+		// The same stale URL, requested twice with only the option changed
+		// between: this is the review's measured failure pair.
+		$stale_url = Rewrite::get_occurrence_url( $post_id, '19991231T235959' );
+
+		$this->go_to( $stale_url );
+
+		$this->assertTrue(
+			is_404(),
+			'A stale occurrence URL must 404 while the flag is on.'
+		);
+
+		// The flag-on request above installed the redirect_canonical
+		// neutralizer; clear it so the flag-off request below has to install
+		// its own rather than inherit this one.
+		remove_filter( 'redirect_canonical', '__return_false' );
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$this->go_to( $stale_url );
+
+		$this->assertTrue(
+			is_404(),
+			'A stale occurrence URL must still 404 after the flag flips off, never render the series at its anchor.'
+		);
+		$this->assertNull(
+			redirect_canonical( $stale_url, false ),
+			'redirect_canonical() must be neutralized on the flag-off miss as well.'
 		);
 	}
 
