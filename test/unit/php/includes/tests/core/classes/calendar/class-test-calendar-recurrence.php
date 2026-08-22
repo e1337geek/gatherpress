@@ -789,8 +789,10 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertNotSame( '', $block, 'The referenced zone must be defined in the same VCALENDAR.' );
 
 		// Real transitions the tz database knows, past the old six-year window.
+		// Eight years of them, so the probe crosses years whose civil-time
+		// decisions are irregular and cannot be produced by any yearly rule.
 		$probe_from  = time() + ( 7 * YEAR_IN_SECONDS );
-		$transitions = (array) $zone->getTransitions( $probe_from, $probe_from + ( 2 * YEAR_IN_SECONDS ) );
+		$transitions = (array) $zone->getTransitions( $probe_from, $probe_from + ( 8 * YEAR_IN_SECONDS ) );
 		$changes     = array_slice( $transitions, 1 );
 
 		$this->assertNotEmpty(
@@ -820,9 +822,12 @@ class Test_Calendar_Recurrence extends Base {
 	 * Whether a definition resolves one onset, explicitly or by terminal rule.
 	 *
 	 * Explicit coverage is an observance whose `DTSTART` is the onset itself.
-	 * A terminal unbounded yearly rule covers every onset after its own
-	 * anchor, which is how a zone that settles into a stable policy is
-	 * described past its irregular years.
+	 * A terminal unbounded yearly rule covers an onset after its anchor only
+	 * when the rule would actually generate it: month, weekday, week-of-month
+	 * position and wall clock all have to match, or the "coverage" is a rule
+	 * that skips the onset and resolves it an offset wrong. That distinction
+	 * is what separates a settled zone's honest terminal rule from a rule
+	 * invented off a short sampling window.
 	 *
 	 * @since 0.36.0
 	 *
@@ -836,10 +841,32 @@ class Test_Calendar_Recurrence extends Base {
 			return true;
 		}
 
-		preg_match_all( '/DTSTART:(\d{8}T\d{6})\r\nRRULE:FREQ=YEARLY/', $block, $ruled );
+		preg_match_all(
+			'/DTSTART:(\d{8}T\d{6})\r\nRRULE:FREQ=YEARLY;BYMONTH=(\d+);BYDAY=(-?\d)([A-Z]{2})/',
+			$block,
+			$ruled,
+			PREG_SET_ORDER
+		);
 
-		foreach ( $ruled[1] as $rule_anchor ) {
-			if ( $rule_anchor <= $onset ) {
+		$moment   = (int) strtotime( substr( $onset, 0, 8 ) . ' UTC' );
+		$day      = (int) gmdate( 'j', $moment );
+		$last_day = (int) gmdate( 't', $moment );
+		$weekday  = strtoupper( substr( gmdate( 'D', $moment ), 0, 2 ) );
+		$month    = (int) gmdate( 'n', $moment );
+
+		foreach ( $ruled as $rule ) {
+			$ordinal  = (int) $rule[3];
+			$position = ( -1 === $ordinal )
+				? ( ( $last_day - $day ) < 7 )
+				: ( ( intdiv( $day - 1, 7 ) + 1 ) === $ordinal );
+
+			if (
+				$rule[1] <= $onset
+				&& $month === (int) $rule[2]
+				&& $weekday === $rule[4]
+				&& $position
+				&& substr( $onset, -6 ) === substr( $rule[1], -6 )
+			) {
 				return true;
 			}
 		}
@@ -863,7 +890,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * a fixture naming one would silently stop testing the defect on the next
 	 * tzdata update.
 	 *
-	 * @covers \GatherPress\Core\Calendar\Timezone_Component::is_regular
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::terminal_rule
 	 * @covers \GatherPress\Core\Calendar\Timezone_Component::sub_component
 	 *
 	 * @return void
@@ -889,8 +916,8 @@ class Test_Calendar_Recurrence extends Base {
 			),
 		);
 
-		$this->assertFalse(
-			Utility::invoke_hidden_method( $instance, 'is_regular', array( $transitions ) ),
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'terminal_rule', array( $transitions ) ),
 			'A pair that changes to different offsets is two observances, not one repeating rule.'
 		);
 
@@ -939,15 +966,19 @@ class Test_Calendar_Recurrence extends Base {
 	 * every zone irregular, which would replace one rule with a sub-component
 	 * per transition for every ordinary daylight-saving zone on the site.
 	 *
-	 * @covers \GatherPress\Core\Calendar\Timezone_Component::is_regular
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::terminal_rule
 	 *
 	 * @return void
 	 */
 	public function test_a_genuinely_repeating_transition_is_still_regular(): void {
-		$this->assertTrue(
+		$this->assertSame(
+			array(
+				'index' => 0,
+				'byday' => '1SU',
+			),
 			Utility::invoke_hidden_method(
 				Timezone_Component::get_instance(),
-				'is_regular',
+				'terminal_rule',
 				array(
 					array(
 						array(

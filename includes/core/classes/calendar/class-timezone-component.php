@@ -42,6 +42,18 @@ use GatherPress\Core\Traits\Singleton;
  * onset postdates a 2020 event therefore does not define that event's offset
  * at all, however correct it is about today.
  *
+ * A body carrying an unbounded rule has no last instant, so its definition may
+ * never simply stop: a client resolves occurrences arbitrarily far ahead, and
+ * every one past the last emitted onset would silently take the last emitted
+ * offset. The policy is therefore: the window extends to a horizon decades
+ * past the tz database's year-by-year civil-time knowledge; where the
+ * enumerated transitions settle into a repeating yearly pattern, the tail
+ * collapses to one unbounded `RRULE` and the definition is as infinite as the
+ * event rule it serves; where the zone never settles inside the horizon, every
+ * known transition is written out, which is everything anyone can say about
+ * the zone, and three human generations more than the six years emitted
+ * before this policy existed.
+ *
  * @since 0.36.0
  */
 final class Timezone_Component {
@@ -66,14 +78,30 @@ final class Timezone_Component {
 	 * Years of transitions read ahead of the latest instant in range.
 	 *
 	 * Three is the smallest window that shows a yearly pattern repeating often
-	 * enough to be called regular rather than coincidental. It is also what an
-	 * open-ended rule gets ahead of today, since such a rule names no last
-	 * instant of its own; dates past it are covered by the emitted `RRULE`.
+	 * enough to be called regular rather than coincidental. An open-ended rule
+	 * does not rely on it: having no last instant of its own, it extends the
+	 * range itself, to `OPEN_ENDED_HORIZON_YEARS`.
 	 *
 	 * @since 0.36.0
 	 * @var int
 	 */
 	private const LOOKAHEAD_YEARS = 3;
+
+	/**
+	 * Years ahead of now an open-ended rule extends the definition window.
+	 *
+	 * Deep enough that the tz database's explicit year-by-year knowledge, not
+	 * this number, is the binding constraint: the longest-running enumerated
+	 * civil-time rules on record are written out into the 2080s, and past
+	 * their end the database extrapolates the terminal policy, which the
+	 * terminal-rule detection then collapses to one unbounded `RRULE`. The
+	 * cost is bounded by the zone itself: a stable zone still collapses to
+	 * two ruled sub-components however wide the window is.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	private const OPEN_ENDED_HORIZON_YEARS = 75;
 
 	/**
 	 * Rendered definitions, keyed by identifier and the range they were built for.
@@ -136,7 +164,7 @@ final class Timezone_Component {
 	 * Two floors are applied. The span always contains the present, so a feed
 	 * of purely historical events still defines the zone a client is reading it
 	 * in; and a rule with neither `UNTIL` nor `COUNT` has no last instant, so it
-	 * extends the span to the lookahead horizon rather than ending at whatever
+	 * extends the span to the open-ended horizon rather than ending at whatever
 	 * concrete date happened to be written next to it.
 	 *
 	 * @since 0.36.0
@@ -161,7 +189,7 @@ final class Timezone_Component {
 		}
 
 		if ( $this->has_open_ended_rule( $body ) ) {
-			$instants[] = $now + ( self::LOOKAHEAD_YEARS * YEAR_IN_SECONDS );
+			$instants[] = $now + ( self::OPEN_ENDED_HORIZON_YEARS * YEAR_IN_SECONDS );
 		}
 
 		return array( min( $instants ), max( $instants ) );
@@ -346,15 +374,17 @@ final class Timezone_Component {
 	/**
 	 * Render one sub-component type from the transitions belonging to it.
 	 *
-	 * Regular transitions collapse to a single sub-component carrying a yearly
-	 * `RRULE`, which describes the zone from the first onset in range onward.
-	 * That is what an open-ended series needs, and it keeps the definition
-	 * small. An
+	 * A terminal run of transitions repeating one yearly pattern collapses to
+	 * a single sub-component carrying an unbounded `RRULE`, which describes
+	 * the zone from that run's first onset onward and forever. Where the whole
+	 * list is the run, that one sub-component is the whole definition, which
+	 * is what keeps an ordinary zone's component small over any window. An
 	 * `RRULE` generates nothing before its own `DTSTART`, which is why the
 	 * window is anchored to the range the body covers rather than to the
-	 * request: a rule that starts after the event it is meant to explain leaves
-	 * that event with no observance to resolve against. Irregular transitions
-	 * are written out individually instead, because a rule that does not hold is
+	 * request: a rule that starts after the event it is meant to explain
+	 * leaves that event with no observance to resolve against. Transitions
+	 * before the run, and every transition where no terminal run exists, are
+	 * written out individually instead, because a rule that does not hold is
 	 * worse than no rule.
 	 *
 	 * @since 0.36.0
@@ -369,75 +399,171 @@ final class Timezone_Component {
 			return array();
 		}
 
-		$regular = $this->is_regular( $transitions );
-		$lines   = array();
+		$terminal = $this->terminal_rule( $transitions );
+		$lines    = array();
 
-		foreach ( $regular ? array( $transitions[0] ) : $transitions as $transition ) {
+		foreach ( $transitions as $index => $transition ) {
+			$ruled = ( null !== $terminal && $terminal['index'] === $index );
+
 			$lines[] = sprintf( 'BEGIN:%s', $type );
 			$lines[] = sprintf( 'TZOFFSETFROM:%s', $this->as_utc_offset( $transition['from'] ) );
 			$lines[] = sprintf( 'TZOFFSETTO:%s', $this->as_utc_offset( $transition['to'] ) );
 			$lines[] = sprintf( 'TZNAME:%s', $transition['abbr'] );
 			$lines[] = sprintf( 'DTSTART:%s', $transition['local'] );
 
-			if ( $regular ) {
+			if ( $ruled ) {
 				$lines[] = sprintf(
 					'RRULE:FREQ=YEARLY;BYMONTH=%d;BYDAY=%s',
 					$transition['month'],
-					$transition['byday']
+					$terminal['byday']
 				);
 			}
 
 			$lines[] = sprintf( 'END:%s', $type );
+
+			if ( $ruled ) {
+				// Everything after the anchor is generated by the rule.
+				break;
+			}
 		}
 
 		return $lines;
 	}
 
 	/**
-	 * Whether a set of transitions repeats on the same yearly position.
+	 * The terminal run of transitions one unbounded yearly rule describes.
 	 *
-	 * A single transition is not regular: one observation cannot establish a
-	 * pattern, and writing an unbounded `RRULE` from it would claim a rule the
-	 * zone may not follow. Two or more that agree on month, weekday ordinal,
-	 * wall clock, **both offsets and name** do establish one.
+	 * Walked backwards from the last transition, because only a run that
+	 * reaches the end of the enumerated window may be extended forever: a
+	 * pattern the zone later abandons is already contradicted inside the list.
+	 * A run needs at least two members, since one observation cannot establish
+	 * a pattern, and every member must agree on month, weekday, wall clock,
+	 * **both offsets and name**.
 	 *
 	 * The offsets are the half that is easy to leave out and expensive to get
 	 * wrong. A zone can keep transitioning on the same yearly position while
 	 * changing what it transitions *to*, which is exactly what a jurisdiction
-	 * abolishing daylight saving looks like in tzdata, and what Alberta's
-	 * scheduled move reads as today: two first-Sunday-of-November transitions at
-	 * 02:00, the first to -0700 and the second to -0600. Comparing position
-	 * alone calls that pair regular and emits an unbounded rule that keeps
-	 * moving clients to an offset the zone stopped using, an hour wrong for
-	 * every later date. The abbreviation is included for the same reason one
-	 * step earlier: a name change is a policy change even where the offsets
-	 * happen to coincide, and the emitted `TZNAME` would otherwise be a
-	 * transition's name applied to a different observance.
+	 * abolishing daylight saving looks like in tzdata: two first-Sunday-of-
+	 * November transitions at 02:00, the first to -0700 and the second to
+	 * -0600. Comparing position alone calls that pair a rule and keeps moving
+	 * clients to an offset the zone stopped using, an hour wrong for every
+	 * later date. The abbreviation is included for the same reason one step
+	 * earlier: a name change is a policy change even where the offsets happen
+	 * to coincide.
+	 *
+	 * The ordinal is resolved across the run rather than per transition. A
+	 * "fourth Saturday" rule drifts between the fourth and the last week of
+	 * its month year by year, so labeling each transition alone flaps between
+	 * `4SA` and `-1SA` and breaks the run the zone actually follows. The run
+	 * holds while either reading stays consistent: the same counted-forward
+	 * ordinal, or every onset inside its month's final seven days. When both
+	 * hold, the last-week form is emitted, matching how such rules are
+	 * written.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param array $transitions Transitions as `describe_transition()` returns them.
 	 *
-	 * @return bool True when one `RRULE` describes every one of them.
+	 * @return array{index:int,byday:string}|null The run's first index and its
+	 *                                            `BYDAY`, or null when no rule holds.
 	 */
-	private function is_regular( array $transitions ): bool {
-		if ( count( $transitions ) < 2 ) {
-			return false;
+	private function terminal_rule( array $transitions ): ?array {
+		$count = count( $transitions );
+
+		if ( $count < 2 ) {
+			return null;
 		}
 
-		$signature = static function ( array $transition ): string {
-			return sprintf(
-				'%d:%s:%s:%d:%d:%s',
-				$transition['month'],
-				$transition['byday'],
-				substr( $transition['local'], -6 ),
-				$transition['from'],
-				$transition['to'],
-				$transition['abbr']
-			);
-		};
+		$last      = $transitions[ $count - 1 ];
+		$signature = $this->base_signature( $last );
+		$ordinal   = intdiv( $this->day_of( $last ) - 1, 7 ) + 1;
+		$forward   = true;
+		$last_week = $this->in_last_week( $last );
+		$start     = $count - 1;
 
-		return 1 === count( array_unique( array_map( $signature, $transitions ) ) );
+		while ( 0 < $start ) {
+			$candidate     = $transitions[ $start - 1 ];
+			$still_forward = $forward
+				&& ( intdiv( $this->day_of( $candidate ) - 1, 7 ) + 1 ) === $ordinal;
+			$still_last    = $last_week && $this->in_last_week( $candidate );
+
+			if (
+				$this->base_signature( $candidate ) !== $signature
+				|| ( ! $still_forward && ! $still_last )
+			) {
+				break;
+			}
+
+			$forward   = $still_forward;
+			$last_week = $still_last;
+			--$start;
+		}
+
+		if ( ( $count - $start ) < 2 ) {
+			return null;
+		}
+
+		return array(
+			'index' => $start,
+			'byday' => sprintf(
+				'%d%s',
+				$last_week ? -1 : $ordinal,
+				substr( (string) $last['byday'], -2 )
+			),
+		);
+	}
+
+	/**
+	 * A transition's yearly position, excluding the week-of-month ordinal.
+	 *
+	 * Month, weekday, wall clock, both offsets and name: everything a run must
+	 * agree on outright. The ordinal is left to `terminal_rule()`, which has
+	 * to resolve it across the run rather than per transition.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $transition One transition as `describe_transition()` returns it.
+	 *
+	 * @return string The comparable signature.
+	 */
+	private function base_signature( array $transition ): string {
+		return sprintf(
+			'%d:%s:%s:%d:%d:%s',
+			$transition['month'],
+			substr( (string) $transition['byday'], -2 ),
+			substr( (string) $transition['local'], -6 ),
+			$transition['from'],
+			$transition['to'],
+			$transition['abbr']
+		);
+	}
+
+	/**
+	 * The day of the month a transition's local onset falls on.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $transition One transition as `describe_transition()` returns it.
+	 *
+	 * @return int The day, 1 through 31.
+	 */
+	private function day_of( array $transition ): int {
+		return (int) substr( (string) $transition['local'], 6, 2 );
+	}
+
+	/**
+	 * Whether a transition's local onset falls in its month's final seven days.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $transition One transition as `describe_transition()` returns it.
+	 *
+	 * @return bool True when a "last weekday of the month" reading holds.
+	 */
+	private function in_last_week( array $transition ): bool {
+		$moment = (int) strtotime( substr( (string) $transition['local'], 0, 8 ) . ' UTC' );
+
+		return ( (int) gmdate( 't', $moment ) - $this->day_of( $transition ) ) < 7;
 	}
 
 	/**

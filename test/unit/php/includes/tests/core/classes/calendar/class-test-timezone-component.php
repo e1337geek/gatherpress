@@ -142,7 +142,7 @@ class Test_Timezone_Component extends Base {
 	}
 
 	/**
-	 * A rule with no last instant extends the range to the lookahead horizon.
+	 * A rule with no last instant extends the range to the open-ended horizon.
 	 *
 	 * An open-ended series names no final date, so the only concrete moments in
 	 * its component are its own start and end, which would bound the window to
@@ -192,9 +192,9 @@ class Test_Timezone_Component extends Base {
 			'An open-ended rule must reach past the last concrete date written beside it.'
 		);
 		$this->assertGreaterThan(
-			time() + ( 2 * YEAR_IN_SECONDS ),
+			time() + ( 70 * YEAR_IN_SECONDS ),
 			$open_end,
-			'And it must reach the lookahead horizon rather than merely the present.'
+			'And it must reach decades past the tz database\'s enumerated knowledge, not a sampling window.'
 		);
 	}
 
@@ -393,7 +393,7 @@ class Test_Timezone_Component extends Base {
 	 * enumerating, which is merely incomplete.
 	 *
 	 * @covers ::sub_component
-	 * @covers ::is_regular
+	 * @covers ::terminal_rule
 	 *
 	 * @return void
 	 */
@@ -443,7 +443,7 @@ class Test_Timezone_Component extends Base {
 	 * both directions, where an enumeration would run out.
 	 *
 	 * @covers ::sub_component
-	 * @covers ::is_regular
+	 * @covers ::terminal_rule
 	 *
 	 * @return void
 	 */
@@ -480,7 +480,7 @@ class Test_Timezone_Component extends Base {
 	/**
 	 * One observation is not a pattern.
 	 *
-	 * @covers ::is_regular
+	 * @covers ::terminal_rule
 	 *
 	 * @return void
 	 */
@@ -492,13 +492,220 @@ class Test_Timezone_Component extends Base {
 			array( $this->transition( '2026-03-08 07:00:00', -14400, true, 'EDT' ), -18000 )
 		);
 
-		$this->assertFalse(
-			Utility::invoke_hidden_method( $instance, 'is_regular', array( array( $transition ) ) ),
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'terminal_rule', array( array( $transition ) ) ),
 			'A single transition cannot establish a rule that will be written as unbounded.'
 		);
+		$this->assertSame(
+			array(
+				'index' => 0,
+				'byday' => '2SU',
+			),
+			Utility::invoke_hidden_method( $instance, 'terminal_rule', array( array( $transition, $transition ) ) ),
+			'Two that agree on month, ordinal and wall clock do, from the first of them.'
+		);
+	}
+
+	/**
+	 * An irregular prefix is enumerated and a regular tail becomes the rule.
+	 *
+	 * The shape an open-ended series in a settling zone produces: some years
+	 * are decided one by one, then a stable policy takes over. The prefix is
+	 * written out, the tail collapses to one unbounded rule anchored at its
+	 * first onset, and nothing after the anchor is emitted, because the rule
+	 * generates it.
+	 *
+	 * @covers ::sub_component
+	 * @covers ::terminal_rule
+	 *
+	 * @return void
+	 */
+	public function test_an_irregular_prefix_yields_to_a_terminal_rule(): void {
+		$instance    = Timezone_Component::get_instance();
+		$describe    = function ( string $moment ) use ( $instance ): array {
+			return Utility::invoke_hidden_method(
+				$instance,
+				'describe_transition',
+				array( $this->transition( $moment, -14400, true, 'EDT' ), -18000 )
+			);
+		};
+		$transitions = array(
+			// One off-pattern year, then the second-Sunday-of-March policy.
+			$describe( '2027-04-11 07:00:00' ),
+			$describe( '2028-03-12 07:00:00' ),
+			$describe( '2029-03-11 07:00:00' ),
+		);
+
+		$this->assertSame(
+			array(
+				'BEGIN:DAYLIGHT',
+				'TZOFFSETFROM:-0500',
+				'TZOFFSETTO:-0400',
+				'TZNAME:EDT',
+				'DTSTART:20270411T020000',
+				'END:DAYLIGHT',
+				'BEGIN:DAYLIGHT',
+				'TZOFFSETFROM:-0500',
+				'TZOFFSETTO:-0400',
+				'TZNAME:EDT',
+				'DTSTART:20280312T020000',
+				'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU',
+				'END:DAYLIGHT',
+			),
+			Utility::invoke_hidden_method( $instance, 'sub_component', array( 'DAYLIGHT', $transitions ) ),
+			'The off-pattern year is written out; the settled policy is one rule from its first onset.'
+		);
+	}
+
+	/**
+	 * A rule that drifts between the fourth and the last week still reads as
+	 * one run, and a broken drift does not.
+	 *
+	 * A "fourth Saturday" rule lands on days 22 through 28, which straddles
+	 * the last-seven-days boundary of a 31-day month, so per-transition
+	 * ordinal labels flap between `4SA` and `-1SA` for onsets the zone decides
+	 * by one rule. The run has to hold while either consistent reading holds,
+	 * and emit the last-week form when that is the consistent one.
+	 *
+	 * @covers ::terminal_rule
+	 *
+	 * @return void
+	 */
+	public function test_a_terminal_rule_resolves_its_ordinal_across_the_run(): void {
+		$instance = Timezone_Component::get_instance();
+		$describe = function ( string $moment ) use ( $instance ): array {
+			return Utility::invoke_hidden_method(
+				$instance,
+				'describe_transition',
+				array( $this->transition( $moment, 10800, true, 'EEST' ), 7200 )
+			);
+		};
+
+		// Fourth Saturdays of March: day 27 (2027), day 25 (2028), day 24
+		// (2029). The first two are also in the last week; the third is not,
+		// so only the counted-forward reading survives the whole run.
+		$fourth = array(
+			$describe( '2027-03-26 22:00:00' ),
+			$describe( '2028-03-24 22:00:00' ),
+			$describe( '2029-03-23 22:00:00' ),
+		);
+
+		$this->assertSame(
+			array(
+				'index' => 0,
+				'byday' => '4SA',
+			),
+			Utility::invoke_hidden_method( $instance, 'terminal_rule', array( $fourth ) ),
+			'A run consistent as "the fourth Saturday" is one rule despite per-year label flapping.'
+		);
+
+		// Last Sundays of October: day 25 (2026), day 31 (2027). Different
+		// forward ordinals, so only the last-week reading holds.
+		$last = array(
+			$describe( '2026-10-24 22:00:00' ),
+			$describe( '2027-10-30 22:00:00' ),
+		);
+
+		$this->assertSame(
+			array(
+				'index' => 0,
+				'byday' => '-1SU',
+			),
+			Utility::invoke_hidden_method( $instance, 'terminal_rule', array( $last ) ),
+			'A run consistent as "the last Sunday" emits the last-week form.'
+		);
+
+		// Day 7 and day 26: same weekday, but neither the counted-forward nor
+		// the last-week reading survives, so no rule.
+		$broken = array(
+			$describe( '2027-03-06 22:00:00' ),
+			$describe( '2028-03-25 22:00:00' ),
+		);
+
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'terminal_rule', array( $broken ) ),
+			'Onsets agreeing on nothing but the weekday are not a rule.'
+		);
+	}
+
+	/**
+	 * A month change breaks the run even where the tail agrees with itself.
+	 *
+	 * @covers ::terminal_rule
+	 *
+	 * @return void
+	 */
+	public function test_a_terminal_rule_starts_where_the_signature_settles(): void {
+		$instance = Timezone_Component::get_instance();
+		$describe = function ( string $moment ) use ( $instance ): array {
+			return Utility::invoke_hidden_method(
+				$instance,
+				'describe_transition',
+				array( $this->transition( $moment, -14400, true, 'EDT' ), -18000 )
+			);
+		};
+
+		$this->assertSame(
+			1,
+			Utility::invoke_hidden_method(
+				$instance,
+				'terminal_rule',
+				array(
+					array(
+						$describe( '2027-04-11 07:00:00' ),
+						$describe( '2028-03-12 07:00:00' ),
+						$describe( '2029-03-11 07:00:00' ),
+					),
+				)
+			)['index'],
+			'The run reaches back only as far as the settled signature does.'
+		);
+	}
+
+	/**
+	 * The positional helpers read a transition the way the run logic needs.
+	 *
+	 * Invoked directly because xdebug does not trace private helpers reached
+	 * through a same-class loop.
+	 *
+	 * @covers ::base_signature
+	 * @covers ::day_of
+	 * @covers ::in_last_week
+	 *
+	 * @return void
+	 */
+	public function test_the_positional_helpers_read_a_transition(): void {
+		$instance   = Timezone_Component::get_instance();
+		$transition = Utility::invoke_hidden_method(
+			$instance,
+			'describe_transition',
+			array( $this->transition( '2026-10-25 01:00:00', 3600, false, 'CET' ), 7200 )
+		);
+
+		$this->assertSame(
+			'10:SU:030000:7200:3600:CET',
+			Utility::invoke_hidden_method( $instance, 'base_signature', array( $transition ) ),
+			'The signature carries position, wall clock, both offsets and the name, without the ordinal.'
+		);
+		$this->assertSame(
+			25,
+			Utility::invoke_hidden_method( $instance, 'day_of', array( $transition ) ),
+			'The day is read off the local onset.'
+		);
 		$this->assertTrue(
-			Utility::invoke_hidden_method( $instance, 'is_regular', array( array( $transition, $transition ) ) ),
-			'Two that agree on month, ordinal and wall clock do.'
+			Utility::invoke_hidden_method( $instance, 'in_last_week', array( $transition ) ),
+			'The 25th of October is inside its final seven days.'
+		);
+
+		$early = Utility::invoke_hidden_method(
+			$instance,
+			'describe_transition',
+			array( $this->transition( '2026-10-04 01:00:00', 3600, false, 'CET' ), 7200 )
+		);
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method( $instance, 'in_last_week', array( $early ) ),
+			'The 4th is not.'
 		);
 	}
 
