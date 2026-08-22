@@ -25,10 +25,13 @@ use GatherPress\Tests\Base;
 class Test_Expander_Dst extends Base {
 
 	/**
-	 * Build a rule, skipping the test while `Rule` is still a frozen skeleton.
+	 * Build a rule, failing the test when the fixture values do not produce one.
 	 *
-	 * `class-rule.php` belongs to another lane. Until its implementation lands,
-	 * `Rule::from_array()` returns null and no expander test can run.
+	 * This used to markTestSkipped() while `Rule::from_array()` was an
+	 * unimplemented skeleton. The implementation ships in this same PR, so a
+	 * null here now means `Rule::from_array()` rejected fixture values it must
+	 * accept. Skipping would report that regression as five invisible green
+	 * dots with exit 0; asserting makes it a red.
 	 *
 	 * @since 0.36.0
 	 *
@@ -39,9 +42,11 @@ class Test_Expander_Dst extends Base {
 	protected function make_rule( array $values ): Rule {
 		$rule = Rule::from_array( $values );
 
-		if ( ! $rule instanceof Rule ) {
-			$this->markTestSkipped( 'Rule::from_array() has no implementation yet; it belongs to another lane.' );
-		}
+		$this->assertInstanceOf(
+			Rule::class,
+			$rule,
+			'Failed to assert the fixture rule values build a Rule.'
+		);
 
 		return $rule;
 	}
