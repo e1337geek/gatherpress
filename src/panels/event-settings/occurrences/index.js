@@ -5,7 +5,7 @@ import { __ } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
 import { Button, PanelRow } from '@wordpress/components';
 import { useDispatch, useSelect } from '@wordpress/data';
-import { useEffect, useState } from '@wordpress/element';
+import { useEffect, useRef, useState } from '@wordpress/element';
 
 /**
  * Internal dependencies
@@ -101,6 +101,31 @@ const OccurrencesPanel = () => {
 	const [ updatingKey, setUpdatingKey ] = useState( null );
 	const [ loadError, setLoadError ] = useState( null );
 	const [ reloadCount, setReloadCount ] = useState( 0 );
+
+	// A real (non-autosave) save is what turns an authored rule into
+	// projected occurrence rows, so its completion is the panel's cue to
+	// fetch again. Without this, the panel never appears in the session that
+	// authors the rule: the mount-time fetch ran before the rule existed.
+	const { isSaving, saveSucceeded } = useSelect( ( select ) => {
+		const editor = select( 'core/editor' );
+
+		return {
+			isSaving: !! (
+				editor?.isSavingPost?.() && ! editor?.isAutosavingPost?.()
+			),
+			saveSucceeded: !! editor?.didPostSaveRequestSucceed?.(),
+		};
+	}, [] );
+
+	const wasSavingRef = useRef( false );
+
+	useEffect( () => {
+		if ( wasSavingRef.current && ! isSaving && saveSucceeded ) {
+			setReloadCount( ( current ) => current + 1 );
+		}
+
+		wasSavingRef.current = isSaving;
+	}, [ isSaving, saveSucceeded ] );
 
 	useEffect( () => {
 		if ( ! isEventDateSupported || ! postId ) {

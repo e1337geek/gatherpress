@@ -100,7 +100,11 @@ describe( 'OccurrencesPanel', () => {
 	} );
 
 	test( 'does not fetch and renders nothing when there is no post id yet', () => {
-		useSelect.mockImplementation( () => undefined );
+		// The editor store has not resolved yet: every selector call falls
+		// through its optional chain.
+		useSelect.mockImplementation( ( selector ) =>
+			selector( () => undefined ),
+		);
 
 		const { container } = render( <OccurrencesPanel /> );
 
