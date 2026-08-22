@@ -335,7 +335,11 @@ class Test_Loop_Render extends Base {
 		foreach ( $rendered as $row ) {
 			preg_match( '/href="([^"]+)"/', $row['html'], $matches );
 
-			$hrefs[] = $matches[1] ?? '';
+			// Decoded because the markup entity-escapes the URL: a
+			// plain-permalink occurrence URL carries two query variables, and
+			// its ampersand renders as an entity. The decoded value is the
+			// URL a browser actually navigates to.
+			$hrefs[] = html_entity_decode( $matches[1] ?? '', ENT_QUOTES );
 		}
 
 		$this->assertCount(
@@ -799,7 +803,10 @@ class Test_Loop_Render extends Base {
 		foreach ( $rendered as $row ) {
 			preg_match( '/href="([^"]+)"/', $row['html'], $matches );
 
-			$hrefs[] = $matches[1] ?? '';
+			// Decoded for the same reason as the distinct-permalink test: the
+			// entity-escaped markup is compared as the URL a browser
+			// navigates to.
+			$hrefs[] = html_entity_decode( $matches[1] ?? '', ENT_QUOTES );
 		}
 
 		foreach ( array( 1, 2, 3, 4 ) as $index ) {
