@@ -677,10 +677,42 @@ describe( 'ApplyScope', () => {
 		);
 	} );
 
-	test( 'surfaces a failed split rather than reporting success', async () => {
-		mockApiFetch
-			.mockResolvedValueOnce( rows )
-			.mockRejectedValueOnce( new Error( 'nope' ) );
+	test( 'renders the message a refused split names, not a generic failure', async () => {
+		// The shape `apiFetch` rejects with for a REST error response: the
+		// server's own `WP_Error` message, e.g. the named refusal of a split
+		// past the maximum rule count.
+		mockApiFetch.mockResolvedValueOnce( rows ).mockRejectedValueOnce( {
+			code: 'gatherpress_split_too_long',
+			message:
+				'A series cannot be split past its first 730 dates. Choose an earlier date to split from.',
+		} );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'A series cannot be split past its first 730 dates. Choose an earlier date to split from.',
+				),
+			).toBeInTheDocument(),
+		);
+		expect(
+			screen.queryByText( 'Could not split this series.' ),
+		).not.toBeInTheDocument();
+	} );
+
+	test( 'falls back to a generic message when the failure names none', async () => {
+		mockApiFetch.mockResolvedValueOnce( rows ).mockRejectedValueOnce( {} );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -1182,5 +1214,6 @@ describe( 'ApplyScope', () => {
 		expect(
 			screen.queryByText( 'Could not split this series.' ),
 		).not.toBeInTheDocument();
+		expect( screen.queryByText( 'nope' ) ).not.toBeInTheDocument();
 	} );
 } );

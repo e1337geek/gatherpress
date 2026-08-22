@@ -529,6 +529,167 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * Create and project a daily series longer than `Rule::MAX_COUNT` rows.
+	 *
+	 * A never-ending daily rule under a widened projection horizon, the shape
+	 * a long-lived daily stand-up reaches in production after two years of
+	 * horizon extensions. The horizon filter is installed for the projection
+	 * and removed again, so re-projections inside a split see the same
+	 * horizon the fixture was built under.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array{0: int, 1: string[], 2: callable} The post ID, its ordered identifiers, and the horizon filter to remove.
+	 */
+	protected function create_series_longer_than_max_count(): array {
+		$horizon = static function (): int {
+			return 26;
+		};
+
+		add_filter( 'gatherpress_recurrence_horizon_months', $horizon );
+
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+
+		Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+		Recurrence_Query::refresh_has_recurring_events();
+
+		$identifiers = $this->identifiers_for( $post_id );
+
+		$this->assertGreaterThan(
+			Rule::MAX_COUNT + 5,
+			count( $identifiers ),
+			'Fixture setup: the series must outgrow the maximum rule count.'
+		);
+
+		return array( $post_id, $identifiers, $horizon );
+	}
+
+	/**
+	 * A split past the maximum rule count is refused before any durable phase.
+	 *
+	 * Capping the origin writes `COUNT = index`, and `Rule` refuses any count
+	 * above `Rule::MAX_COUNT`, so a split past that occurrence used to run
+	 * every phase, fail the partition check against the rule the origin could
+	 * not re-project, undo everything, and answer an opaque 500. The refusal
+	 * must instead come first, name the real limit, and leave the series
+	 * untouched without a single phase having run.
+	 *
+	 * @covers ::split_forward
+	 * @covers ::split_owned_series
+	 *
+	 * @return void
+	 */
+	public function test_a_split_past_the_maximum_rule_count_is_refused_before_any_phase(): void {
+		list( $post_id, $identifiers, $horizon ) = $this->create_series_longer_than_max_count();
+
+		$phases  = array();
+		$observe = static function ( $outcome, string $phase ) use ( &$phases ) {
+			$phases[] = $phase;
+
+			return $outcome;
+		};
+
+		add_filter( 'gatherpress_split_phase_complete', $observe, 10, 2 );
+
+		$result = Splitter::get_instance()->split_forward( $post_id, $identifiers[ Rule::MAX_COUNT + 5 ] );
+
+		remove_filter( 'gatherpress_split_phase_complete', $observe, 10 );
+		remove_filter( 'gatherpress_recurrence_horizon_months', $horizon );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert the overlong split is refused rather than attempted.'
+		);
+		$this->assertSame(
+			'gatherpress_split_too_long',
+			$result->get_error_code(),
+			'Failed to assert the refusal names the real limit rather than a generic failure.'
+		);
+		$this->assertSame(
+			array( 'status' => 400 ),
+			$result->get_error_data(),
+			'Failed to assert the refusal reports a client error, not a server fault.'
+		);
+		$this->assertSame(
+			array(),
+			$phases,
+			'Failed to assert the refusal came before any durable phase: nothing to do, nothing to undo.'
+		);
+		$this->assertSame(
+			$identifiers,
+			$this->identifiers_for( $post_id ),
+			'Failed to assert the origin keeps every row it had.'
+		);
+		$this->assertSame(
+			Rule::END_TYPE_NEVER,
+			Rule::from_post( $post_id )->end_type(),
+			'Failed to assert the origin rule was never rewritten.'
+		);
+		$this->assertSame(
+			array( $post_id ),
+			Series::get_instance()->resolve_post_ids( $post_id ),
+			'Failed to assert no forward post joined the series.'
+		);
+	}
+
+	/**
+	 * A split exactly at the maximum rule count still splits.
+	 *
+	 * The boundary of the refusal above: capping the origin at
+	 * `Rule::MAX_COUNT` rows is a rule `Rule` accepts, so the split at that
+	 * index must run, leave exactly that many rows behind, and move the rest.
+	 *
+	 * @covers ::split_forward
+	 * @covers ::split_owned_series
+	 * @covers ::apply_capped_rule
+	 *
+	 * @return void
+	 */
+	public function test_a_split_at_the_maximum_rule_count_boundary_still_splits(): void {
+		list( $post_id, $identifiers, $horizon ) = $this->create_series_longer_than_max_count();
+
+		$result = Splitter::get_instance()->split_forward( $post_id, $identifiers[ Rule::MAX_COUNT ] );
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $horizon );
+
+		$this->assertIsArray( $result, 'Failed to assert the boundary split is not refused.' );
+		$this->assertTrue( $result['split'], 'Failed to assert the boundary split happened.' );
+		$this->assertSame(
+			array_slice( $identifiers, 0, Rule::MAX_COUNT ),
+			$this->identifiers_for( $post_id ),
+			'Failed to assert the origin keeps exactly the maximum count of rows.'
+		);
+		$this->assertSame(
+			Rule::MAX_COUNT,
+			Rule::from_post( $post_id )->count(),
+			'Failed to assert the origin rule is capped exactly at the maximum.'
+		);
+		// At least, not exactly: the forward rule is open-ended and measures
+		// its horizon from its own later anchor, so it legitimately projects
+		// dates past where the origin had reached.
+		$forward_owned = $this->identifiers_for( (int) $result['forward_post_id'] );
+
+		$this->assertSame(
+			array(),
+			array_diff( array_slice( $identifiers, Rule::MAX_COUNT ), $forward_owned ),
+			'Failed to assert the forward post owns everything past the boundary.'
+		);
+		$this->assertSame(
+			$identifiers[ Rule::MAX_COUNT ],
+			$forward_owned[0],
+			'Failed to assert the forward post is anchored at the boundary occurrence.'
+		);
+	}
+
+	/**
 	 * Forward from the final occurrence produces a plain non-recurring event.
 	 *
 	 * The forward side holds exactly one date, never zero, and carries no
