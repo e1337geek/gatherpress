@@ -450,12 +450,39 @@ final class Rewrite {
 		foreach ( $rows as $row ) {
 			// The `series_post_id` comparison is the fragment-semantics
 			// narrowing; see this method's docblock.
-			if ( (int) $row['series_post_id'] === $post_id && $row['datetime_start_gmt'] >= $now ) {
+			if ( (int) $row['series_post_id'] === $post_id && $this->occurrence_is_upcoming( $row, $now ) ) {
 				return (string) $row['recurrence_id'];
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * Report whether an occurrence row is still upcoming at a moment.
+	 *
+	 * Upcoming is bounded inclusively on the occurrence's end, matching
+	 * `Event\Query::get_datetime_comparison_column()`'s "a running event is
+	 * still upcoming" rule, which the occurrence list preserves through its
+	 * `COALESCE()` rewrite. An occurrence that is in progress, or that ends
+	 * at this exact second, still resolves; bounding on the start instead
+	 * skipped a running occurrence and sent the visitor to the next one
+	 * while the list beside the page still showed the running one. Rows
+	 * arrive ordered by start, so the first upcoming row is still the
+	 * soonest-starting one.
+	 *
+	 * The column is `NOT NULL` and written by every projection, so there is
+	 * no empty-end shape to fall back from.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array  $row Occurrence row, carrying `datetime_end_gmt`.
+	 * @param string $now The current GMT datetime in MySQL format.
+	 *
+	 * @return bool True until the occurrence's end has passed.
+	 */
+	protected function occurrence_is_upcoming( array $row, string $now ): bool {
+		return $row['datetime_end_gmt'] >= $now;
 	}
 
 	/**

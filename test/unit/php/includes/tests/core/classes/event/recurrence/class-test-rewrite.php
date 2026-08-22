@@ -905,6 +905,49 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * Coverage for the inclusive end bound of `occurrence_is_upcoming`,
+	 * driven directly so the equality case is deterministic. An occurrence
+	 * ending at this exact second is still upcoming; one ended a second ago
+	 * is not; one still running is. The equality arm is the boundary the
+	 * comparison operator carries, and it cannot be pinned through a real
+	 * request because the clock the resolver reads cannot be frozen at the
+	 * fixture's end time.
+	 *
+	 * @covers ::occurrence_is_upcoming
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_is_upcoming_bounds_inclusively_on_the_end(): void {
+		$instance = Rewrite::get_instance();
+		$now      = '2026-09-15 18:00:00';
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'occurrence_is_upcoming',
+				array( array( 'datetime_end_gmt' => '2026-09-15 18:00:00' ), $now )
+			),
+			'An occurrence ending at this exact second must still count as upcoming.'
+		);
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'occurrence_is_upcoming',
+				array( array( 'datetime_end_gmt' => '2026-09-15 18:00:01' ), $now )
+			),
+			'An occurrence still running must count as upcoming.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'occurrence_is_upcoming',
+				array( array( 'datetime_end_gmt' => '2026-09-15 17:59:59' ), $now )
+			),
+			'An occurrence that ended a second ago must not count as upcoming.'
+		);
+	}
+
+	/**
 	 * Coverage for `next_upcoming_recurrence_id`'s `series_post_id === $post_id`
 	 * check: `select_for_series()` can legitimately return rows from more
 	 * than one post (the forward split, reachable today via the
