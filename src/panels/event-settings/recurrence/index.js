@@ -399,29 +399,31 @@ function parseRecurrenceBlob( raw ) {
 }
 
 /**
- * Report whether a candidate rule is complete enough to persist.
+ * Report whether a candidate rule is one the server would accept.
  *
- * Scoped to the fields this panel's controls can leave momentarily
- * incomplete mid-edit: a weekly rule with no weekday selected yet, a monthly
- * day-of-month rule whose day field has been cleared or filled with something
- * that carries no day at all, or an end condition whose companion field
- * (`until`/`count`) has not been filled in yet. `applyRuleChange()` withholds the write while this is `false` rather
- * than persisting a blob the server would reject and silently discard.
- * `Meta::write_recurrence()` clears all ten mirrors when `Rule::from_array()`
- * rejects the decoded blob, and that rejection surfaces nowhere in the
- * editor, so the last known-good blob is left in place instead.
+ * The write-side predicate *is* the read-side one, `isServerValidRule()`,
+ * rather than a hand-rolled subset of it: the panel's docblock invariant
+ * ("the panel never presents a stored rule the server has rejected") holds
+ * only if it never *writes* one either. A subset once let a weekly rule at
+ * interval 52 with 730 occurrences through, every value inside the controls'
+ * own min/max, while `Rule::is_valid_end_shape()`'s iteration budget rejected
+ * it: `Meta::write_recurrence()` cleared all ten mirrors, the projection was
+ * deleted, and the editor said nothing.
+ *
+ * `applyRuleChange()` withholds the write while this is `false`, so the last
+ * known-good blob stays on the post, and every withheld state renders an
+ * explanatory message beside the control that caused it.
  *
  * @since 0.36.0
  *
  * @param {Object} rule Candidate rule values.
  *
- * @return {boolean} True when the rule matches `Rule::is_valid()`'s shape requirements.
+ * @return {boolean} True when `Rule::from_array()` would accept the rule.
  */
 function isPersistable( rule ) {
-	if ( 'weekly' === rule.frequency && 0 === rule.weekdays.length ) {
-		return false;
-	}
-
+	// The monthly day is the one field the controls can hold as null
+	// mid-edit; coerceStoredRule() would read null as 0 and lose the
+	// distinction.
 	if (
 		'monthly' === rule.frequency &&
 		'day_of_month' === rule.monthly_mode &&
@@ -430,11 +432,32 @@ function isPersistable( rule ) {
 		return false;
 	}
 
-	if ( 'until' === rule.end_type && ! rule.until ) {
+	return isServerValidRule( coerceStoredRule( rule ) );
+}
+
+/**
+ * Report whether a count rule exceeds the expander's iteration budget.
+ *
+ * The one rejection an organizer can reach with every control inside its own
+ * advertised range, so it needs its own message: without one, the withheld
+ * write would be indistinguishable from a saved rule. Mirrors the budget arm
+ * of `Rule::is_valid_end_shape()`.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} rule Candidate rule values.
+ *
+ * @return {boolean} True when the end type is `count` and the budget is exceeded.
+ */
+function exceedsExpanderBudget( rule ) {
+	if ( 'count' !== rule.end_type || 1 > rule.count ) {
 		return false;
 	}
 
-	return ! ( 'count' === rule.end_type && ! ( 1 <= rule.count ) );
+	const perOccurrence =
+		BUDGET_DAYS_PER_FREQUENCY[ rule.frequency ] * rule.interval;
+
+	return ( rule.count * perOccurrence ) + 366 > EXPANDER_MAX_ITERATIONS;
 }
 
 /**
@@ -677,7 +700,8 @@ const RecurrencePanel = () => {
 							count={ rule.count }
 							onChange={ applyRuleChange }
 						/>
-						{ 'until' === rule.end_type && ! rule.until && (
+						{ 'until' === rule.end_type &&
+							! isParseableUntil( rule.until ) && (
 							<output>
 								{ __(
 									'Choose an end date to save this recurrence.',
@@ -690,6 +714,14 @@ const RecurrencePanel = () => {
 							<output>
 								{ __(
 									'Enter how many times this event repeats.',
+									'gatherpress',
+								) }
+							</output>
+						) }
+						{ exceedsExpanderBudget( rule ) && (
+							<output>
+								{ __(
+									'That many repeats at this interval covers too long a span. Reduce the number of occurrences or the interval.',
 									'gatherpress',
 								) }
 							</output>
