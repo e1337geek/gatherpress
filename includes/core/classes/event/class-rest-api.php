@@ -1478,7 +1478,7 @@ final class Rest_Api {
 			// Process the RSVP using the centralized processor.
 			$result = Form::get_instance()->process_rsvp( $data );
 
-			// One trailing return covers both the success and error shapes — the
+			// One trailing return covers both the success and error shapes: the
 			// success body carries comment_id + responses, the error body just
 			// the message and the upstream error_code.
 			if ( $result['success'] ) {
