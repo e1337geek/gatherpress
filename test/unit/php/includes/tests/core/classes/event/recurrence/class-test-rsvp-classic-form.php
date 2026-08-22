@@ -92,6 +92,14 @@ class Test_Rsvp_Classic_Form extends Base {
 	protected array $posted = array();
 
 	/**
+	 * Series-widening filters installed by `widen_series()`, for teardown.
+	 *
+	 * @since 0.36.0
+	 * @var callable[]
+	 */
+	protected array $series_filters = array();
+
+	/**
 	 * Ensure the occurrence table and RSVP taxonomies exist, with no context leaking in.
 	 *
 	 * @return void
@@ -116,6 +124,12 @@ class Test_Rsvp_Classic_Form extends Base {
 	 * @return void
 	 */
 	public function tearDown(): void {
+		foreach ( $this->series_filters as $filter ) {
+			remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+		}
+
+		$this->series_filters = array();
+
 		remove_filter( 'gatherpress_pre_get_http_input', array( $this, 'serve_posted_value' ), 10 );
 		remove_all_filters( 'preprocess_comment' );
 		remove_all_actions( 'comment_post' );
@@ -230,6 +244,55 @@ class Test_Rsvp_Classic_Form extends Base {
 		\GatherPress\Core\Event\Setup::get_instance()->set_datetimes( $post_id );
 
 		return $post_id;
+	}
+
+	/**
+	 * Widen a series so `$member` resolves to both posts.
+	 *
+	 * Installs the `gatherpress_series_post_ids` filter the forward split will
+	 * populate for real, which is the only seam by which a multi-post series can
+	 * exist. `Series` is final with a protected constructor precisely so no test
+	 * can fake one any other way.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $member The post the request names.
+	 * @param int $owner  The post the occurrence rows live on.
+	 *
+	 * @return void
+	 */
+	protected function widen_series( int $member, int $owner ): void {
+		$filter = static function ( array $post_ids, int $post_id ) use ( $member, $owner ): array {
+			return ( $member === $post_id || $owner === $post_id )
+				? array( $member, $owner )
+				: $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		Context::flush_resolved();
+
+		$this->series_filters[] = $filter;
+	}
+
+	/**
+	 * Count the RSVP comments stored on one post, whatever their approval state.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id The post whose stored RSVPs are counted.
+	 *
+	 * @return int The number of stored RSVP comments.
+	 */
+	protected function stored_rsvp_count( int $post_id ): int {
+		return (int) get_comments(
+			array(
+				'post_id' => $post_id,
+				'type'    => Rsvp::COMMENT_TYPE,
+				'count'   => true,
+				'status'  => 'all',
+			)
+		);
 	}
 
 	/**
@@ -552,6 +615,169 @@ class Test_Rsvp_Classic_Form extends Base {
 				)
 			),
 			'Failed to assert a refused classic submission wrote nothing at all.'
+		);
+	}
+
+	/**
+	 * An occurrence owned by an unviewable sibling is refused, not written.
+	 *
+	 * The REST twin re-checks the resolved owner's viewability before writing,
+	 * and calls that re-check a security property: without it, naming a
+	 * viewable sibling wrote an RSVP onto a private owner nobody authorized.
+	 * The classic path follows the identical resolve-then-use sequence, so it
+	 * must apply the identical rule. `wp-comments-post.php` evaluates
+	 * `comment_status`, `post_status`, `is_status_viewable()` and
+	 * `post_password_required()` against the named post only, and none of the
+	 * checks that run after the rewrite is a viewability check.
+	 *
+	 * The refusal must be byte-identical to the one a fabricated identifier
+	 * receives, or the difference tells an unauthenticated visitor which
+	 * occurrences of the unviewable owner exist, one candidate at a time.
+	 *
+	 * @covers ::preprocess_rsvp_comment
+	 * @covers ::posted_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_a_classic_submission_cannot_land_on_an_unviewable_owner(): void {
+		$owner_post_id = $this->create_and_project();
+		$named_post_id = $this->create_plain_event();
+
+		$this->widen_series( $named_post_id, $owner_post_id );
+
+		wp_update_post(
+			array(
+				'ID'          => $owner_post_id,
+				'post_status' => 'draft',
+			)
+		);
+
+		Context::flush_resolved();
+
+		// The reference refusal: a fabricated identifier on the same fixture.
+		$reference = null;
+
+		try {
+			$this->submit( $named_post_id, 'ada@example.test', self::UNKNOWN_OCCURRENCE );
+		} catch ( WPDieException $e ) {
+			$reference = array( $e->getMessage(), $e->getCode() );
+		}
+
+		$this->assertNotNull( $reference, 'Failed to arrange the fabricated-identifier reference refusal.' );
+
+		$refusal = null;
+
+		try {
+			$this->submit( $named_post_id, 'grace@example.test', $this->occurrence_a );
+		} catch ( WPDieException $e ) {
+			$refusal = array( $e->getMessage(), $e->getCode() );
+		}
+
+		// The count is asserted first so a regression reports the actual harm:
+		// the RSVP landed on the draft owner.
+		$this->assertSame(
+			0,
+			$this->stored_rsvp_count( $owner_post_id ),
+			'Failed to assert the refused submission wrote nothing onto the draft owner.'
+		);
+		$this->assertSame(
+			0,
+			$this->stored_rsvp_count( $named_post_id ),
+			'Failed to assert the refused submission wrote nothing onto the named post either.'
+		);
+		$this->assertNotNull(
+			$refusal,
+			'Failed to assert a submission naming a draft owner\'s occurrence is refused.'
+		);
+		$this->assertSame(
+			$reference,
+			$refusal,
+			'Failed to assert the draft-owner refusal is byte-identical to the fabricated-identifier one.'
+		);
+	}
+
+	/**
+	 * The same widened submission still lands when the owner is viewable.
+	 *
+	 * The other half of the verdict, with a discriminating value: the stored
+	 * comment belongs to the owner, which is not the post the submission named,
+	 * so a guard that refused every cross-post owner, or a rewrite that stopped
+	 * happening at all, fails here rather than passing vacuously.
+	 *
+	 * @covers ::preprocess_rsvp_comment
+	 * @covers ::posted_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_a_classic_submission_still_lands_on_a_viewable_sibling_owner(): void {
+		$owner_post_id = $this->create_and_project();
+		$named_post_id = $this->create_plain_event();
+
+		$this->widen_series( $named_post_id, $owner_post_id );
+
+		$comment_id = $this->submit( $named_post_id, 'ada@example.test', $this->occurrence_a );
+
+		$this->redeem( $comment_id );
+
+		$this->assertSame(
+			$owner_post_id,
+			(int) get_comment( $comment_id )->comment_post_ID,
+			'Failed to assert the submission landed on the post that owns the occurrence.'
+		);
+		$this->assertSame(
+			array( Rsvp_Occurrence::term_slug( $owner_post_id, $this->occurrence_a ) ),
+			array_map(
+				'strval',
+				wp_get_object_terms( $comment_id, Rsvp_Occurrence::TAXONOMY, array( 'fields' => 'slugs' ) )
+			),
+			'Failed to assert the stored response is stamped with the owner\'s occurrence.'
+		);
+		$this->assertSame(
+			array( $comment_id ),
+			$this->roster( $owner_post_id, $this->occurrence_a ),
+			'Failed to assert the response is on the owner occurrence\'s roster.'
+		);
+	}
+
+	/**
+	 * A password-protected published owner still accepts through a sibling.
+	 *
+	 * This pins the deliberate boundary of the owner guard: viewability only,
+	 * which is exactly what the REST twin re-checks, so the two paths keep one
+	 * contract. `comments_open()` is not re-run against the owner because this
+	 * path force-opens comments for RSVP submissions and the real write gates,
+	 * `Rsvp::is_enabled()` and `allows_open_rsvp()`, already run against the
+	 * owner after the rewrite. `post_password_required()` is not re-run either:
+	 * a password gates reading the post's content, the REST twin accepts the
+	 * same submission without it, and core's own password check keeps running
+	 * against the named post exactly as it always did.
+	 *
+	 * @covers ::preprocess_rsvp_comment
+	 * @covers ::posted_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_a_password_protected_owner_still_accepts_through_a_sibling(): void {
+		$owner_post_id = $this->create_and_project();
+		$named_post_id = $this->create_plain_event();
+
+		$this->widen_series( $named_post_id, $owner_post_id );
+
+		wp_update_post(
+			array(
+				'ID'            => $owner_post_id,
+				'post_password' => 'opensesame',
+			)
+		);
+
+		Context::flush_resolved();
+
+		$comment_id = $this->submit( $named_post_id, 'ada@example.test', $this->occurrence_a );
+
+		$this->assertSame(
+			$owner_post_id,
+			(int) get_comment( $comment_id )->comment_post_ID,
+			'Failed to assert a password-protected published owner still accepts the submission.'
 		);
 	}
 
