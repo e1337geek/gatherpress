@@ -725,6 +725,13 @@ final class Calendar {
 	 * @since 0.36.0 Folds a whole content line on an octet budget, replacing a
 	 *               character-counted helper applied to selected values.
 	 *
+	 * PHPMD reads this as an unused private method. It is called once, as
+	 * `array_map( array( $this, 'fold_content_line' ), $args )` in the line
+	 * assembler above, and PHPMD does not resolve a method named inside a
+	 * callable array.
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
+	 *
 	 * @param string $line One complete content line, without its line break.
 	 *
 	 * @return string The line, folded where it exceeded the limit.

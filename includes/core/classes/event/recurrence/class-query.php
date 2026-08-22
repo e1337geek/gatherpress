@@ -797,6 +797,13 @@ final class Query {
 	 *
 	 * @since 0.36.0
 	 *
+	 * PHPMD reads this as an unused private method. It is called once, as
+	 * `array( $this, 'aggregate_orderby_key' )` handed to `array_map()` in the
+	 * folded ordering rewrite, and PHPMD does not resolve a method named inside
+	 * a callable array.
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
+	 *
 	 * @param string $key One ordering key, e.g. `<expression> ASC`.
 	 *
 	 * @return string The key, aggregated when it needs to be.
