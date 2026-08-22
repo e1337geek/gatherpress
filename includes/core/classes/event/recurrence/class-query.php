@@ -711,11 +711,11 @@ final class Query {
 
 		$pieces['join'] .= $this->occurrence_join();
 
-		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table )
+		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table, self::OCCURRENCE_ALIAS )
 			. $this->occurrence_scope_predicate();
 
 		$pieces['orderby'] = $this->aggregate_orderby(
-			$this->coalesce_event_columns( (string) $pieces['orderby'], $events_table )
+			$this->coalesce_event_columns( (string) $pieces['orderby'], $events_table, self::OCCURRENCE_ALIAS )
 		);
 
 		// WordPress already groups on the post ID whenever a tax_query or
