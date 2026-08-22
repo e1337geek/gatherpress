@@ -849,6 +849,48 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * Coverage for an admin-ajax front-end read staying expanded.
+	 *
+	 * `admin-ajax.php` serves front-end requests, including logged-out ones,
+	 * and `is_admin()` is true for every one of them. A theme lazy-loading an
+	 * upcoming list over admin-ajax must receive the same expanded list a
+	 * page load renders, not one entry per series at its anchor date. The
+	 * admin exemption exists for `edit.php` rows, whose actions and bulk
+	 * checkboxes an ajax read does not have.
+	 *
+	 * The fixture satisfies every other guard arm, so the admin arm is the
+	 * only one that can act: the site has recurring events, the fields are
+	 * the full shape, the bucketed query joins the events table, and the
+	 * occurrence table exists.
+	 *
+	 * @covers ::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_admin_ajax_event_query_is_still_expanded(): void {
+		$scenario = $this->build_scenario();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+		add_filter( 'wp_doing_ajax', '__return_true' );
+
+		$this->assertTrue( is_admin(), 'Fixture is inert: the admin screen context was not set.' );
+		$this->assertTrue( wp_doing_ajax(), 'Fixture is inert: the ajax context was not set.' );
+
+		$entries = $this->entries( $this->run_event_query( 'upcoming' ) );
+
+		remove_filter( 'wp_doing_ajax', '__return_true' );
+		set_current_screen( 'front' );
+
+		foreach ( array( 1, 2, 3, 4 ) as $index ) {
+			$this->assertContains(
+				$scenario['series'] . '|' . $this->occurrence_id( $scenario['anchor'], $index ),
+				$entries,
+				'Failed to assert an admin-ajax upcoming query is expanded over occurrences.'
+			);
+		}
+	}
+
+	/**
 	 * Coverage for a recurring event whose rule has produced no occurrence rows.
 	 *
 	 * A rule exists before its rows do, and a rule can legitimately produce
