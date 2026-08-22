@@ -160,7 +160,7 @@ final class Context {
 	 * no action.
 	 *
 	 * Isolation in both cases comes from the same rule the pre-existing
-	 * `metadata()` and `maybe_prepend_cancelled_notice()` already follow: an
+	 * `metadata()` and `maybe_prepend_canceled_notice()` already follow: an
 	 * occurrence is served only for the post it belongs to. That is scoping by
 	 * identity rather than by loop position, so identity is always the
 	 * composite `(series_post_id, recurrence_id)` and never a list index.
@@ -179,7 +179,7 @@ final class Context {
 		// and how it self-heals. `add_post_metadata` is deliberately not
 		// hooked: see `note_meta_write()`.
 		add_filter( 'update_post_metadata', array( $this, 'note_meta_write' ), PHP_INT_MAX, 5 );
-		add_filter( 'the_content', array( $this, 'maybe_prepend_cancelled_notice' ) );
+		add_filter( 'the_content', array( $this, 'maybe_prepend_canceled_notice' ) );
 		// Both permalink filters, because `get_permalink()` routes a custom
 		// post type through `post_type_link` and the built-in post type
 		// through `post_link`, and recurrence belongs to the
@@ -468,7 +468,7 @@ final class Context {
 	 * The `$post_id` comparison is the isolation rule: the stamp is served
 	 * only for the post it was stamped onto, so a consumer reading a different
 	 * post's meta or permalink mid-iteration gets nothing from here. That is
-	 * the same scoping `maybe_prepend_cancelled_notice()` already applies.
+	 * the same scoping `maybe_prepend_canceled_notice()` already applies.
 	 *
 	 * Only scheduled occurrences reach a loop, because the join in
 	 * `Query::expand_event_clauses()` filters on `status`, so the row this
@@ -538,15 +538,15 @@ final class Context {
 	 * @return string The content, with a cancellation notice prepended when
 	 *                this is a canceled occurrence's own content.
 	 */
-	public function maybe_prepend_cancelled_notice( string $content ): string {
+	public function maybe_prepend_canceled_notice( string $content ): string {
 		$occurrence = $this->resolve( (int) get_the_ID() );
 
-		if ( null === $occurrence || Occurrences::STATUS_CANCELLED !== $occurrence['status'] ) {
+		if ( null === $occurrence || Occurrences::STATUS_CANCELED !== $occurrence['status'] ) {
 			return $content;
 		}
 
 		$notice = sprintf(
-			'<p class="gatherpress-occurrence-cancelled-notice">%s</p>',
+			'<p class="gatherpress-occurrence-canceled-notice">%s</p>',
 			esc_html__( 'This occurrence has been canceled.', 'gatherpress' )
 		);
 

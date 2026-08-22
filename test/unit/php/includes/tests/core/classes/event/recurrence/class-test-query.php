@@ -549,7 +549,7 @@ class Test_Query extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrence_does_not_resurrect_the_series_anchor_row(): void {
+	public function test_canceled_occurrence_does_not_resurrect_the_series_anchor_row(): void {
 		$scenario = $this->build_scenario();
 		$series   = $scenario['series'];
 		$anchor   = $scenario['anchor'];
@@ -557,7 +557,7 @@ class Test_Query extends Base {
 		Occurrences::get_instance()->set_status(
 			$series,
 			$this->occurrence_id( $anchor, 2 ),
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		$upcoming = $this->entries( $this->run_event_query( 'upcoming' ) );
@@ -602,7 +602,7 @@ class Test_Query extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_fully_cancelled_series_is_absent_from_the_list(): void {
+	public function test_fully_canceled_series_is_absent_from_the_list(): void {
 		$scenario = $this->build_scenario();
 		$series   = $scenario['series'];
 		$anchor   = $scenario['anchor'];
@@ -611,7 +611,7 @@ class Test_Query extends Base {
 			Occurrences::get_instance()->set_status(
 				$series,
 				$this->occurrence_id( $anchor, $index ),
-				Occurrences::STATUS_CANCELLED
+				Occurrences::STATUS_CANCELED
 			);
 		}
 

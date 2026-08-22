@@ -265,7 +265,7 @@ class Test_Context extends Base {
 				'type'     => 'filter',
 				'name'     => 'the_content',
 				'priority' => 10,
-				'callback' => array( $instance, 'maybe_prepend_cancelled_notice' ),
+				'callback' => array( $instance, 'maybe_prepend_canceled_notice' ),
 			),
 			array(
 				'type'     => 'filter',
@@ -1381,12 +1381,12 @@ class Test_Context extends Base {
 	 * scheduled occurrence, or for another post rendering full content on the
 	 * same response.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrence_content_carries_a_notice_and_nothing_else_does(): void {
-		$notice  = 'gatherpress-occurrence-cancelled-notice';
+	public function test_canceled_occurrence_content_carries_a_notice_and_nothing_else_does(): void {
+		$notice  = 'gatherpress-occurrence-canceled-notice';
 		$post_id = $this->create_and_project();
 		$other   = $this->factory->post->create(
 			array(
@@ -1395,7 +1395,7 @@ class Test_Context extends Base {
 			)
 		);
 
-		$outside = Context::get_instance()->maybe_prepend_cancelled_notice( 'Body.' );
+		$outside = Context::get_instance()->maybe_prepend_canceled_notice( 'Body.' );
 
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
@@ -1403,14 +1403,14 @@ class Test_Context extends Base {
 		$scheduled = apply_filters( 'the_content', 'Body.' );
 
 		$this->assertTrue(
-			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
+			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELED ),
 			'Fixture is inert: the occurrence row was not canceled.'
 		);
 
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
-		$cancelled = apply_filters( 'the_content', 'Body.' );
+		$canceled = apply_filters( 'the_content', 'Body.' );
 
 		$loop = new WP_Query(
 			array(
@@ -1438,17 +1438,17 @@ class Test_Context extends Base {
 		);
 		$this->assertStringContainsString(
 			$notice,
-			$cancelled,
+			$canceled,
 			'Failed to assert a canceled occurrence\'s own content carries the notice.'
 		);
 		$this->assertStringContainsString(
 			'Body.',
-			$cancelled,
+			$canceled,
 			'Failed to assert the notice is prepended rather than replacing the content.'
 		);
 		$this->assertLessThan(
-			strpos( $cancelled, 'Body.' ),
-			strpos( $cancelled, $notice ),
+			strpos( $canceled, 'Body.' ),
+			strpos( $canceled, $notice ),
 			'Failed to assert the notice precedes the content it was prepended to.'
 		);
 		$this->assertStringNotContainsString(
@@ -1519,17 +1519,17 @@ class Test_Context extends Base {
 	 * notice. The canceled page's own content must still carry it, so a fix
 	 * cannot pass by suppressing the notice everywhere.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 *
 	 * @return void
 	 */
-	public function test_scheduled_same_series_loop_rows_carry_no_cancelled_notice(): void {
-		$notice = 'gatherpress-occurrence-cancelled-notice';
+	public function test_scheduled_same_series_loop_rows_carry_no_canceled_notice(): void {
+		$notice = 'gatherpress-occurrence-canceled-notice';
 
 		list( $post_id, $past_id ) = $this->create_series_straddling_now();
 
 		$this->assertTrue(
-			Occurrences::get_instance()->set_status( $post_id, $past_id, Occurrences::STATUS_CANCELLED ),
+			Occurrences::get_instance()->set_status( $post_id, $past_id, Occurrences::STATUS_CANCELED ),
 			'Fixture is inert: the requested occurrence was not canceled.'
 		);
 

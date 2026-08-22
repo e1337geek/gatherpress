@@ -1170,12 +1170,12 @@ class Test_Rewrite extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrence_url_resolves_rather_than_404(): void {
+	public function test_canceled_occurrence_url_resolves_rather_than_404(): void {
 		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 5, 7, 3 );
 		$recurrence_id                  = Occurrences::recurrence_id( $anchor_start );
 
 		$this->assertTrue(
-			Occurrences::get_instance()->set_status( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ),
+			Occurrences::get_instance()->set_status( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ),
 			'Fixture setup: set_status() should find the freshly projected row.'
 		);
 
