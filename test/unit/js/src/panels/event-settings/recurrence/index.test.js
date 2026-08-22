@@ -978,6 +978,14 @@ describe( 'RecurrencePanel', () => {
 			expectRepairState();
 		} );
 
+		test( 'rejects an empty stored object', () => {
+			// With every field missing, the server reads an empty frequency
+			// and end type and rejects the rule.
+			renderWithStoredBlob( JSON.stringify( {} ) );
+
+			expectRepairState();
+		} );
+
 		test( 'rejects a stored partial blob missing its end type', () => {
 			// An older or hand-written blob without `end_type` reads as ''
 			// server-side, which `Rule::is_valid()` rejects. Filling in a

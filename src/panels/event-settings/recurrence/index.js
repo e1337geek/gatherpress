@@ -96,67 +96,305 @@ function normalizeMonthlyDay( value ) {
 }
 
 /**
- * Coerce a decoded `weekdays` value to an array of in-range weekday numbers.
+ * Frequencies `Rule::is_valid()` recognizes.
  *
- * A REST write or import can carry a non-array (or an array with
- * out-of-range values) for `weekdays`. `weekdays.includes()` downstream
- * would throw on anything that is not an array at all, and an out-of-range
- * number would corrupt the rule server-side (`Rule::is_valid()` requires
- * every weekday within 0 through 6).
+ * @since 0.36.0
+ * @type {string[]}
+ */
+const VALID_FREQUENCIES = [ 'daily', 'weekly', 'monthly', 'yearly' ];
+
+/**
+ * End types `Rule::is_valid()` recognizes.
+ *
+ * @since 0.36.0
+ * @type {string[]}
+ */
+const VALID_END_TYPES = [ 'never', 'until', 'count' ];
+
+/**
+ * Worst-case candidate days per occurrence, by frequency, mirroring
+ * `Rule::BUDGET_DAYS_PER_FREQUENCY`.
+ *
+ * @since 0.36.0
+ * @type {Object}
+ */
+const BUDGET_DAYS_PER_FREQUENCY = {
+	daily: 1,
+	weekly: 7,
+	monthly: 31,
+	yearly: 366,
+};
+
+/**
+ * The expander's iteration backstop, mirroring `Expander::MAX_ITERATIONS`.
+ *
+ * @since 0.36.0
+ * @type {number}
+ */
+const EXPANDER_MAX_ITERATIONS = 200000;
+
+/**
+ * Coerce a decoded JSON value to an integer the way PHP's `(int)` cast does.
+ *
+ * `Rule::from_array()` reads every numeric field through `(int)`, so the
+ * panel's reading of a stored blob has to land on the same number: a float
+ * truncates toward zero, a boolean reads as 1 or 0, a leading-digits string
+ * keeps its digits, and anything without a leading number reads as 0.
  *
  * @since 0.36.0
  *
- * @param {*} weekdays Decoded `weekdays` value of unknown shape.
+ * @param {*} value Decoded value of unknown type.
  *
- * @return {number[]} Weekday numbers, 0 through 6, with anything else dropped.
+ * @return {number} The integer PHP's cast would produce.
  */
-function sanitizeWeekdays( weekdays ) {
-	if ( ! Array.isArray( weekdays ) ) {
-		return [];
+function toServerInt( value ) {
+	if ( 'number' === typeof value ) {
+		return Math.trunc( value );
 	}
 
-	return weekdays.filter(
-		( day ) => Number.isInteger( day ) && 0 <= day && 6 >= day,
+	if ( 'boolean' === typeof value ) {
+		return value ? 1 : 0;
+	}
+
+	const parsed = parseInt( value, 10 );
+
+	return Number.isNaN( parsed ) ? 0 : parsed;
+}
+
+/**
+ * Parse an end date exactly as strictly as `Rule::from_array()` does.
+ *
+ * The PHP side uses `DateTimeImmutable::createFromFormat( '!Y-m-d', ... )`
+ * and rejects on warnings, so a relative string, trailing garbage, or a
+ * rolled-over calendar date like 2026-02-31 is no end date at all. The
+ * round-trip through `Date.UTC` reproduces the rollover check.
+ *
+ * @since 0.36.0
+ *
+ * @param {*} until Decoded `until` value.
+ *
+ * @return {boolean} Whether the value is a real `Y-m-d` calendar date.
+ */
+function isParseableUntil( until ) {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec( until );
+
+	if ( ! match ) {
+		return false;
+	}
+
+	const [ , year, month, day ] = match.map( Number );
+	const date = new Date( Date.UTC( year, month - 1, day ) );
+
+	return (
+		date.getUTCFullYear() === year &&
+		date.getUTCMonth() === month - 1 &&
+		date.getUTCDate() === day
 	);
+}
+
+/**
+ * Read a decoded blob the way `Rule::from_array()` reads it.
+ *
+ * Every field goes through the same cast and clamp the server applies, and
+ * a missing field takes the server's own default (an empty string, zero, or
+ * an empty list), never this panel's authoring default. Filling a missing
+ * `end_type` with 'never' here would validate a partial blob the server
+ * rejects.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} parsed Decoded blob object.
+ *
+ * @return {Object} The rule as the server would read it.
+ */
+function coerceStoredRule( parsed ) {
+	const interval = toServerInt( parsed.interval ?? 1 );
+	const weekdays = Array.isArray( parsed.weekdays )
+		? [ ...new Set( parsed.weekdays.map( toServerInt ) ) ].sort(
+			( first, second ) => first - second,
+		)
+		: [];
+
+	return {
+		frequency: String( parsed.frequency ?? '' ),
+		interval: 1 > interval ? 1 : interval,
+		weekdays,
+		monthly_mode: String( parsed.monthly_mode ?? '' ),
+		monthly_day: toServerInt( parsed.monthly_day ?? 0 ),
+		monthly_ordinal: toServerInt( parsed.monthly_ordinal ?? 0 ),
+		monthly_weekday: toServerInt( parsed.monthly_weekday ?? 0 ),
+		end_type: String( parsed.end_type ?? '' ),
+		until: 'string' === typeof parsed.until ? parsed.until : '',
+		count: toServerInt( parsed.count ?? 0 ),
+	};
+}
+
+/**
+ * Mirror `Rule::is_valid_monthly_shape()` on a server-coerced rule.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} rule Server-coerced rule from `coerceStoredRule()`.
+ *
+ * @return {boolean} Whether the monthly mode and its companion fields agree.
+ */
+function isValidMonthlyShape( rule ) {
+	if ( 'day_of_month' === rule.monthly_mode ) {
+		return 1 <= rule.monthly_day && 31 >= rule.monthly_day;
+	}
+
+	if ( 'nth_weekday' === rule.monthly_mode ) {
+		return (
+			[ 1, 2, 3, 4, -1 ].includes( rule.monthly_ordinal ) &&
+			0 <= rule.monthly_weekday &&
+			6 >= rule.monthly_weekday
+		);
+	}
+
+	return false;
+}
+
+/**
+ * Mirror `Rule::is_valid_end_shape()`, plus `from_array()`'s rejection of a
+ * rule carrying both an end date and a count, on a server-coerced rule.
+ *
+ * An unparseable `until` reads as no end date at all, exactly as it does on
+ * the PHP side, so it neither satisfies an until rule nor collides with a
+ * count one.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} rule Server-coerced rule from `coerceStoredRule()`.
+ *
+ * @return {boolean} Whether the end-of-series fields are internally consistent.
+ */
+function isValidEndShape( rule ) {
+	const hasUntil = isParseableUntil( rule.until );
+
+	if ( 'until' === rule.end_type ) {
+		return hasUntil && 0 === rule.count;
+	}
+
+	if ( 'count' === rule.end_type ) {
+		if ( 1 > rule.count || 730 < rule.count || hasUntil ) {
+			return false;
+		}
+
+		const perOccurrence =
+			BUDGET_DAYS_PER_FREQUENCY[ rule.frequency ] * rule.interval;
+		const worstCaseDays = rule.count * perOccurrence;
+		const budget = worstCaseDays + 366;
+
+		return budget <= EXPANDER_MAX_ITERATIONS;
+	}
+
+	return ! hasUntil && 0 === rule.count;
+}
+
+/**
+ * Decide whether the server would accept this stored rule, mirroring
+ * `Rule::from_array()` and `Rule::is_valid()`.
+ *
+ * The panel never presents a stored rule the server has rejected:
+ * `Meta::write_recurrence()` clears every derived mirror and the projected
+ * occurrence rows for a rejected blob, so the post is not recurring no
+ * matter what the blob says. If the two sides ever disagree, this side is
+ * the one to fix.
+ *
+ * @since 0.36.0
+ *
+ * @param {Object} rule Server-coerced rule from `coerceStoredRule()`.
+ *
+ * @return {boolean} Whether `Rule::from_array()` would return a rule.
+ */
+function isServerValidRule( rule ) {
+	if (
+		! VALID_FREQUENCIES.includes( rule.frequency ) ||
+		52 < rule.interval ||
+		! VALID_END_TYPES.includes( rule.end_type )
+	) {
+		return false;
+	}
+
+	if (
+		'weekly' === rule.frequency &&
+		( 0 === rule.weekdays.length ||
+			rule.weekdays.some( ( day ) => 0 > day || 6 < day ) )
+	) {
+		return false;
+	}
+
+	if ( 'monthly' === rule.frequency && ! isValidMonthlyShape( rule ) ) {
+		return false;
+	}
+
+	return isValidEndShape( rule );
 }
 
 /**
  * Parse the `gatherpress_recurrence` blob into panel state.
  *
  * A missing, empty, or malformed blob is treated as "no recurrence" rather
- * than surfacing a parse error. The panel falls back to `DEFAULT_RULE` with
- * the "Repeat" toggle off. A valid blob is merged onto `DEFAULT_RULE` so a
- * blob written by an older shape (missing a field this panel added later)
- * still renders every control with a sane value. `weekdays` is coerced field
- * by field rather than trusted wholesale. A REST write or import can carry
- * a non-array, or an array with out-of-range values, and `weekdays.includes()`
- * downstream would throw on anything that is not an array at all.
+ * than surfacing a parse error: there is no rule in it to display or to
+ * repair. A decoded object is validated against the server schema
+ * (`isServerValidRule()`) before it is presented as enabled. A rule the
+ * server rejects comes back disabled with `invalidStored` set, and the panel
+ * explains the state instead of silently normalizing values (a stored
+ * `monthly_day` of 99 clamped to 31 would present an enabled rule while the
+ * server has cleared the mirrors and the projection).
+ *
+ * A valid blob is merged onto `DEFAULT_RULE` so fields the active frequency
+ * does not use still render their controls with sane values, and its
+ * numeric fields take the server's own reading of them.
  *
  * @since 0.36.0
  *
  * @param {string|undefined} raw Raw `gatherpress_recurrence` meta value.
  *
- * @return {Object} `{ enabled, rule }` panel state.
+ * @return {Object} `{ enabled, rule, invalidStored }` panel state.
  */
 function parseRecurrenceBlob( raw ) {
 	if ( ! raw ) {
-		return { enabled: false, rule: { ...DEFAULT_RULE } };
+		return { enabled: false, rule: { ...DEFAULT_RULE }, invalidStored: false };
 	}
 
 	try {
 		const parsed = JSON.parse( raw );
 
 		if ( ! parsed || 'object' !== typeof parsed ) {
-			return { enabled: false, rule: { ...DEFAULT_RULE } };
+			return {
+				enabled: false,
+				rule: { ...DEFAULT_RULE },
+				invalidStored: false,
+			};
 		}
 
-		const rule = { ...DEFAULT_RULE, ...parsed };
-		rule.weekdays = sanitizeWeekdays( rule.weekdays );
+		const coerced = coerceStoredRule( parsed );
+
+		if ( ! isServerValidRule( coerced ) ) {
+			return {
+				enabled: false,
+				rule: { ...DEFAULT_RULE },
+				invalidStored: true,
+			};
+		}
+
+		const rule = {
+			...DEFAULT_RULE,
+			...parsed,
+			interval: coerced.interval,
+			weekdays: coerced.weekdays,
+			count: coerced.count,
+			// An unparseable date is no date to the server; displaying the
+			// raw string would hand it back to the user on a switch to
+			// "On date".
+			until: isParseableUntil( coerced.until ) ? coerced.until : '',
+		};
 		rule.monthly_day = normalizeMonthlyDay( rule.monthly_day );
 
-		return { enabled: true, rule };
+		return { enabled: true, rule, invalidStored: false };
 	} catch {
-		return { enabled: false, rule: { ...DEFAULT_RULE } };
+		return { enabled: false, rule: { ...DEFAULT_RULE }, invalidStored: false };
 	}
 }
 
@@ -232,7 +470,7 @@ const RecurrencePanel = () => {
 		};
 	}, [] );
 
-	const [ { enabled, rule }, setState ] = useState( () =>
+	const [ { enabled, rule, invalidStored }, setState ] = useState( () =>
 		parseRecurrenceBlob( recurrenceMeta ),
 	);
 
@@ -328,7 +566,7 @@ const RecurrencePanel = () => {
 			}
 		}
 
-		setState( { enabled: true, rule: merged } );
+		setState( { enabled: true, rule: merged, invalidStored: false } );
 
 		if ( isPersistable( merged ) ) {
 			persist( true, merged );
@@ -348,7 +586,7 @@ const RecurrencePanel = () => {
 	const handleToggle = ( value ) => {
 		const nextRule = value ? { ...DEFAULT_RULE } : rule;
 
-		setState( { enabled: value, rule: nextRule } );
+		setState( { enabled: value, rule: nextRule, invalidStored: false } );
 		persist( value, nextRule );
 	};
 
@@ -363,6 +601,14 @@ const RecurrencePanel = () => {
 					<output>
 						{ __(
 							'Recurring events require a named timezone (e.g. America/New_York) rather than a fixed UTC offset. Change the timezone in the Date & Time panel to enable repeat.',
+							'gatherpress',
+						) }
+					</output>
+				) }
+				{ invalidStored && (
+					<output>
+						{ __(
+							'The stored repeat rule for this event is invalid, so the event does not repeat. Turn on Repeat to author a new rule.',
 							'gatherpress',
 						) }
 					</output>
