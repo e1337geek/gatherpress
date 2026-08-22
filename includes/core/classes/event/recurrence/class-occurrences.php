@@ -1721,10 +1721,27 @@ final class Occurrences {
 	 * Takes an array of post IDs, never a single ID, so the query emits
 	 * `series_post_id IN (…)` and a future forward split stays reachable.
 	 *
+	 * The defaults read every row of the series: no time bound and no
+	 * limit. Callers with a forward-looking or paginated purpose pass
+	 * `after` and `limit`, so the bounding happens in SQL rather than by
+	 * hydrating the whole series into PHP and slicing there.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int[] $post_ids Post IDs from `Series::resolve_post_ids()`.
-	 * @param array $args     Optional query arguments, including `status`.
+	 * @param array $args     {
+	 *     Optional query arguments. Default empty array.
+	 *
+	 *     @type string $status Return only rows holding exactly this status.
+	 *                          Default unset, all statuses.
+	 *     @type string $after  GMT datetime, `Y-m-d H:i:s`. Return only rows
+	 *                          whose `datetime_end_gmt` is on or after it.
+	 *                          End-inclusive, matching `select_upcoming()`:
+	 *                          a running occurrence still returns. Default
+	 *                          unset, no time bound.
+	 *     @type int    $limit  Maximum rows to return, clamped to at least
+	 *                          zero. Default unset, all rows.
+	 * }
 	 *
 	 * @return array The matching occurrence rows.
 	 */
@@ -1745,7 +1762,26 @@ final class Occurrences {
 			$values[] = $args['status'];
 		}
 
-		$sql .= ' ORDER BY datetime_start_gmt ASC';
+		if ( isset( $args['after'] ) ) {
+			$sql     .= ' AND datetime_end_gmt >= %s';
+			$values[] = (string) $args['after'];
+		}
+
+		// The start alone is not a total order, and recurrence_id cannot
+		// complete it: the identifier is derived from the local start, so
+		// two sibling posts of one series sharing a start share it too.
+		// series_post_id is the tie-breaker that makes a limited read
+		// deterministic; recurrence_id then orders within one post.
+		$sql .= ' ORDER BY datetime_start_gmt ASC, series_post_id ASC, recurrence_id ASC';
+
+		if ( isset( $args['limit'] ) ) {
+			// Same clamp as select_by_horizon(): MySQL rejects a negative
+			// LIMIT as a syntax error, which $wpdb swallows into an empty
+			// result plus a poisoned last_error. Zero legitimately selects
+			// nothing.
+			$sql     .= ' LIMIT %d';
+			$values[] = max( 0, (int) $args['limit'] );
+		}
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
