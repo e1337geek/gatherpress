@@ -97,8 +97,11 @@ final class Context {
 	/**
 	 * Serve the occurrence's datetime for the five derived meta keys.
 	 *
-	 * Filters `get_post_metadata`. Outside occurrence context it returns the
-	 * value untouched, so the meta read falls through to core.
+	 * Filters `get_post_metadata`. The frozen stub returns null regardless
+	 * of `$value`, which for this filter is the do-not-short-circuit
+	 * convention, so every meta read falls through to core. The
+	 * implementation will instead return the occurrence's own value inside
+	 * occurrence context and `$value` untouched outside it.
 	 *
 	 * @since 0.36.0
 	 *

@@ -394,6 +394,11 @@ final class Occurrences {
 	protected function select_by_horizon( int $limit, array $args, bool $upcoming ): array {
 		global $wpdb;
 
+		// MySQL rejects a negative LIMIT as a syntax error, which $wpdb
+		// swallows into an empty result plus a poisoned last_error. Zero
+		// legitimately selects nothing.
+		$limit = max( 0, $limit );
+
 		$post_types = get_post_types_by_support( 'gatherpress-event-date' );
 
 		if ( array() === $post_types ) {
@@ -865,6 +870,10 @@ final class Occurrences {
 	 */
 	public function select_series_needing_top_up( int $limit ): array {
 		global $wpdb;
+
+		// Same clamp as select_by_horizon(): a negative LIMIT is a MySQL
+		// syntax error silently swallowed by $wpdb.
+		$limit = max( 0, $limit );
 
 		$table  = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$cutoff = $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
@@ -1379,6 +1388,11 @@ final class Occurrences {
 			$values[]       = $row['timezone'];
 		}
 
+		// VALUES() in ON DUPLICATE KEY UPDATE is deprecated in MySQL 8.0.20
+		// (a warning, still functional) but its replacement, the
+		// `AS new ... new.col` row alias, does not exist on MariaDB, which
+		// WordPress fully supports. VALUES() is the only spelling that runs
+		// on both engines today; revisit if MySQL ever removes it.
 		$sql = 'INSERT INTO %i'
 			. ' (series_post_id, recurrence_id, datetime_start, datetime_start_gmt,'
 			. ' datetime_end, datetime_end_gmt, timezone)'
@@ -1456,7 +1470,7 @@ final class Occurrences {
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-		return null === $row ? null : $row;
+		return $row;
 	}
 
 	/**

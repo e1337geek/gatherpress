@@ -195,16 +195,18 @@ final class Query {
 	/**
 	 * Join the occurrence table into an event query's clauses.
 	 *
-	 * Filters `posts_clauses` at priority 11, after `Event\Query`'s own
-	 * priority-10 filters. Returns the clauses untouched when the site has no
-	 * recurring events.
+	 * A frozen-contract stub: it returns the clauses untouched
+	 * unconditionally, and nothing registers it yet. The implementing stack
+	 * part will register it on `posts_clauses` at priority 11, after
+	 * `Event\Query`'s own priority-10 filters, and will return the clauses
+	 * untouched when the site has no recurring events.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param array    $pieces Query clauses keyed as `WP_Query` supplies them.
 	 * @param WP_Query $query  Query being filtered.
 	 *
-	 * @return array The clauses, modified only for occurrence-aware event queries.
+	 * @return array The clauses, unmodified by this stub.
 	 */
 	public function expand_event_clauses( array $pieces, WP_Query $query ): array {
 		return $pieces;
@@ -215,16 +217,18 @@ final class Query {
 	/**
 	 * Stamp occurrence identity onto a query's results.
 	 *
-	 * Filters `the_posts` at priority 10 and handles both a `'fields' => 'ids'`
-	 * result set and a full `WP_Post` result set, because the plugin's own read
-	 * API requests IDs.
+	 * A frozen-contract stub: it returns the results untouched, and nothing
+	 * registers it yet. The implementing stack part will register it on
+	 * `the_posts` at priority 10 and will handle both a `'fields' => 'ids'`
+	 * result set and a full `WP_Post` result set, because the plugin's own
+	 * read API requests IDs.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param array    $posts Results, either integers or `WP_Post` objects.
 	 * @param WP_Query $query Query being filtered.
 	 *
-	 * @return array The results, carrying occurrence identity on each entry.
+	 * @return array The results, unmodified by this stub.
 	 */
 	public function attach_occurrences( array $posts, WP_Query $query ): array {
 		return $posts;

@@ -115,8 +115,8 @@ final class Rsvp_Occurrence {
 	/**
 	 * Move occurrence terms from one series post to another.
 	 *
-	 * The forward-split seam. Unit-tested with no production caller in
-	 * the POC.
+	 * The forward-split seam, frozen here as a stub returning 0. Its tests
+	 * and its callers land with the forward split itself.
 	 *
 	 * @since 0.36.0
 	 *
