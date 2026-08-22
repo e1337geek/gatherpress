@@ -3772,6 +3772,9 @@ class Test_Occurrences extends Base {
 	 * @covers ::project
 	 * @covers ::upsert_occurrences
 	 * @covers ::insert_or_update_rows
+	 * @covers ::execute_write
+	 * @covers ::maybe_install_missing_table
+	 * @covers ::write_error
 	 *
 	 * @return void
 	 */
@@ -3813,6 +3816,8 @@ class Test_Occurrences extends Base {
 	 * @covers ::project
 	 * @covers ::upsert_occurrences
 	 * @covers ::delete_stale_rows
+	 * @covers ::execute_write
+	 * @covers ::write_error
 	 *
 	 * @return void
 	 */
@@ -3850,6 +3855,8 @@ class Test_Occurrences extends Base {
 	 *
 	 * @covers ::project
 	 * @covers ::upsert_occurrences
+	 * @covers ::execute_write
+	 * @covers ::maybe_install_missing_table
 	 *
 	 * @return void
 	 */
