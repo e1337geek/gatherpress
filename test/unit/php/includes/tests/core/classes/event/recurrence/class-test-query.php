@@ -964,6 +964,92 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * A second sort key is aggregated around, never swallowed into the wrap.
+	 *
+	 * Any plugin can append a tie-breaker through `posts_orderby`, and a future
+	 * `Event\Query` change can add one of its own. Wrapping the whole clause
+	 * in one aggregate turns that into `MIN( <key> ASC, <key> )`, a syntax
+	 * error that empties every aggregate feed on the site. Only the keys the
+	 * fold rewrote reference the occurrence rows; the others are functionally
+	 * dependent on the group key and pass through as they are, which is also
+	 * what keeps the clause valid under `ONLY_FULL_GROUP_BY`.
+	 *
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_aggregate_orderby_wraps_each_key_not_the_clause(): void {
+		global $wpdb;
+
+		$this->assertSame(
+			'MIN( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) ASC, '
+				. $wpdb->posts . '.post_title ASC, `' . $wpdb->posts . '`.ID ASC',
+			Utility::invoke_hidden_method(
+				Query::get_instance(),
+				'aggregate_orderby',
+				array(
+					'COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ASC, '
+						. $wpdb->posts . '.post_title ASC',
+				)
+			),
+			'The occurrence key takes the aggregate; a tie-breaker survives beside it rather than inside it.'
+		);
+	}
+
+	/**
+	 * A plugin tie-breaker degrades the ordering at worst, never the results.
+	 *
+	 * The production path for the case above. `Event\Query` rewrites the
+	 * ordering on `posts_clauses` at priority 10, registered from inside
+	 * `pre_get_posts`, and the fold runs at 11. An integration adjusting
+	 * clauses per query registers the same way, so its filter lands after the
+	 * rewrite and before the fold, and the fold's ordering rewrite receives a
+	 * clause with a second key. A plain `posts_orderby` filter cannot get
+	 * there: the event rewrite overwrites that clause outright.
+	 *
+	 * @covers ::fold_event_clauses
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_a_plugin_tie_breaker_survives_the_folded_query(): void {
+		global $wpdb;
+
+		$scenario = $this->build_scenario();
+
+		$tie_breaker = static function ( array $pieces ) use ( $wpdb ): array {
+			if ( ! empty( $pieces['orderby'] ) ) {
+				$pieces['orderby'] .= ', ' . $wpdb->posts . '.post_title ASC';
+			}
+
+			return $pieces;
+		};
+		$register    = static function () use ( $tie_breaker ): void {
+			add_filter( 'posts_clauses', $tie_breaker );
+		};
+
+		add_action( 'pre_get_posts', $register, 20 );
+
+		$suppressed = $wpdb->suppress_errors();
+		$query      = Event_Query::get_instance()->get_events_list( 'upcoming', 20 );
+
+		$wpdb->suppress_errors( $suppressed );
+		remove_action( 'pre_get_posts', $register, 20 );
+		remove_filter( 'posts_clauses', $tie_breaker );
+
+		$this->assertSame(
+			'',
+			(string) $wpdb->last_error,
+			'The emitted ordering must be valid SQL.'
+		);
+		$this->assertContains(
+			(int) $scenario['series'],
+			array_map( 'intval', $query->posts ),
+			'A second sort key must not empty the aggregate feeds of every series.'
+		);
+	}
+
+	/**
 	 * Coverage for the iCal feed emitting one VEVENT per event, with unique UIDs.
 	 *
 	 * `Calendar\Setup::get_ical_list()` is the one production consumer of
