@@ -2197,6 +2197,12 @@ final class Occurrences {
 	 * case it can still separate: a DST fold, where two distinct local times
 	 * under one post map to a single GMT start.
 	 *
+	 * Public because it is the shared bounded read behind every "the one
+	 * occurrence that answers for this series" question: the admin list's
+	 * display row here, and `Rewrite`'s bare-URL redirect target, which
+	 * would otherwise hydrate a whole series' row set to emit one
+	 * `Location` header.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int[] $post_ids Post IDs from `Series::resolve_post_ids()`.

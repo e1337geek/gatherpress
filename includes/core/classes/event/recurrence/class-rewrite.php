@@ -504,16 +504,26 @@ final class Rewrite {
 	 * requested post. It answers the logical-series question, and its caller
 	 * turns the answer into a redirect rather than into rendered context.
 	 *
-	 * Rows whose owner the visitor may not read are skipped rather than
-	 * refused: a series continuing on a draft or private sibling is, to that
-	 * visitor, a series with nothing upcoming, and any other answer would make
-	 * the bare URL an existence oracle for unpublished posts.
+	 * Siblings the visitor may not read are skipped rather than refused: a
+	 * series continuing on a draft or private sibling is, to that visitor, a
+	 * series with nothing upcoming, and any other answer would make the bare
+	 * URL an existence oracle for unpublished posts. The skip happens before
+	 * the read, which the ownership invariant is what permits: an occurrence
+	 * row's owner is always its own `series_post_id` (see
+	 * `Occurrence_Identity`), so excluding an unreadable sibling from the
+	 * queried set excludes exactly that sibling's rows, and nothing has to be
+	 * hydrated to find out who owns it. The requested post is excluded with
+	 * them, restating invariant (b): the request only ever moves to a post
+	 * other than the one it named.
 	 *
-	 * Upcoming is inclusive of an occurrence in progress: rows are bounded on
-	 * `datetime_end_gmt >= now`, matching
-	 * `Occurrences::select_bounded_occurrence()`, never on the start. A
-	 * start-bounded skip sends the visitor holding the lapsed fragment's URL
-	 * to next week while the event they are on their way to is happening.
+	 * The read itself is `Occurrences::select_bounded_occurrence()`: one
+	 * end-inclusive, totally ordered, `LIMIT 1` statement. Bounding on
+	 * `datetime_end_gmt >= now` rather than on the start keeps an occurrence
+	 * in progress: a start-bounded skip sends the visitor holding the lapsed
+	 * fragment's URL to next week while the event they are on their way to is
+	 * happening. Before this the redirect hydrated the series' whole
+	 * scheduled row set, several hundred rows on a long-lived split daily
+	 * series, to emit one `Location` header.
 	 *
 	 * A single-post series returns before any of that, and so does a request on
 	 * a post whose own rows are the ones that are upcoming. The caller only
@@ -526,39 +536,31 @@ final class Rewrite {
 	 * @return Occurrence_Identity|null The occurrence to forward to, or null when there is none.
 	 */
 	protected function next_upcoming_in_series( int $post_id ): ?Occurrence_Identity {
-		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
+		$post_ids   = Series::get_instance()->resolve_post_ids( $post_id );
+		$candidates = array();
 
-		if ( array( $post_id ) === $post_ids ) {
+		if ( array( $post_id ) !== $post_ids ) {
+			$candidates = array_values(
+				array_filter(
+					array_map( 'intval', $post_ids ),
+					fn ( int $sibling_id ): bool => $sibling_id !== $post_id && $this->can_follow_to( $sibling_id )
+				)
+			);
+		}
+
+		if ( array() === $candidates ) {
 			return null;
 		}
 
-		$rows = Occurrences::get_instance()->select_for_series(
-			$post_ids,
-			array( 'status' => Occurrences::STATUS_SCHEDULED )
-		);
-		$now  = current_time( 'mysql', true );
+		$row = Occurrences::get_instance()->select_bounded_occurrence( $candidates, true );
 
-		foreach ( $rows as $row ) {
-			// Inclusive of a row in progress: only a row that has already
-			// ended is behind the visitor. Ordering stays on the start.
-			if ( $row['datetime_end_gmt'] < $now ) {
-				continue;
-			}
-
-			$identity = Occurrence_Identity::resolve( $post_id, (string) $row['recurrence_id'] );
-
-			// Invariant (b) restated as a condition: the request only moves to
-			// a post other than the one it named, and only to one the visitor
-			// may read.
-			if ( null !== $identity
-				&& $identity->owner_post_id !== $post_id
-				&& $this->can_follow_to( $identity->owner_post_id )
-			) {
-				return $identity;
-			}
+		if ( null === $row ) {
+			return null;
 		}
 
-		return null;
+		// Still resolved through the identity seam rather than assembled from
+		// the row, so the redirect target is the owner the seam names.
+		return Occurrence_Identity::resolve( $post_id, (string) $row['recurrence_id'] );
 	}
 
 	/**
