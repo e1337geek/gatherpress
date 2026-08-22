@@ -511,7 +511,7 @@ final class Calendar {
 	 * The unique identifier for this component.
 	 *
 	 * One identifier for the whole recurrence set, occurrences included. RFC
-	 * 5545 section 3.8.4.7 is explicit that the `UID` references the *entire*
+	 * 5545 section 3.8.4.4 is explicit that the `UID` references the *entire*
 	 * recurrence set and that `RECURRENCE-ID` is what identifies one instance
 	 * within it, so a single-occurrence download is an override of that
 	 * instance rather than a component of its own. Minting a per-occurrence

@@ -689,7 +689,7 @@ final class Query {
 	 * series' scheduled occurrences; the `GROUP BY` on the post ID then
 	 * collapses the result back to one row per post. That matters beyond
 	 * tidiness: a series shares one `UID` across its whole recurrence set (RFC
-	 * 5545 section 3.8.4.7), so one component per occurrence would repeat that
+	 * 5545 section 3.8.4.4), so one component per occurrence would repeat that
 	 * identifier once per date with nothing but `RECURRENCE-ID` to tell the
 	 * copies apart, producing a feed that overrides every instance of a rule it
 	 * also carries. One component carrying an `RRULE` is how a series is representable
