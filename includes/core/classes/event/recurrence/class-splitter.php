@@ -63,12 +63,20 @@ final class Splitter {
 	 * point, so copying them would seed the forward post with the origin's
 	 * anchor. The edit-lock pair is per-user session state.
 	 *
+	 * `_wp_old_slug` is the rename history of a slug the forward post does not
+	 * have. `post_name` is deliberately not copied (see `COPIED_POST_FIELDS`),
+	 * so copying the history would have the forward post claim permalinks it
+	 * never answered to and redirect them away from the origin, which still
+	 * owns the dates those permalinks were published for. Reachable on any
+	 * event renamed after publication, which is when WordPress writes the key.
+	 *
 	 * @since 0.36.0
 	 * @var string[]
 	 */
 	const UNCOPIED_META_KEYS = array(
 		'_edit_last',
 		'_edit_lock',
+		'_wp_old_slug',
 		'gatherpress_datetime',
 		'gatherpress_datetime_end',
 		'gatherpress_datetime_start',
@@ -88,7 +96,10 @@ final class Splitter {
 	 *
 	 * `post_name` is deliberately absent: two posts cannot share a slug, and
 	 * letting WordPress derive the forward post's own is the only correct
-	 * answer.
+	 * answer. The rename history that belongs to a slug is held back with it:
+	 * `_wp_old_slug` is named in `UNCOPIED_META_KEYS` above, so after a split
+	 * the origin alone answers the series' old permalinks. That pairing is
+	 * deliberate rather than an omission on either side.
 	 *
 	 * @since 0.36.0
 	 * @var string[]

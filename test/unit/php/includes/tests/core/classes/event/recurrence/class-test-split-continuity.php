@@ -962,6 +962,45 @@ class Test_Split_Continuity extends Base {
 	}
 
 	/**
+	 * The origin's old-slug history stays with the origin.
+	 *
+	 * `post_name` is deliberately not copied, so the forward post gets a slug
+	 * of its own and never answered to any of the origin's earlier ones.
+	 * Copying `_wp_old_slug` handed it those permalinks anyway, and WordPress's
+	 * old-slug redirect resolves one to whichever post claims it, sending a
+	 * visitor who follows a published link away from the post that still owns
+	 * the dates it was published for. Reachable on any event renamed after
+	 * publication, which is when WordPress writes the key.
+	 *
+	 * @covers ::copy_meta
+	 *
+	 * @return void
+	 */
+	public function test_the_old_slug_history_stays_with_the_origin(): void {
+		$origin_id = $this->create_and_project();
+
+		// The shape WordPress writes itself when a published post's slug
+		// changes: one row per slug the post has answered to before.
+		add_post_meta( $origin_id, '_wp_old_slug', 'downtown-meetup' );
+		add_post_meta( $origin_id, '_wp_old_slug', 'downtown-wordpress-meetup' );
+
+		$result  = Splitter::get_instance()->split_forward( $origin_id, $this->identifiers[2] );
+		$forward = (int) $result['forward_post_id'];
+
+		$this->assertTrue( $result['split'], 'Fixture setup: the split must succeed.' );
+		$this->assertSame(
+			array(),
+			get_post_meta( $forward, '_wp_old_slug', false ),
+			'Failed to assert the forward post claims none of the origin\'s old permalinks.'
+		);
+		$this->assertSame(
+			array( 'downtown-meetup', 'downtown-wordpress-meetup' ),
+			get_post_meta( $origin_id, '_wp_old_slug', false ),
+			'Failed to assert the origin kept the whole of its own rename history.'
+		);
+	}
+
+	/**
 	 * Acceptance 4: repeated meta arrives with its cardinality intact.
 	 *
 	 * `meta_input` takes one value per key, so an extension that had stored two
