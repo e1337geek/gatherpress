@@ -56,9 +56,9 @@ class Test_Projection_Cron extends Base {
 	 * Create and project a recurring event anchored relative to "now".
 	 *
 	 * Duplicated from `Test_Occurrences` rather than added to
-	 * `Occurrence_Fixtures`, because this lane's file scope is the
-	 * `Occurrences` class, its test, and this new test file, not the shared
-	 * trait.
+	 * `Occurrence_Fixtures`, because the shared trait deliberately carries
+	 * only the pinned-date reference fixture. A relative-to-now helper stays
+	 * local to the suites that need one.
 	 *
 	 * @since 0.36.0
 	 *

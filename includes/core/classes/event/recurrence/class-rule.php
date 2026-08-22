@@ -9,7 +9,7 @@
  * the mirrors, which is what keeps the blob a pure write-boundary artifact.
  *
  * `to_rrule_string()` is the calendar-export seam. It exists and is unit-tested
- * from day one, and has no production caller in the POC.
+ * from day one, and has no production caller yet.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -632,7 +632,7 @@ final class Rule {
 	 * Serialize the rule as an RFC 5545 `RRULE` string.
 	 *
 	 * The calendar-export seam. Unit-tested against a fixture table, with no
-	 * production caller in the POC. `WKST` is never emitted because
+	 * production caller yet. `WKST` is never emitted because
 	 * `WEEK_START` (Monday) is already RFC 5545's default. `UNTIL` is emitted
 	 * as a bare `Ymd` date. The rule carries no time-of-day of its own, so
 	 * that comes from the series anchor at expansion time.

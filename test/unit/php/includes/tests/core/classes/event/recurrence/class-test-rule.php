@@ -1092,7 +1092,7 @@ class Test_Rule extends Base {
 				),
 				'expected' => 'FREQ=WEEKLY;BYDAY=MO,WE,FR',
 			),
-			// Weekly, count-bounded, biweekly, matching the guide's reference rule.
+			// Weekly, count-bounded, biweekly, matching the reference rule in `Occurrence_Fixtures`.
 			array(
 				'values'   => array(
 					'frequency' => 'weekly',

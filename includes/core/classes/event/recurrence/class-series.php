@@ -7,7 +7,7 @@
  * the set of post IDs that make up its series, so every occurrence query emits
  * `series_post_id IN (…)`.
  *
- * In the POC a series is one post and this returns `array( $post_id )`. That is
+ * Today a series is one post and this returns `array( $post_id )`. That is
  * an implementation detail, not a contract. The forward split makes a series
  * span several posts, so code that assumed one post would have to be rewritten
  * rather than extended.
@@ -64,7 +64,7 @@ final class Series {
 	 *
 	 * @param int $post_id Post ID to resolve.
 	 *
-	 * @return int[] Every post ID in the series, which is `array( $post_id )` in the POC.
+	 * @return int[] Every post ID in the series, which is currently `array( $post_id )`.
 	 */
 	public function resolve_post_ids( int $post_id ): array {
 		/**

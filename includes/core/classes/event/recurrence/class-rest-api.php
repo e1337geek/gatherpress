@@ -2,7 +2,7 @@
 /**
  * REST routes for occurrence state.
  *
- * One route in the POC: setting an occurrence's status, which is how cancel and
+ * One route so far: setting an occurrence's status, which is how cancel and
  * un-cancel are expressed. Cancellation is occurrence state on the occurrence
  * row, never an `EXDATE` in the rule and never a term.
  *

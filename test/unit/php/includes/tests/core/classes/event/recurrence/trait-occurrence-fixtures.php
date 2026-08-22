@@ -22,7 +22,7 @@ use ReflectionClass;
  * Trait Occurrence_Fixtures.
  *
  * Builds a real recurring event post and states the expected occurrence set for
- * the guide's reference weekly rule, so the expander tests and the persistence
+ * its reference weekly rule, so the expander tests and the persistence
  * tests assert against one fixture rather than two hand-written lists.
  *
  * @since 0.36.0

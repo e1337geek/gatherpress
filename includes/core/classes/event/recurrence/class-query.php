@@ -55,10 +55,12 @@ final class Query {
 	 * Read-only derived mirror meta key holding a rule's frequency.
 	 *
 	 * `refresh_has_recurring_events()` reads this key rather than the canonical
-	 * `Meta::META_KEY` blob, because it is the key another lane's rule-meta
-	 * derivation writes last, after the canonical blob and every other mirror.
-	 * The lifecycle hooks below watch both keys for exactly this reason: a
-	 * write to the canonical key alone can fire before this mirror exists.
+	 * `Meta::META_KEY` blob, because this mirror is written by the rule-meta
+	 * derivation in `Meta::set_recurrence()` (via `Meta::write_mirrors()` in
+	 * `class-meta.php`), which runs only after the canonical blob has landed
+	 * and decoded into a valid, expandable rule. The lifecycle hooks below
+	 * watch both keys for exactly this reason: a write to the canonical key
+	 * alone can fire before this mirror exists.
 	 *
 	 * @since 0.36.0
 	 * @var string
@@ -107,8 +109,9 @@ final class Query {
 	 * revision, and unrelated post type it touches. `import_end` already
 	 * sweeps once per import for the bulk case. The three meta hooks watch
 	 * both `Meta::META_KEY` and `FREQUENCY_META_KEY`, because the two are
-	 * written by separate statements in another lane's rule-meta derivation
-	 * and either can be the one whose write completes a not-yet-recurring or
+	 * written by separate statements: the save request stores the canonical
+	 * blob, and `Meta::set_recurrence()` then derives the mirror from it.
+	 * Either write can be the one that completes a not-yet-recurring or
 	 * no-longer-recurring transition.
 	 *
 	 * @since 0.36.0
