@@ -551,6 +551,14 @@ class Test_Splitter extends Base {
 
 		$origin_id = $this->create_and_project();
 
+		// The queue lives on a singleton that outlives one test. Any earlier
+		// suite whose fixtures wrote a recurrence blob without projecting
+		// leaves its own posts queued here, and both assertions below read the
+		// whole queue: the first would report a foreign post ID and the second
+		// would count a foreign post's shutdown projection as this split's.
+		// Emptying it first makes what this test observes its own doing.
+		Utility::set_and_get_hidden_property( Occurrences::get_instance(), 'pending_projection', array() );
+
 		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 		$inserts = array();
 		$capture = static function ( $query ) use ( &$inserts, $table ) {
