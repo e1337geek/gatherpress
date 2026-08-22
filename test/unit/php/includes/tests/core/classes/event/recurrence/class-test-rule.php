@@ -729,7 +729,7 @@ class Test_Rule extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_unparseable_until_is_rejected(): void {
+	public function test_unparsable_until_is_rejected(): void {
 		$rule = Rule::from_array(
 			array(
 				'frequency' => 'daily',
@@ -924,7 +924,7 @@ class Test_Rule extends Base {
 	 * silently resolved into a valid `COUNT` rule.
 	 *
 	 * The `UNTIL`/`COUNT` mutual exclusion has to run against the raw field's
-	 * presence: erasing an unparseable `until` to null before the exclusion
+	 * presence: erasing an unparsable `until` to null before the exclusion
 	 * check would let a rule carrying both survive the very check the
 	 * boundary exists to enforce.
 	 *

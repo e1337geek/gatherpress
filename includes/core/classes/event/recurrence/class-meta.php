@@ -85,7 +85,7 @@ final class Meta {
 	 * post, or any direct `update_post_meta()` call. Rather than guess, the
 	 * post is noted and decided once more on `shutdown`, when every write
 	 * this request is going to make has already happened. A save-path
-	 * derivation that runs after the queueing write removes the entry again,
+	 * derivation that runs after the queuing write removes the entry again,
 	 * so the ordinary editor save derives once, not twice.
 	 *
 	 * @since 0.36.0

@@ -344,7 +344,7 @@ final class Rule {
 		// A nonempty `until` that did not parse, whether malformed or not a
 		// string at all, is rejected rather than erased. RFC 5545 also forbids
 		// a rule carrying both an end date and an occurrence count; that
-		// exclusion is checked on the raw field's presence so an unparseable
+		// exclusion is checked on the raw field's presence so an unparsable
 		// `until` cannot evade it.
 		if ( ! $valid
 			|| ( $has_until && null === $until )

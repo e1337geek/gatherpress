@@ -193,7 +193,7 @@ final class Occurrences {
 	 * `update_post_meta()` call. Rather than guess, the post is noted here
 	 * and decided again on `shutdown`, once every write this request is going
 	 * to make has already happened. A save-path projection that runs after
-	 * the queueing write removes the entry again, so the ordinary editor save
+	 * the queuing write removes the entry again, so the ordinary editor save
 	 * projects once, not twice.
 	 *
 	 * Each value is whether the post already had valid recurrence mirrors at
@@ -324,7 +324,7 @@ final class Occurrences {
 	 * occurrence table while a genuinely removed rule gets its rows cleaned
 	 * up. The capture is unconditional, matching `maybe_project()`'s own
 	 * deferral: the mirrors only ever change on the save hook (which removes
-	 * the entry) or at shutdown (after all queueing), so the latest capture
+	 * the entry) or at shutdown (after all queuing), so the latest capture
 	 * and the earliest are the same value on every reachable path.
 	 *
 	 * @since 0.36.0
