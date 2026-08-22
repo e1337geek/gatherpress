@@ -4003,6 +4003,17 @@ class Test_Occurrences extends Base {
 			'<'  => false,
 		);
 
+		// The joined arm is the one under test, and this branch adds an
+		// anchor-only arm ahead of it that names no occurrence table at all.
+		// Flagging the site is what makes the joined arm the arm that runs,
+		// so the capture below cannot pass by reading the wrong statement.
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to arrange the site state the joined horizon arm requires.'
+		);
+
 		foreach ( $directions as $comparison => $upcoming ) {
 			$query_count_before = count( $wpdb->queries );
 
