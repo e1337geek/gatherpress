@@ -131,7 +131,34 @@ class Test_Rewrite extends Base {
 	): DateTimeImmutable {
 		$tz    = new DateTimeZone( $timezone );
 		$start = ( new DateTimeImmutable( 'now', $tz ) )->modify( sprintf( '%+d days', $day_offset ) );
-		$end   = $start->add( new DateInterval( 'PT2H' ) );
+
+		return $this->project_daily_series_at( $post_id, $start, $interval, $count );
+	}
+
+	/**
+	 * Project a daily series anchored at an exact instant onto an existing post.
+	 *
+	 * Split out of `project_relative_daily_series()` for fixtures that need
+	 * sub-day precision, such as an occurrence that is in progress at the
+	 * moment the test runs.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int               $post_id  Post to project the series onto.
+	 * @param DateTimeImmutable $start    Anchor start, in the series timezone.
+	 * @param int               $interval Days between occurrences.
+	 * @param int               $count    Number of occurrences.
+	 *
+	 * @return DateTimeImmutable The series' anchor start.
+	 */
+	protected function project_daily_series_at(
+		int $post_id,
+		DateTimeImmutable $start,
+		int $interval,
+		int $count
+	): DateTimeImmutable {
+		$timezone = $start->getTimezone()->getName();
+		$end      = $start->add( new DateInterval( 'PT2H' ) );
 
 		add_post_meta(
 			$post_id,
@@ -832,6 +859,48 @@ class Test_Rewrite extends Base {
 			$expected_recurrence_id,
 			get_query_var( Context::QUERY_VAR ),
 			'The bare series URL should resolve the occurrence query var to the next upcoming occurrence.'
+		);
+	}
+
+	/**
+	 * Coverage for an occurrence that is in progress when the bare series
+	 * URL is requested. The repository defines upcoming inclusively on the
+	 * occurrence's end, matching `Event\Query::get_datetime_comparison_column()`'s
+	 * "a running event is still upcoming" rule, so the visitor who opens the
+	 * series URL during an occurrence must land on that occurrence rather
+	 * than be skipped ahead to the next one.
+	 *
+	 * The in-progress occurrence is deliberately neither the series' first
+	 * row nor its first row starting after now: a resolver that returned
+	 * the first scheduled row, or one that bounds on the start, both
+	 * produce a different answer than the required one.
+	 *
+	 * @covers ::next_upcoming_recurrence_id
+	 * @covers ::occurrence_is_upcoming
+	 *
+	 * @return void
+	 */
+	public function test_bare_series_url_resolves_an_in_progress_occurrence(): void {
+		$tz    = new DateTimeZone( 'America/New_York' );
+		$start = ( new DateTimeImmutable( 'now', $tz ) )->modify( '-7 days' )->modify( '-1 hour' );
+
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		$this->project_daily_series_at( $post_id, $start, 7, 3 );
+
+		// Occurrences run at seven days ago (ended), one hour ago (in
+		// progress for another hour of its two-hour duration), and seven
+		// days out (future). The in-progress one is the required answer.
+		$expected = Occurrences::recurrence_id( $start->modify( '+7 days' ) );
+
+		$this->go_to( get_permalink( $post_id ) );
+
+		$this->assertFalse( is_404(), 'The bare series URL must not 404.' );
+		$this->assertSame(
+			$expected,
+			get_query_var( Context::QUERY_VAR ),
+			'An in-progress occurrence is still upcoming, so the bare URL must resolve to it rather'
+				. ' than skip to the next one.'
 		);
 	}
 
