@@ -139,7 +139,14 @@ final class Query {
 	 * to post types declaring `gatherpress-event-date` support, so attachments,
 	 * revisions, and unrelated post types never trigger the recompute query.
 	 *
+	 * `$new_status` and `$old_status` are required by WordPress'
+	 * `transition_post_status` signature and are deliberately unread: the flag
+	 * is recomputed from the database, so which way the status moved does not
+	 * change the answer.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param string  $new_status New post status.
 	 * @param string  $old_status Old post status.
@@ -158,7 +165,13 @@ final class Query {
 	 *
 	 * Scoped the same way as `maybe_refresh_has_recurring_events_for_transition()`.
 	 *
+	 * `$post_id` is required by WordPress' `deleted_post` signature and is
+	 * deliberately unread: the row is already gone by the time this runs, so
+	 * the flag is recomputed rather than adjusted for one post.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int     $post_id Post ID that was deleted.
 	 * @param WP_Post $post    The deleted post.
@@ -180,7 +193,14 @@ final class Query {
 	 * to either half of the pair still catches a transition the other half's
 	 * write alone could miss.
 	 *
+	 * `$meta_id` and `$post_id` are required by WordPress' `added_post_meta`,
+	 * `updated_post_meta` and `deleted_post_meta` signatures and are
+	 * deliberately unread: the flag is a site-wide recompute, so the key that
+	 * changed decides whether to run and the post it belongs to does not.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int|int[] $meta_id  Meta ID, or an array of meta IDs for `deleted_post_meta`.
 	 * @param int       $post_id  Post ID the meta belongs to.
