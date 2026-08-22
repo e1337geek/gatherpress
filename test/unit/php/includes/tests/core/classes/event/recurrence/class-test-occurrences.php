@@ -1380,6 +1380,83 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A row vanishing mid-request reads as gone, not as updated.
+	 *
+	 * A concurrent rule save reprojects the series and can delete the very
+	 * row a cancel request is about to update. The `query` filter below
+	 * deletes the row at the last instant before the `UPDATE` executes, the
+	 * narrowest reachable form of that race; reporting `true` for it hands
+	 * the REST route a success it then cannot substantiate with a row.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_set_status_returns_false_when_the_row_vanishes_mid_write(): void {
+		global $wpdb;
+
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$done     = false;
+
+		$racer = static function ( string $query ) use ( &$done, $table, $post_id, $wpdb ): string {
+			if ( ! $done && str_starts_with( $query, 'UPDATE' ) && str_contains( $query, $table ) ) {
+				// Fire once: the DELETE below re-enters this filter.
+				$done = true;
+
+				// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->query(
+					$wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id )
+				);
+				// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $racer );
+
+		$result = $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED );
+
+		remove_filter( 'query', $racer );
+
+		$this->assertTrue( $done, 'Fixture failure: the race must actually delete the row before the update.' );
+		$this->assertFalse(
+			$result,
+			'A status write whose row vanished mid-request must report the row as gone, not as updated.'
+		);
+		$this->assertNull( $instance->get( $post_id, '20260903T180000' ) );
+	}
+
+	/**
+	 * Writing the status a row already holds is a success, not a missing row.
+	 *
+	 * Zero affected rows is ambiguous in MySQL: a same-value write and a
+	 * vanished row both report zero. The two must not be conflated, or a
+	 * double-click on Cancel would surface a 404 for an occurrence that is
+	 * sitting right there, already canceled.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_set_status_same_value_write_still_reports_success(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+
+		$this->assertTrue( $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ) );
+		$this->assertTrue(
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			'Re-writing the status a row already holds must still report success.'
+		);
+		$this->assertSame(
+			Occurrences::STATUS_CANCELLED,
+			$instance->get( $post_id, '20260903T180000' )['status']
+		);
+	}
+
+	/**
 	 * Coverage for `set_status()` scoping by both `series_post_id` and
 	 * `recurrence_id`. A recurrence_id that belongs to a different series
 	 * must not be mutated through this post's ID, and vice versa.

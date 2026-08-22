@@ -698,6 +698,68 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
+	 * A row vanishing between the status write and the response read is a 404.
+	 *
+	 * A concurrent rule save reprojecting a shortened rule deletes rows; if
+	 * that lands between `set_status()` and the response's `get()`, the
+	 * route would otherwise return HTTP success with a null body, and the
+	 * client's `updated.status` read turns a vanished row into a misleading
+	 * "Could not update" failure notice. The `query` filter below deletes
+	 * the row at the last instant before the response read executes.
+	 *
+	 * @covers ::update_occurrence_status
+	 *
+	 * @return void
+	 */
+	public function test_cancel_route_returns_404_when_the_row_vanishes_before_the_response_read(): void {
+		global $wpdb;
+
+		list( $post_id, $recurrence_id ) = $this->create_event_with_occurrence();
+
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$done  = false;
+
+		$racer = static function ( string $query ) use ( &$done, $table, $post_id, $recurrence_id, $wpdb ): string {
+			if (
+				! $done
+				&& str_starts_with( $query, 'SELECT * FROM' )
+				&& str_contains( $query, $table )
+				&& str_contains( $query, $recurrence_id )
+			) {
+				// Fire once: the DELETE below re-enters this filter.
+				$done = true;
+
+				// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->query(
+					$wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id )
+				);
+				// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $racer );
+
+		$response = $this->dispatch(
+			$this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED )
+		);
+
+		remove_filter( 'query', $racer );
+
+		$this->assertTrue( $done, 'Fixture failure: the race must actually delete the row before the response read.' );
+		$this->assertSame(
+			404,
+			$response->get_status(),
+			'A row that vanished before the response read must surface as not-found, never as success with a null body.'
+		);
+		$this->assertNotNull( $response->get_data(), 'An error response carries an error body, not null.' );
+	}
+
+	/**
 	 * An occurrence that has started but not finished is still listed.
 	 *
 	 * "Upcoming" is defined inclusively across the subsystem
