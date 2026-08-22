@@ -688,8 +688,8 @@ class Test_Loop_Render extends Base {
 	 * outer row rendered **after** a nested loop reads the wrong occurrence.
 	 * Measured, rendering the outer row after the inner loop instead of before:
 	 *
-	 *     befores = ["2026-08-18 ...","2026-08-19 ...","2026-08-20 ...","2026-08-21 ..."]
-	 *     afters  = ["2026-08-21 ...","2026-08-21 ...","2026-08-21 ...","2026-08-21 ..."]
+	 *     before_rows = ["2026-08-18 ...","2026-08-19 ...","2026-08-20 ...","2026-08-21 ..."]
+	 *     after_rows  = ["2026-08-21 ...","2026-08-21 ...","2026-08-21 ...","2026-08-21 ..."]
 	 *
 	 * In stock WordPress this class of bug is *visible*: the post identity
 	 * changes, so the title and the link visibly jump to some other event and
