@@ -3961,9 +3961,13 @@ class Test_Occurrences extends Base {
 			Occurrences::STATUS_CANCELED
 		);
 
-		$plain_ids = array();
+		$plain_ids     = array();
+		$plain_offsets = array(
+			'+5 days' => 'future',
+			'-5 days' => 'past',
+		);
 
-		foreach ( array( '+5 days' => 'future', '-5 days' => 'past' ) as $offset => $key ) {
+		foreach ( $plain_offsets as $offset => $key ) {
 			$start             = $now->modify( $offset )->setTime( 12, 0, 0 );
 			$plain_ids[ $key ] = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
 
