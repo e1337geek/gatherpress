@@ -254,6 +254,41 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
+	 * Create a published, non-recurring event carrying an author-chosen title.
+	 *
+	 * The companion to `create_plain_event()` for the tests that prove author
+	 * text cannot steer the timezone definition: the same pinned datetimes,
+	 * with the title under the test's control.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $title The post title.
+	 * @param string $slug  The post slug, distinct per fixture so two bodies never share a cache scope.
+	 *
+	 * @return int The event post ID.
+	 */
+	protected function create_titled_event( string $title, string $slug ): int {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_title'  => $title,
+				'post_name'   => $slug,
+				'post_status' => 'publish',
+			)
+		);
+
+		( new Event( $post_id ) )->save_datetimes(
+			array(
+				'datetime_start' => '2030-06-15 14:30:00',
+				'datetime_end'   => '2030-06-15 16:30:00',
+				'timezone'       => self::TIMEZONE,
+			)
+		);
+
+		return (int) $post_id;
+	}
+
+	/**
 	 * Request a URL and return the iCal body the `.ics` template would send.
 	 *
 	 * @since 0.36.0
@@ -875,6 +910,56 @@ class Test_Calendar_Recurrence extends Base {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Author text cannot widen the timezone definition window.
+	 *
+	 * `SUMMARY`, `LOCATION` and `URL` carry author-supplied text into the
+	 * body, and `escape_ical_text()` leaves a date-time-shaped token in a post
+	 * title intact. Reading the window off free text lets a fifteen-character
+	 * token in an ordinary, non-recurring event's title inflate every public
+	 * feed the event appears in: measured at 861 bytes to 1.68 MB before the
+	 * scan was anchored to the properties that can carry date-times.
+	 *
+	 * Driven end to end through the real feed path, with the only difference
+	 * between the two requests being the post title. The hostile title
+	 * carries a far-past and a far-future token, either of which would move
+	 * the window if free text were read.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::range_of
+	 *
+	 * @return void
+	 */
+	public function test_free_text_in_a_title_cannot_widen_the_timezone_definition_window(): void {
+		$this->enable_pretty_permalinks();
+
+		$plain   = $this->create_titled_event( 'Downtown WordPress Meetup', 'plain-title-event' );
+		$hostile = $this->create_titled_event(
+			'Backup window 17000101T000000 to 99991231T235959',
+			'hostile-title-event'
+		);
+
+		$plain_body   = $this->body_for( $this->series_ical_url( $plain ) );
+		$hostile_body = $this->body_for( $this->series_ical_url( $hostile ) );
+
+		$this->assertStringContainsString(
+			'99991231T235959',
+			$hostile_body,
+			'Failed to carry the token into the body, so the assertions below would measure nothing.'
+		);
+		$this->assertSame(
+			$this->timezone_block( $plain_body, self::TIMEZONE ),
+			$this->timezone_block( $hostile_body, self::TIMEZONE ),
+			'The definition window is derived from the date-bearing properties alone, so a title'
+			. ' cannot change it.'
+		);
+		$this->assertLessThan(
+			strlen( $plain_body ) + 512,
+			strlen( $hostile_body ),
+			'A token in a title must cost the feed its own bytes and nothing more.'
+		);
 	}
 
 	/**

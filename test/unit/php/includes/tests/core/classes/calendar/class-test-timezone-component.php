@@ -222,6 +222,55 @@ class Test_Timezone_Component extends Base {
 	}
 
 	/**
+	 * No property value can push the window past the open-ended horizon.
+	 *
+	 * The horizon is the widest span the class itself claims a definition can
+	 * need. A value past it, whatever wrote it, buys the same definition at a
+	 * `getTransitions()` cost that grows with the requested span, so the
+	 * window is clamped rather than trusted. A far-future value inside the
+	 * horizon still widens the window as designed, because the definition has
+	 * to cover it.
+	 *
+	 * @covers ::range_of
+	 *
+	 * @return void
+	 */
+	public function test_the_range_is_clamped_to_the_open_ended_horizon(): void {
+		$instance = Timezone_Component::get_instance();
+
+		[ , $legitimate_end ] = Utility::invoke_hidden_method(
+			$instance,
+			'range_of',
+			array(
+				sprintf(
+					"BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:%s\r\nEND:VEVENT",
+					gmdate( 'Ymd\THis', time() + ( 40 * YEAR_IN_SECONDS ) )
+				),
+			)
+		);
+
+		$this->assertEqualsWithDelta(
+			time() + ( 40 * YEAR_IN_SECONDS ),
+			$legitimate_end,
+			5,
+			'A far-future instant inside the horizon must still widen the window as designed.'
+		);
+
+		[ , $clamped_end ] = Utility::invoke_hidden_method(
+			$instance,
+			'range_of',
+			array( "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:99991231T235959\r\nEND:VEVENT" )
+		);
+
+		$this->assertEqualsWithDelta(
+			time() + ( 75 * YEAR_IN_SECONDS ),
+			$clamped_end,
+			5,
+			'An instant past the horizon is clamped to it rather than handed to getTransitions().'
+		);
+	}
+
+	/**
 	 * An empty transition list still yields a usable standard sub-component.
 	 *
 	 * `getTransitions()` always returns at least the entry describing the state
