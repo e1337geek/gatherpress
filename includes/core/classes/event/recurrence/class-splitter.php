@@ -235,6 +235,29 @@ final class Splitter {
 			return $this->result( false, 'first_occurrence', $origin_post_id );
 		}
 
+		// The origin's side is capped by `COUNT = $index` (see
+		// `apply_capped_rule()`), and `Rule` refuses any count above
+		// `Rule::MAX_COUNT`, so a split past that occurrence would write a
+		// rule the origin can never re-project: every phase would run, the
+		// partition check would fail against it, and the whole split would
+		// undo itself into an opaque 500. Refusing here, before any durable
+		// phase, names the real limit instead. Capping by `UNTIL` was
+		// considered and rejected: the capped side's re-projection must
+		// reproduce exactly the rows that stayed behind, which is
+		// `verify_partition()`'s contract and something an `UNTIL` bound
+		// cannot promise for an open-ended rule.
+		if ( $index > Rule::MAX_COUNT ) {
+			return new WP_Error(
+				'gatherpress_split_too_long',
+				sprintf(
+					/* translators: %d: the maximum number of dates a recurrence rule may count. */
+					__( 'A series cannot be split past its first %d dates. Choose an earlier date to split from.', 'gatherpress' ),
+					Rule::MAX_COUNT
+				),
+				array( 'status' => 400 )
+			);
+		}
+
 		$this->undo      = array();
 		$this->revisions = $this->revision_snapshot( $origin_post_id );
 
@@ -249,11 +272,9 @@ final class Splitter {
 
 		if ( is_wp_error( $result ) ) {
 			$this->roll_back( $origin_post_id );
-
-			return $result;
+		} else {
+			$this->undo = array();
 		}
-
-		$this->undo = array();
 
 		return $result;
 	}

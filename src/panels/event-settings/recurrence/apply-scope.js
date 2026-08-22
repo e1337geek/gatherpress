@@ -240,10 +240,15 @@ const ApplyScope = ( { postId } ) => {
 					? refreshOriginEntity( isCurrent )
 					: undefined;
 			} )
-			.catch( () => {
+			.catch( ( error ) => {
 				if ( isCurrent() ) {
+					// A refused split names its reason server side, e.g. a
+					// series too long to split that far in. Rendering that
+					// message is what makes the refusal actionable; the
+					// generic line is only for failures that carry none.
 					setNotice(
-						__( 'Could not split this series.', 'gatherpress' )
+						error?.message ||
+							__( 'Could not split this series.', 'gatherpress' )
 					);
 				}
 			} )
