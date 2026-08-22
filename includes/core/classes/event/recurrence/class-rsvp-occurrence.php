@@ -453,7 +453,7 @@ final class Rsvp_Occurrence {
 	 * `post_id` *and* by the occurrence term, so a comment whose post and term
 	 * name different posts is readable through neither, from either side. That
 	 * is the state a rename-only split left behind, and it stranded a real
-	 * roster rather than merely mis-labeling one.
+	 * roster rather than merely mislabeling one.
 	 *
 	 * `comment_post_ID` is also what WordPress itself keys on for capability
 	 * checks, moderation, the trash cascade, and `new Rsvp( $post_id )`, so
