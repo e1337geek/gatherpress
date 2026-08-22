@@ -87,8 +87,16 @@ final class Series {
 	 * cannot change mid-request, because the only thing that changes it is a
 	 * split, which is a write.
 	 *
+	 * Keyed `{blog_id}:{post_id}`; see `Context::$resolved`. The blog ID leads
+	 * the key because post IDs are blog-local and this class is a singleton
+	 * that survives `switch_to_blog()`: a request that resolves on one blog
+	 * and then switches would otherwise be handed the first blog's membership
+	 * set on the second blog, and the leaked post IDs would feed occurrence
+	 * queries, calendar exports, redirects and revision writes there as
+	 * foreign owners.
+	 *
 	 * @since 0.36.0
-	 * @var array<int, int[]>
+	 * @var array<string, int[]>
 	 */
 	protected array $memo = array();
 
@@ -403,16 +411,18 @@ final class Series {
 	 * @return int[] Every post ID sharing this post's series term, ascending.
 	 */
 	protected function resolve_from_taxonomy( int $post_id ): array {
-		if ( isset( $this->memo[ $post_id ] ) ) {
-			return $this->memo[ $post_id ];
+		$key = get_current_blog_id() . ':' . $post_id;
+
+		if ( isset( $this->memo[ $key ] ) ) {
+			return $this->memo[ $key ];
 		}
 
 		$term_id = $this->term_id_for_post( $post_id );
 
 		if ( 0 === $term_id ) {
-			$this->memo[ $post_id ] = array( $post_id );
+			$this->memo[ $key ] = array( $post_id );
 
-			return $this->memo[ $post_id ];
+			return $this->memo[ $key ];
 		}
 
 		// `get_objects_in_term()` answers a `WP_Error` only for an unregistered
@@ -429,7 +439,7 @@ final class Series {
 
 		sort( $post_ids );
 
-		$this->memo[ $post_id ] = $post_ids;
+		$this->memo[ $key ] = $post_ids;
 
 		return $post_ids;
 	}
