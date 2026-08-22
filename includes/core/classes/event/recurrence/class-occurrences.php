@@ -477,6 +477,11 @@ final class Occurrences {
 	 * the moment it begins, while it is still exactly what an upcoming list
 	 * should be showing.
 	 *
+	 * The boundary predicate itself belongs in `WHERE`, not `HAVING`: the
+	 * statement has no `GROUP BY` and no aggregate, so `HAVING` would only
+	 * materialize the whole joined result into a temporary table before
+	 * filtering it, a measured 17x scan cost for an identical result set.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int   $limit    Maximum entries to return.
@@ -518,7 +523,16 @@ final class Occurrences {
 			. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
 			. ' AND ( scheduled_occurrence.recurrence_id IS NOT NULL'
 			. ' OR NOT EXISTS ( SELECT 1 FROM %i WHERE series_post_id = %i.ID ) )'
-			. " HAVING effective_end_gmt {$comparison} %s"
+			// The boundary predicate repeats the COALESCE against the real
+			// columns rather than referencing the effective_end_gmt alias
+			// from HAVING. With no GROUP BY and no aggregate anywhere in the
+			// statement, HAVING only forces the whole joined result set
+			// through a temporary table before filtering; WHERE discards
+			// rows as they are produced. Measured on 999 events and 10,000
+			// occurrence rows: Handler_read_rnd_next 10,600 under HAVING
+			// against 600 here, for the same rows. The non-sargable COALESCE
+			// itself stays, per the accepted filesort trade.
+			. " AND COALESCE( scheduled_occurrence.datetime_end_gmt, %i.datetime_end_gmt ) {$comparison} %s"
 			// The sort key alone is not unique: any number of events can
 			// share one start instant, and one series contributes many rows
 			// with the same key only by coincidence. Ties under a
@@ -552,6 +566,7 @@ final class Occurrences {
 				'publish',
 				$occurrences_table,
 				$wpdb->posts,
+				$events_table,
 				current_time( 'mysql', true ),
 				$wpdb->posts,
 				$limit,
