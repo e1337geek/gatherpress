@@ -1182,10 +1182,17 @@ class Test_Rewrite extends Base {
 	 * The sibling of the bare-series test above. That one proves the branch
 	 * every ordinary request falls through to pays nothing; this one drives a
 	 * real occurrence URL, whose branch is deliberately unguarded: a request
-	 * already carrying an occurrence identifier pays exactly one primary-key
+	 * already carrying an occurrence identifier pays one primary-key
 	 * `Occurrences::get()` read, because that read is what lets a stale link
 	 * 404 instead of silently rendering the series at its anchor date after
 	 * the flag flips off.
+	 *
+	 * Ahead of it sits the schema probe `get()` shares with the list path,
+	 * which is what keeps a blog whose table has not been created yet from
+	 * running the read against a table that is not there. The memo is
+	 * discarded first so the count is the branch's cold cost rather than
+	 * whatever the process happened to have probed already; a request that
+	 * also renders an events list pays the probe once between them.
 	 *
 	 * @covers ::parse_request
 	 *
@@ -1204,10 +1211,16 @@ class Test_Rewrite extends Base {
 		// not a missing fixture.
 		update_option( Query::HAS_RECURRING_OPTION, '0' );
 
+		Occurrences::get_instance()->forget_table_exists();
+
 		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 		$query_count       = 0;
 		$count_queries     = static function ( string $query ) use ( $occurrences_table, &$query_count ): string {
-			if ( str_contains( $query, $occurrences_table ) ) {
+			// The probe's `LIKE` pattern carries `esc_like()`'s escaping of every
+			// underscore in the table name, so the name only matches once the
+			// backslashes are taken back out. Without that the probe is invisible
+			// to this count and the cost reported here is a statement short.
+			if ( str_contains( str_replace( '\\', '', $query ), $occurrences_table ) ) {
 				++$query_count;
 			}
 
@@ -1225,9 +1238,9 @@ class Test_Rewrite extends Base {
 			'A real occurrence URL must keep resolving when only the flag has flipped off.'
 		);
 		$this->assertSame(
-			1,
+			2,
 			$query_count,
-			'The occurrence-segment branch pays exactly its one primary-key read on a flag-off site.'
+			'The occurrence-segment branch pays its one primary-key read, behind one schema probe, on a flag-off site.'
 		);
 	}
 

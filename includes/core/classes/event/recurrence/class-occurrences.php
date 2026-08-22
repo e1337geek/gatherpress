@@ -1791,6 +1791,18 @@ final class Occurrences {
 	/**
 	 * Read one occurrence row by its composite key.
 	 *
+	 * A blog whose table has not been created yet answers "no such row", which
+	 * is the same answer the statement would produce and the one every caller
+	 * already handles: `Rewrite::parse_request()` 404s on it, and
+	 * `Context::set()` leaves the request without occurrence context. Both are
+	 * gated on the site-wide recurring-events flag, which says nothing about
+	 * whether this blog's table exists, so the probe is what keeps a
+	 * lazily-created table from writing a database error into the log, and into
+	 * the page wherever `WP_DEBUG_DISPLAY` is on, once per request carrying an
+	 * occurrence segment. The probe is the same memoized one
+	 * `Query::expand_event_clauses()` guards the list path with, so a request
+	 * that renders both pays for it once.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
@@ -1800,6 +1812,10 @@ final class Occurrences {
 	 */
 	public function get( int $post_id, string $recurrence_id ): ?array {
 		global $wpdb;
+
+		if ( ! $this->table_exists() ) {
+			return null;
+		}
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
@@ -1851,7 +1867,11 @@ final class Occurrences {
 	public function select_for_series( array $post_ids, array $args = array() ): array {
 		global $wpdb;
 
-		if ( array() === $post_ids ) {
+		// The empty result a missing table already degrades to, reached without
+		// the statement that writes a database error on the way there. See
+		// `get()` for why the flag the request paths gate on is not an answer to
+		// this question.
+		if ( array() === $post_ids || ! $this->table_exists() ) {
 			return array();
 		}
 
