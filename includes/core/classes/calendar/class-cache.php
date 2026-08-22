@@ -187,13 +187,120 @@ final class Cache {
 	 * Cached responses are namespaced by this stamp, so a new value moves every
 	 * lookup to a fresh key and strands the old entries until they expire.
 	 *
+	 * Both writes allocate in SQL rather than in PHP, for two properties a
+	 * read-then-write cannot give. The validator is written as the greater of
+	 * the clock and one second past the stored value, so the second change
+	 * inside one second still moves it and a client revalidating with the
+	 * first change's `Last-Modified` is never told 304 for a body missing the
+	 * second. The counter increments its row in place, so two concurrent
+	 * writers serialize on the row lock instead of both writing the same
+	 * value they read before either wrote, which would leave a feed request
+	 * between them a namespace it can fill with a stale body.
+	 *
+	 * A burst of stamps inside one second leans the validator a few seconds
+	 * ahead of the clock, one per stamp. That is the trade for strict
+	 * monotonicity at HTTP-date resolution, and it self-corrects on the first
+	 * change after the burst, when the clock has caught up.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
 	 */
 	public function mark_changed(): void {
-		update_option( self::LAST_MODIFIED_OPTION, current_time( 'mysql', true ), false );
-		update_option( self::CHANGE_COUNT_OPTION, $this->get_change_count() + 1, false );
+		$this->advance_last_modified( current_time( 'mysql', true ) );
+		$this->allocate_change_count();
+	}
+
+	/**
+	 * Advance the stored validator past both the clock and its own last value.
+	 *
+	 * One statement, so the read and the write cannot interleave with another
+	 * writer's. `GREATEST()` compares the two candidates as strings, which
+	 * orders correctly for the zero-padded `Y-m-d H:i:s` form, and the
+	 * `COALESCE()` catches a corrupt stored value: `DATE_ADD()` answers NULL
+	 * for one, NULL poisons `GREATEST()`, and the clock takes over.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $now The current GMT time in `Y-m-d H:i:s` form.
+	 *
+	 * @return void
+	 */
+	private function advance_last_modified( string $now ): void {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO %i ( option_name, option_value, autoload )
+				VALUES ( %s, %s, 'off' )
+				ON DUPLICATE KEY UPDATE option_value = COALESCE(
+					GREATEST(
+						%s,
+						DATE_FORMAT(
+							DATE_ADD( option_value, INTERVAL 1 SECOND ),
+							'%%Y-%%m-%%d %%H:%%i:%%s'
+						)
+					),
+					%s
+				)",
+				$wpdb->options,
+				self::LAST_MODIFIED_OPTION,
+				$now,
+				$now,
+				$now
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->flush_option_caches();
+	}
+
+	/**
+	 * Allocate the next change count by incrementing the option row in place.
+	 *
+	 * One statement, so a concurrent allocation waits on the row lock and
+	 * builds on this one's value rather than on the same starting point. A
+	 * value that never took a detour through PHP cannot lose an increment to
+	 * an interleaved writer.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	private function allocate_change_count(): void {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO %i ( option_name, option_value, autoload )
+				VALUES ( %s, '1', 'off' )
+				ON DUPLICATE KEY UPDATE option_value = CAST( option_value AS SIGNED ) + 1",
+				$wpdb->options,
+				self::CHANGE_COUNT_OPTION
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->flush_option_caches();
+	}
+
+	/**
+	 * Drop every cached copy of the two stamp options.
+	 *
+	 * The stamp is written by bare SQL, so the option cache, the missing-option
+	 * memo and the autoload blob all still hold whatever they held before the
+	 * write, and a read through any of them would resurrect the value the
+	 * write just superseded.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	private function flush_option_caches(): void {
+		wp_cache_delete( self::LAST_MODIFIED_OPTION, 'options' );
+		wp_cache_delete( self::CHANGE_COUNT_OPTION, 'options' );
 	}
 
 	/**
@@ -326,6 +433,15 @@ final class Cache {
 	 * @SuppressWarnings(PHPMD.UnusedFormalParameter) Required by WP's *_post_meta signature.
 	 */
 	public function mark_changed_for_meta( $meta_id, $post_id, $meta_key = '' ): void {
+		// The revision advance is itself part of a stamp already in progress:
+		// `mark_changed_for_occurrences()` publishes it to every sibling and
+		// then stamps once. Without this bail each sibling's meta write
+		// re-enters `mark_changed()`, and the change count moves two or three
+		// times per change instead of once.
+		if ( Revision::META_KEY === (string) $meta_key ) {
+			return;
+		}
+
 		if (
 			str_starts_with( (string) $meta_key, 'gatherpress_' )
 			&& $this->is_calendar_post_type( (string) get_post_type( (int) $post_id ) )

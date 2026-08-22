@@ -14,6 +14,7 @@ use GatherPress\Core\Event\Event;
 use GatherPress\Core\Rsvp\Response\Status;
 use GatherPress\Core\Venue;
 use GatherPress\Tests\Base;
+use PMC\Unit_Test\Utility;
 
 /**
  * Class Test_Cache.
@@ -504,7 +505,10 @@ class Test_Cache extends Base {
 	 * increment is lost, so a feed request between them can serve a stale
 	 * namespace. One process cannot run two writers, so the stale first read is
 	 * forced through the option cache, which is the same seam a concurrent
-	 * writer's snapshot lives behind.
+	 * writer's snapshot lives behind. The allocator is invoked directly:
+	 * through `mark_changed()` the validator write flushes the option caches
+	 * first, which would clear the planted stale value before the read this
+	 * test exists to starve.
 	 *
 	 * @covers ::mark_changed
 	 * @covers ::get_change_count
@@ -519,7 +523,7 @@ class Test_Cache extends Base {
 		update_option( Cache::CHANGE_COUNT_OPTION, 5, false );
 		wp_cache_set( Cache::CHANGE_COUNT_OPTION, '3', 'options' );
 
-		$instance->mark_changed();
+		Utility::invoke_hidden_method( $instance, 'allocate_change_count' );
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$stored = $wpdb->get_var(
@@ -580,5 +584,241 @@ class Test_Cache extends Base {
 			$instance->get_change_count(),
 			'A revision key reaching the meta callback directly must bail too.'
 		);
+	}
+
+	/**
+	 * The validator is strictly monotonic under a frozen clock.
+	 *
+	 * The clock is an argument of the write, so freezing it is passing the
+	 * same instant twice; no sleep and no race against the suite's own speed.
+	 * Invoked directly both for that seam and because xdebug does not trace a
+	 * private helper reached through a same-class delegation.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_last_modified
+	 *
+	 * @return void
+	 */
+	public function test_the_validator_is_strictly_monotonic_under_a_frozen_clock(): void {
+		$instance = Cache::get_instance();
+
+		update_option( Cache::LAST_MODIFIED_OPTION, '2026-05-05 10:10:10', false );
+
+		Utility::invoke_hidden_method( $instance, 'advance_last_modified', array( '2026-05-05 10:10:10' ) );
+
+		$this->assertSame(
+			'2026-05-05 10:10:11',
+			$instance->get_last_modified(),
+			'With the clock frozen on the stored second, a change must still advance the validator.'
+		);
+
+		Utility::invoke_hidden_method( $instance, 'advance_last_modified', array( '2026-05-05 10:10:10' ) );
+
+		$this->assertSame(
+			'2026-05-05 10:10:12',
+			$instance->get_last_modified(),
+			'And the next change in the same frozen second advances it again.'
+		);
+
+		Utility::invoke_hidden_method( $instance, 'advance_last_modified', array( '2027-01-01 00:00:00' ) );
+
+		$this->assertSame(
+			'2027-01-01 00:00:00',
+			$instance->get_last_modified(),
+			'A clock ahead of the stored value wins, so the stamp tracks real time when it can.'
+		);
+	}
+
+	/**
+	 * The first stamp seeds the validator row rather than advancing nothing.
+	 *
+	 * @covers ::mark_changed
+	 *
+	 * @return void
+	 */
+	public function test_the_first_stamp_seeds_the_validator_row(): void {
+		delete_option( Cache::LAST_MODIFIED_OPTION );
+
+		Utility::invoke_hidden_method(
+			Cache::get_instance(),
+			'advance_last_modified',
+			array( '2026-02-02 02:02:02' )
+		);
+
+		$this->assertSame(
+			'2026-02-02 02:02:02',
+			Cache::get_instance()->get_last_modified(),
+			'A site with no stored validator gets the clock as its first one.'
+		);
+	}
+
+	/**
+	 * A corrupt stored validator is replaced by the clock, not by NULL.
+	 *
+	 * `DATE_ADD()` answers NULL for a value it cannot parse, NULL poisons
+	 * `GREATEST()`, and without the fallback the row would be nulled and every
+	 * later read reseeded from scratch.
+	 *
+	 * @covers ::mark_changed
+	 *
+	 * @return void
+	 */
+	public function test_a_corrupt_validator_value_is_replaced_by_the_clock(): void {
+		update_option( Cache::LAST_MODIFIED_OPTION, 'not-a-timestamp', false );
+
+		Utility::invoke_hidden_method(
+			Cache::get_instance(),
+			'advance_last_modified',
+			array( '2026-03-03 03:03:03' )
+		);
+
+		$this->assertSame(
+			'2026-03-03 03:03:03',
+			Cache::get_instance()->get_last_modified(),
+			'A stored value nothing can parse yields to the clock rather than to NULL.'
+		);
+	}
+
+	/**
+	 * The counter allocation is one self-contained SQL statement.
+	 *
+	 * A separate read is the window a concurrent writer interleaves through,
+	 * so the property pinned here is the statement's shape: exactly one query
+	 * touches the option, and it increments in place.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_change_count
+	 *
+	 * @return void
+	 */
+	public function test_the_change_count_allocation_is_one_atomic_statement(): void {
+		global $wpdb;
+
+		$instance = Cache::get_instance();
+
+		update_option( Cache::CHANGE_COUNT_OPTION, 41, false );
+
+		$before = count( (array) $wpdb->queries );
+
+		Utility::invoke_hidden_method( $instance, 'allocate_change_count' );
+
+		$touching = array_values(
+			array_filter(
+				array_slice( (array) $wpdb->queries, $before ),
+				static function ( array $query ): bool {
+					return str_contains( (string) $query[0], Cache::CHANGE_COUNT_OPTION );
+				}
+			)
+		);
+
+		$this->assertCount(
+			1,
+			$touching,
+			'The allocation must be a single statement; a separate read is a window for a concurrent writer.'
+		);
+		$this->assertStringContainsString(
+			'ON DUPLICATE KEY UPDATE',
+			(string) $touching[0][0],
+			'And that statement must increment in place rather than write a value computed in PHP.'
+		);
+		$this->assertSame( 42, $instance->get_change_count(), 'The allocated value is the row plus one.' );
+	}
+
+	/**
+	 * The first allocation seeds the counter row at one.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_change_count
+	 *
+	 * @return void
+	 */
+	public function test_the_first_allocation_seeds_the_counter_row(): void {
+		delete_option( Cache::CHANGE_COUNT_OPTION );
+
+		Utility::invoke_hidden_method( Cache::get_instance(), 'allocate_change_count' );
+
+		$this->assertSame(
+			1,
+			Cache::get_instance()->get_change_count(),
+			'A site with no stored counter records its first change as one.'
+		);
+	}
+
+	/**
+	 * A second database connection cannot write beside the open allocation.
+	 *
+	 * Two real connections, which is what two concurrent requests are. The
+	 * first allocates and holds its transaction open; the second then tries
+	 * the same in-place increment and must wait on the row lock. What this
+	 * proves is the serialization of the write; that the read cannot happen
+	 * beside it is the pinned-SQL test's half, which proves the read and the
+	 * write are one statement, so the read happens under the same lock. The
+	 * suite wraps each test in a transaction on the main connection, so the
+	 * main connection plays the open-transaction writer and the second
+	 * connection plays the one that has to wait.
+	 *
+	 * The seed row is committed from the second connection so both can see
+	 * it, and is removed at the start rather than the end: the main
+	 * connection's lock outlives the test body, so a trailing delete would
+	 * deadlock the cleanup it exists to do.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_change_count
+	 *
+	 * @return void
+	 */
+	public function test_two_connections_cannot_interleave_the_counter_allocation(): void {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.RestrictedFunctions -- Two concurrent
+		// writers are two connections; `$wpdb` can only ever be one of them.
+		$instance = Cache::get_instance();
+		$second   = mysqli_connect( DB_HOST, DB_USER, DB_PASSWORD, DB_NAME );
+
+		$this->assertNotFalse( $second, 'The fixture needs a second database connection.' );
+
+		$table = $wpdb->options;
+		$name  = Cache::CHANGE_COUNT_OPTION;
+
+		try {
+			// Committed cleanup from any earlier run, then a committed seed
+			// both connections can see.
+			mysqli_query( $second, "DELETE FROM {$table} WHERE option_name = '{$name}'" );
+			mysqli_query(
+				$second,
+				"INSERT INTO {$table} ( option_name, option_value, autoload ) VALUES ( '{$name}', '10', 'off' )"
+			);
+			wp_cache_delete( $name, 'options' );
+			wp_cache_delete( 'notoptions', 'options' );
+
+			// Writer A allocates inside its still-open transaction.
+			Utility::invoke_hidden_method( $instance, 'allocate_change_count' );
+
+			$this->assertSame( 11, $instance->get_change_count(), 'Writer A must see its own allocation.' );
+
+			// Writer B must block on A's row lock, not read beside it. One
+			// second is the smallest timeout the server allows; the block
+			// itself is what is being proven.
+			mysqli_query( $second, 'SET SESSION innodb_lock_wait_timeout = 1' );
+
+			$result = mysqli_query(
+				$second,
+				"UPDATE {$table} SET option_value = CAST( option_value AS SIGNED ) + 1"
+				. " WHERE option_name = '{$name}'"
+			);
+
+			$this->assertFalse(
+				$result,
+				'A concurrent write on the allocation row must wait for the open one.'
+			);
+			$this->assertStringContainsString(
+				'Lock wait timeout',
+				mysqli_error( $second ),
+				'And what stops it must be the row lock, not some other failure.'
+			);
+		} finally {
+			mysqli_close( $second );
+		}
+		// phpcs:enable WordPress.DB.RestrictedFunctions
 	}
 }

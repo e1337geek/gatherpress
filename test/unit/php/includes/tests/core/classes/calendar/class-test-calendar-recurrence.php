@@ -2181,6 +2181,13 @@ class Test_Calendar_Recurrence extends Base {
 			),
 			'No calendar entry point may reach the occurrence table on a site with no recurring events.'
 		);
+		// The guarded property is the set of autoloaded options and their
+		// values. The row order of the unordered SELECT behind
+		// `wp_load_alloptions()` is not a contract, and unrelated writes
+		// elsewhere in the suite can shift it between the two snapshots.
+		ksort( $options_before );
+		ksort( $options_after );
+
 		$this->assertSame(
 			$options_before,
 			$options_after,
