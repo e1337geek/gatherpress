@@ -1221,6 +1221,28 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Pins the stored cancellation status literal as a storage contract.
+	 *
+	 * Every cancelled occurrence row carries this literal in its `status`
+	 * column, and rows outlive any later rename of the constant that wrote
+	 * them. The value is therefore release-frozen as the US spelling
+	 * `canceled`: changing it after release is a storage migration, not a
+	 * rename.
+	 *
+	 * @coversNothing
+	 *
+	 * @return void
+	 */
+	public function test_cancellation_status_stored_value_is_release_frozen(): void {
+		$this->assertSame(
+			'canceled',
+			Occurrences::STATUS_CANCELLED,
+			'Failed to assert that the stored cancellation value is the release-frozen US'
+			. ' spelling "canceled". Changing it is a storage migration, not a rename.'
+		);
+	}
+
+	/**
 	 * Coverage for `set_status()` scoping by both `series_post_id` and
 	 * `recurrence_id`. A recurrence_id that belongs to a different series
 	 * must not be mutated through this post's ID, and vice versa.
