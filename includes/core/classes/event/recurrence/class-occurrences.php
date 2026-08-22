@@ -77,7 +77,7 @@ final class Occurrences {
 	 * @since 0.36.0
 	 * @var string
 	 */
-	const STATUS_CANCELLED = 'cancelled';
+	const STATUS_CANCELED = 'canceled';
 
 	/**
 	 * How many months ahead of "now" an open-ended rule is projected.

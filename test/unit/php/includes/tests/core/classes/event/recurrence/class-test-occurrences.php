@@ -272,12 +272,12 @@ class Test_Occurrences extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_project_preserves_cancelled_status_across_regeneration(): void {
+	public function test_project_preserves_canceled_status_across_regeneration(): void {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
 		$this->assertTrue(
-			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
 			'Failed to assert that set_status canceled the first occurrence.'
 		);
 
@@ -286,7 +286,7 @@ class Test_Occurrences extends Base {
 		$row = $instance->get( $post_id, '20260903T180000' );
 
 		$this->assertSame(
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			$row['status'],
 			'Failed to assert that the canceled status survived regeneration.'
 		);
@@ -1175,15 +1175,15 @@ class Test_Occurrences extends Base {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
-		$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED );
+		$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED );
 
-		$cancelled = $instance->select_for_series(
+		$canceled = $instance->select_for_series(
 			array( $post_id ),
-			array( 'status' => Occurrences::STATUS_CANCELLED )
+			array( 'status' => Occurrences::STATUS_CANCELED )
 		);
 
-		$this->assertCount( 1, $cancelled, 'Failed to assert that the status filter narrowed the result to one row.' );
-		$this->assertSame( '20260903T180000', $cancelled[0]['recurrence_id'] );
+		$this->assertCount( 1, $canceled, 'Failed to assert that the status filter narrowed the result to one row.' );
+		$this->assertSame( '20260903T180000', $canceled[0]['recurrence_id'] );
 	}
 
 	/**
@@ -1197,9 +1197,9 @@ class Test_Occurrences extends Base {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
-		$this->assertTrue( $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ) );
+		$this->assertTrue( $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ) );
 		$this->assertSame(
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			$instance->get( $post_id, '20260903T180000' )['status']
 		);
 	}
@@ -1215,7 +1215,7 @@ class Test_Occurrences extends Base {
 		$post_id = $this->factory->post->create();
 
 		$this->assertFalse(
-			Occurrences::get_instance()->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			Occurrences::get_instance()->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
 			'Failed to assert that set_status returns false when no row matches.'
 		);
 	}
@@ -1223,7 +1223,7 @@ class Test_Occurrences extends Base {
 	/**
 	 * Pins the stored cancellation status literal as a storage contract.
 	 *
-	 * Every cancelled occurrence row carries this literal in its `status`
+	 * Every canceled occurrence row carries this literal in its `status`
 	 * column, and rows outlive any later rename of the constant that wrote
 	 * them. The value is therefore release-frozen as the US spelling
 	 * `canceled`: changing it after release is a storage migration, not a
@@ -1236,7 +1236,7 @@ class Test_Occurrences extends Base {
 	public function test_cancellation_status_stored_value_is_release_frozen(): void {
 		$this->assertSame(
 			'canceled',
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			'Failed to assert that the stored cancellation value is the release-frozen US'
 			. ' spelling "canceled". Changing it is a storage migration, not a rename.'
 		);
@@ -1257,7 +1257,7 @@ class Test_Occurrences extends Base {
 		$instance  = Occurrences::get_instance();
 
 		$this->assertTrue(
-			$instance->set_status( $post_id_a, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			$instance->set_status( $post_id_a, '20260903T180000', Occurrences::STATUS_CANCELED ),
 			'Failed to assert that setting status on the first series\' own row succeeded.'
 		);
 
@@ -1681,7 +1681,7 @@ class Test_Occurrences extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_select_upcoming_omits_a_fully_cancelled_series(): void {
+	public function test_select_upcoming_omits_a_fully_canceled_series(): void {
 		$timezone = new DateTimeZone( 'America/New_York' );
 		$now      = new DateTimeImmutable( 'now', $timezone );
 		$start    = $now->modify( '+10 days' )->setTime( 18, 0, 0 );
@@ -1702,7 +1702,7 @@ class Test_Occurrences extends Base {
 		$instance = Occurrences::get_instance();
 
 		foreach ( $instance->select_for_series( array( $post_id ) ) as $row ) {
-			$instance->set_status( $post_id, $row['recurrence_id'], Occurrences::STATUS_CANCELLED );
+			$instance->set_status( $post_id, $row['recurrence_id'], Occurrences::STATUS_CANCELED );
 		}
 
 		$refs     = $instance->select_upcoming( 50 );
