@@ -121,12 +121,12 @@ class Test_Archive extends Base {
 	/**
 	 * Create a published, non-recurring event with a datetime range.
 	 *
-	 * @since 0.36.0
-	 *
 	 * The optional authoring date exists so a fixture can decouple the order
 	 * posts were created in from the order their IDs run in. Left unset, the
 	 * factory stamps every post with the current time and the two orders
 	 * coincide.
+	 *
+	 * @since 0.36.0
 	 *
 	 * @param DateTimeImmutable      $start    Event start in UTC.
 	 * @param DateTimeImmutable      $end      Event end in UTC.

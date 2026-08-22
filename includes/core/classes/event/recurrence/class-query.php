@@ -429,12 +429,22 @@ final class Query {
 		// deterministically. Guarded on a non-empty clause for the same reason
 		// the `groupby` below is: an `orderby` of `none` must stay unordered
 		// rather than acquire an ORDER BY, and a filesort, it never had.
+		//
+		// Only the post ID half is conditional. `Event\Query`'s `datetime` and
+		// `id` arms write that key themselves, in the direction the caller
+		// asked for, because a site with no recurring events needs a total
+		// ordering and never reaches this method. Appending a second post ID
+		// key behind one already there could not change a single row's
+		// position, and on a descending list it would read as a contradiction
+		// of the key in front of it. The remaining arms, `title`, `modified`
+		// and `rand`, order on nothing unique, so they still need the whole
+		// `(post_id, recurrence_id)` list key from here.
 		if ( '' !== (string) $pieces['orderby'] ) {
-			$pieces['orderby'] .= $wpdb->prepare(
-				', %i.ID ASC, %i.recurrence_id ASC',
-				$wpdb->posts,
-				$alias
-			);
+			if ( ! $this->orderby_has_post_id( (string) $pieces['orderby'] ) ) {
+				$pieces['orderby'] .= $wpdb->prepare( ', %i.ID ASC', $wpdb->posts );
+			}
+
+			$pieces['orderby'] .= $wpdb->prepare( ', %i.recurrence_id ASC', $alias );
 		}
 
 		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table )
@@ -473,6 +483,26 @@ final class Query {
 		}
 
 		return $pieces;
+	}
+
+	/**
+	 * Report whether an ORDER BY clause already orders on the posts-table ID.
+	 *
+	 * Arm 4 of the guard above scopes this filter to clauses `Event\Query`
+	 * wrote, and `Event\Query` writes its ordering unquoted, through
+	 * `esc_sql()` rather than through a `%i` placeholder, so the unquoted
+	 * rendering is the only one that can appear here.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $clause The ORDER BY clause as it stands.
+	 *
+	 * @return bool True when the clause already carries a posts-table ID key.
+	 */
+	private function orderby_has_post_id( string $clause ): bool {
+		global $wpdb;
+
+		return str_contains( $clause, $wpdb->posts . '.ID' );
 	}
 
 	/**

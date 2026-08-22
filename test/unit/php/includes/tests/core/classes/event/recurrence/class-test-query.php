@@ -1471,6 +1471,40 @@ class Test_Query extends Base {
 			'Failed to assert a clause with no anchor columns is returned unchanged.'
 		);
 	}
+
+	/**
+	 * Coverage for both return paths of `orderby_has_post_id`.
+	 *
+	 * The request-driven tests above are what prove the wiring, but xdebug
+	 * does not reliably trace a `private` helper reached from its caller in
+	 * the same class, so each return path also gets a direct invoke.
+	 *
+	 * @covers ::orderby_has_post_id
+	 *
+	 * @return void
+	 */
+	public function test_orderby_has_post_id_return_paths(): void {
+		global $wpdb;
+
+		$instance = Query::get_instance();
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'orderby_has_post_id',
+				array( sprintf( 'wp_gatherpress_events.datetime_start_gmt DESC, %s.ID DESC', $wpdb->posts ) )
+			),
+			'Failed to assert a clause already ordering on the post ID is recognized.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'orderby_has_post_id',
+				array( sprintf( '%s.post_name ASC', $wpdb->posts ) )
+			),
+			'Failed to assert a clause ordering on another posts-table column is not mistaken for one.'
+		);
+	}
 	/**
 	 * The results filter stamps nothing yet, and it has to leave both result
 	 * shapes alone: the plugin's own read API asks for IDs, while a template
