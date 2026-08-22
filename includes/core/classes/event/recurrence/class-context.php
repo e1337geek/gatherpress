@@ -721,6 +721,11 @@ final class Context {
 	 * one of which is canonical, and would let callers here emit links that
 	 * never exercise the rewrite rules.
 	 *
+	 * The empty-identifier arm reads through `series_permalink()` rather than
+	 * `get_permalink()`, because the latter is filtered: called while a
+	 * stamped loop row is current, it answers with that row's occurrence URL,
+	 * which is the opposite of what "no occurrence is named" promises.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
@@ -730,7 +735,7 @@ final class Context {
 	 */
 	public static function occurrence_url( int $post_id, string $recurrence_id ): string {
 		if ( '' === $recurrence_id ) {
-			return (string) get_permalink( $post_id );
+			return (string) self::get_instance()->series_permalink( $post_id );
 		}
 
 		return Rewrite::get_occurrence_url( $post_id, $recurrence_id );
