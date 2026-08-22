@@ -364,6 +364,10 @@ final class Query {
 		// pushing every other event off the screen and making a bulk action on
 		// "a row" act on the whole series. Per-occurrence management belongs to
 		// a dedicated series screen, not to the generic post list.
+		// `admin-ajax.php` is carved back out: `is_admin()` is true for every
+		// admin-ajax request, but those serve front-end reads, including
+		// logged-out ones, which have no rows to manage and must see the same
+		// expanded list a page load renders.
 		//
 		// Arms 2 and 3 are one rule: expand only where occurrence identity can
 		// travel with the row.
@@ -391,7 +395,7 @@ final class Query {
 		if (
 			! self::site_has_recurring_events()
 			|| in_array( $query->get( 'fields' ), array( 'ids', 'id=>parent' ), true )
-			|| is_admin()
+			|| ( is_admin() && ! wp_doing_ajax() )
 			|| ! str_contains( (string) $pieces['join'], $events_table )
 			|| ! Occurrences::get_instance()->table_exists()
 		) {
