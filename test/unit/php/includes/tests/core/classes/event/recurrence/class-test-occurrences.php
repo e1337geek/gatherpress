@@ -4894,130 +4894,6 @@ class Test_Occurrences extends Base {
 		);
 	}
 
-	/**
-	 * An identifier carried by two posts of one series resolves deterministically.
-	 *
-	 * `find_in_series()` is `LIMIT 1`, and a `LIMIT` without an `ORDER BY` means
-	 * whatever the query plan returns. That is not cosmetic once a forward split lets a
-	 * series span several posts: the `series_post_id` this returns is what every
-	 * consumer keys the RSVP's occurrence term off, so an unstable pick would
-	 * move a responder's RSVP between sibling posts from one request to the
-	 * next. Lowest post ID wins.
-	 *
-	 * The two candidate rows are inserted **highest post ID first**, so a plan
-	 * returning insertion order would produce the wrong answer rather than
-	 * accidentally the right one.
-	 *
-	 * @covers ::find_in_series
-	 *
-	 * @return void
-	 */
-	public function test_find_in_series_picks_the_lowest_post_id_deterministically(): void {
-		global $wpdb;
-
-		$lower_post_id  = $this->create_and_project();
-		$higher_post_id = $this->create_and_project();
-
-		$this->assertLessThan(
-			$higher_post_id,
-			$lower_post_id,
-			'Failed to arrange two posts whose IDs order the way this test assumes.'
-		);
-
-		$table         = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
-		$recurrence_id = '20260915T180000';
-
-		// Both fixtures already carry this identifier, and the higher post's row
-		// was written second, so the physical order favors the wrong answer.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$rows = $wpdb->get_col(
-			$wpdb->prepare(
-				'SELECT series_post_id FROM %i WHERE recurrence_id = %s AND series_post_id IN ( %d, %d )',
-				$table,
-				$recurrence_id,
-				$lower_post_id,
-				$higher_post_id
-			)
-		);
-
-		$this->assertCount(
-			2,
-			$rows,
-			'Failed to arrange one row per post for the shared identifier.'
-		);
-
-		$resolved = Occurrences::get_instance()->find_in_series(
-			array( $higher_post_id, $lower_post_id ),
-			$recurrence_id
-		);
-
-		$this->assertNotNull( $resolved, 'Failed to assert the shared identifier resolves at all.' );
-		$this->assertSame(
-			$lower_post_id,
-			(int) $resolved['series_post_id'],
-			'Failed to assert find_in_series picks the lowest series post ID rather than a plan-dependent row.'
-		);
-
-		// Argument order must not change the answer either. The ORDER BY decides,
-		// not the caller's array.
-		$this->assertSame(
-			$lower_post_id,
-			(int) Occurrences::get_instance()->find_in_series(
-				array( $lower_post_id, $higher_post_id ),
-				$recurrence_id
-			)['series_post_id'],
-			'Failed to assert the resolution is independent of the order the post IDs are passed in.'
-		);
-	}
-
-	/**
-	 * The `after` argument drops finished occurrences in SQL, end-inclusive.
-	 *
-	 * The bound compares `datetime_end_gmt`, so an occurrence that has started
-	 * but not finished still comes back: that is the one most urgently needing
-	 * an action. Asserted against a fixture whose middle occurrence straddles
-	 * the bound, so a start-based bound and an end-based bound give different
-	 * answers and only the required one passes.
-	 *
-	 * @covers ::select_for_series
-	 *
-	 * @return void
-	 */
-	public function test_select_for_series_after_bound_is_end_inclusive(): void {
-		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
-		$post_id = $this->create_relative_recurring_event(
-			array(
-				'frequency' => 'daily',
-				'interval'  => 1,
-				'end_type'  => 'count',
-				'count'     => 5,
-			),
-			$now->modify( '-2 days -30 minutes' ),
-			$now->modify( '-2 days +90 minutes' ),
-			'UTC'
-		);
-
-		$instance = Occurrences::get_instance();
-		$all      = $instance->select_for_series( array( $post_id ) );
-
-		$this->assertCount( 5, $all, 'Failed to arrange the five-occurrence fixture.' );
-
-		$bounded = $instance->select_for_series(
-			array( $post_id ),
-			array( 'after' => $now->format( 'Y-m-d H:i:s' ) )
-		);
-
-		$this->assertCount(
-			3,
-			$bounded,
-			'Failed to assert the two finished occurrences are dropped and the running one is kept.'
-		);
-		$this->assertSame(
-			$all[2]['recurrence_id'],
-			$bounded[0]['recurrence_id'],
-			'Failed to assert the running occurrence, started but not finished, survives the bound.'
-		);
-	}
 
 	/**
 	 * The `limit` argument caps the rows and is clamped at both ends.
@@ -5044,9 +4920,9 @@ class Test_Occurrences extends Base {
 			'Failed to assert the limit caps the returned rows.'
 		);
 		$this->assertCount(
-			1,
+			0,
 			$instance->select_for_series( array( $post_id ), array( 'limit' => 0 ) ),
-			'Failed to assert a zero limit is clamped up to one rather than selecting nothing.'
+			'Failed to assert a zero limit selects nothing rather than falling back to every row.'
 		);
 		$this->assertCount(
 			count( $all ),

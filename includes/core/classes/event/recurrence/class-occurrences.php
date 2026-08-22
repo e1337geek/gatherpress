@@ -2109,10 +2109,14 @@ final class Occurrences {
 	 * semantics: an occurrence that has started but not finished is still the
 	 * one a list should be showing.
 	 *
-	 * Ordering carries `recurrence_id` as a tie-breaker for the same reason
-	 * `select_by_horizon()` does. Two occurrences of one series cannot share a
-	 * start, but two posts of a split series can contribute rows that do, and a
-	 * `LIMIT 1` over an ambiguous order is a coin flip between two reads.
+	 * The tie this ordering has to break is between *sibling posts* of a split
+	 * series contributing rows that share a start, and `recurrence_id` cannot
+	 * break it: `recurrence_id` is the occurrence's own local start rendered
+	 * `Ymd\THis`, so two rows sharing a start share it too. `series_post_id` is
+	 * the column that makes the order total, and lowest post ID wins, matching
+	 * `find_in_series()`. `recurrence_id` stays as the last resort for the one
+	 * case it can still separate: a DST fold, where two distinct local times
+	 * under one post map to a single GMT start.
 	 *
 	 * @since 0.36.0
 	 *
@@ -2121,7 +2125,7 @@ final class Occurrences {
 	 *
 	 * @return array|null The matching occurrence row, or null when the bound matches nothing.
 	 */
-	protected function select_bounded_occurrence( array $post_ids, bool $upcoming ): ?array {
+	public function select_bounded_occurrence( array $post_ids, bool $upcoming ): ?array {
 		global $wpdb;
 
 		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
@@ -2132,7 +2136,7 @@ final class Occurrences {
 		$sql = "SELECT * FROM %i WHERE series_post_id IN ( {$placeholders} )"
 			. ' AND status = %s'
 			. " AND datetime_end_gmt {$comparison} %s"
-			. " ORDER BY datetime_start_gmt {$order}, recurrence_id {$order}"
+			. " ORDER BY datetime_start_gmt {$order}, series_post_id ASC, recurrence_id {$order}"
 			. ' LIMIT 1';
 
 		$values = array_merge(

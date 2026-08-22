@@ -47,6 +47,26 @@ final class Rest_Api {
 	use Singleton;
 
 	/**
+	 * Occurrences the list route returns when the caller names no bound.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const DEFAULT_PER_PAGE = 50;
+
+	/**
+	 * Largest bound the list route will accept.
+	 *
+	 * WordPress's own collection routes cap `per_page` at 100, and matching
+	 * that keeps the argument unsurprising to any client already written
+	 * against core's collections.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const MAXIMUM_PER_PAGE = 100;
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -106,6 +126,22 @@ final class Rest_Api {
 	 * same as the write route (`edit_post` on the series), since the list
 	 * exists to drive the cancel/restore action, not for public consumption.
 	 *
+	 * `per_page` bounds the response. `Rule::MAX_COUNT` is 730, so an
+	 * unbounded route hands a legitimately authored daily series 730 rows on
+	 * every editor open. The schema's `minimum` and `maximum` are what make
+	 * the bound real: without them a caller asks for the unbounded read back
+	 * by passing a large number, and the server-side clamp in
+	 * `Occurrences::select_for_series()` is the second line of the same
+	 * defense. The `maximum` of 100 is WordPress's own collection ceiling.
+	 *
+	 * The default of `DEFAULT_PER_PAGE` is chosen for the one consumer: the
+	 * sidebar panel in `src/panels/event-settings/occurrences/` renders every
+	 * returned row in a flat, unpaginated list, so the default has to be large
+	 * enough that the occurrence an organizer means to skip is usually on it
+	 * (a year of a weekly series, seven weeks of a daily one) and small enough
+	 * that the list stays a list. Paging the panel is a follow-up; the
+	 * argument is schema'd now so adding it is a client change alone.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return array The route definition, including its `args` and `permission_callback`.
@@ -118,10 +154,21 @@ final class Rest_Api {
 				'callback'            => array( $this, 'get_occurrences' ),
 				'permission_callback' => array( $this, 'has_edit_permission' ),
 				'args'                => array(
-					'post_id' => array(
+					'post_id'  => array(
 						'required'          => true,
 						'type'              => 'integer',
 						'validate_callback' => array( Validate::class, 'event_post_id' ),
+					),
+					'per_page' => array(
+						'required'    => false,
+						'type'        => 'integer',
+						'default'     => self::DEFAULT_PER_PAGE,
+						'minimum'     => 1,
+						'maximum'     => self::MAXIMUM_PER_PAGE,
+						'description' => __(
+							'Maximum number of upcoming occurrences to return.',
+							'gatherpress'
+						),
 					),
 				),
 			),
@@ -188,6 +235,12 @@ final class Rest_Api {
 	 * occurrence is the one most urgently needing a cancel action; only a
 	 * finished occurrence has nothing left to act on.
 	 *
+	 * Both the bound and the time predicate are pushed into SQL through
+	 * `select_for_series()`'s `after` and `limit` arguments rather than
+	 * hydrating the series and filtering in PHP. A daily series holds up to
+	 * `Rule::MAX_COUNT` rows, so the PHP form put 730 rows through the
+	 * interpreter on every editor open to render at most `per_page` of them.
+	 *
 	 * Guarded by `Query::site_has_recurring_events()`: unlike the
 	 * write route, this one is reachable from every ordinary event's editor
 	 * screen the moment the sidebar mounts, not just when an organizer
@@ -205,7 +258,7 @@ final class Rest_Api {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param WP_REST_Request $request Request carrying `post_id`.
+	 * @param WP_REST_Request $request Request carrying `post_id` and an optional `per_page`.
 	 *
 	 * @return WP_REST_Response The upcoming occurrence rows, ordered ascending by start.
 	 */
@@ -216,14 +269,14 @@ final class Rest_Api {
 
 		$post_id  = (int) $request->get_param( 'post_id' );
 		$post_ids = $this->authorized_series_post_ids( $post_id );
-		$now      = current_time( 'mysql', true );
 
-		$rows = array_values(
-			array_filter(
-				Occurrences::get_instance()->select_for_series( $post_ids ),
-				static function ( array $row ) use ( $now ): bool {
-					return $row['datetime_end_gmt'] >= $now;
-				}
+		$rows = Occurrences::get_instance()->select_for_series(
+			$post_ids,
+			array(
+				'after' => current_time( 'mysql', true ),
+				// The schema supplies the default on every dispatched request;
+				// the fallback covers a direct call on the public callback.
+				'limit' => (int) ( $request->get_param( 'per_page' ) ?? self::DEFAULT_PER_PAGE ),
 			)
 		);
 
