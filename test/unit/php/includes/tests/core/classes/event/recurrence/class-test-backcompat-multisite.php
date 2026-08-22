@@ -32,14 +32,17 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Query as Event_Query;
+use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
+use GatherPress\Core\Event\Recurrence\Rewrite;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use Throwable;
+use WP;
 use WP_Query;
 
 /**
@@ -285,6 +288,108 @@ class Test_Backcompat_Multisite extends Base {
 			$without_recurrence,
 			$with_recurrence,
 			'Failed to assert the clauses are byte-identical when the occurrence table is absent.'
+		);
+	}
+
+	/**
+	 * (b1) The single-row reads are guarded by the same probe the list path
+	 * uses, so a blog whose table is absent issues no statement against it.
+	 *
+	 * The list path is not the only way a request reaches the occurrence
+	 * table. `Rewrite::parse_request()` reads one row for any request carrying
+	 * an occurrence segment, and `Context::maybe_set_from_request()` reads one
+	 * for the same request a moment later; both are gated on the site-wide
+	 * recurring-events flag, which says nothing about whether this blog's table
+	 * exists. A blog holding a true flag and no table therefore ran a `SELECT`
+	 * against a table that is not there on every such request. `$wpdb` swallows
+	 * the failure, so the visible outcome was already correct, and the error it
+	 * records is the whole defect: it is written to the log, and to the page
+	 * itself wherever `WP_DEBUG_DISPLAY` is on.
+	 *
+	 * The 404 assertion is the invariant the guard must not cost: a request for
+	 * an occurrence that cannot be found still has to 404 rather than render the
+	 * series at its anchor date, and a missing table is a stronger form of
+	 * cannot be found rather than an exception to it.
+	 *
+	 * @group multisite
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::get
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_reads_run_no_statement_when_the_table_is_absent(): void {
+		global $wpdb;
+
+		$new_site_id = $this->factory()->blog->create();
+
+		switch_to_blog( $new_site_id );
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- simulating the lazy-creation hazard.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		Occurrences::get_instance()->forget_table_exists();
+
+		$post_id = $this->create_event();
+
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		// The probe itself names the table and is the point of the exercise, so
+		// only statements reading rows out of it are counted.
+		$reads       = 0;
+		$count_reads = static function ( string $query ) use ( $table, &$reads ): string {
+			if ( str_contains( $query, $table ) && ! str_starts_with( $query, 'SHOW TABLES' ) ) {
+				++$reads;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $count_reads );
+
+		$wpdb->flush();
+
+		$row  = Occurrences::get_instance()->get( $post_id, '20260903T180000' );
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$last_error = $wpdb->last_error;
+
+		$wp             = new WP();
+		$wp->query_vars = array(
+			Event::POST_TYPE   => get_post_field( 'post_name', $post_id ),
+			Context::QUERY_VAR => '20260903T180000',
+		);
+
+		Rewrite::get_instance()->parse_request( $wp );
+
+		remove_filter( 'query', $count_reads );
+
+		Occurrences::get_instance()->forget_table_exists();
+
+		restore_current_blog();
+
+		$this->assertNull( $row, 'Failed to assert get() answers with no row when the table is absent.' );
+		$this->assertSame(
+			array(),
+			$rows,
+			'Failed to assert select_for_series() answers with no rows when the table is absent.'
+		);
+		$this->assertSame(
+			'',
+			$last_error,
+			'Failed to assert a blog missing the occurrence table records no database error for reading it.'
+		);
+		$this->assertSame(
+			0,
+			$reads,
+			'Failed to assert no statement is issued against an occurrence table that is not there.'
+		);
+		$this->assertSame(
+			'404',
+			$wp->query_vars['error'] ?? '',
+			'Failed to assert an occurrence request still 404s on a blog whose occurrence table is absent.'
 		);
 	}
 
