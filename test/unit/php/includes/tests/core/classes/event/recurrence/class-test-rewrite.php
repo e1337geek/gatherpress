@@ -1536,7 +1536,12 @@ class Test_Rewrite extends Base {
 			Utility::invoke_hidden_method(
 				Rewrite::get_instance(),
 				'resolve_post_id_from_query_vars',
-				array( array( 'post_type' => 'post', 'name' => 'unrelated' ) )
+				array(
+					array(
+						'post_type' => 'post',
+						'name'      => 'unrelated',
+					),
+				)
 			),
 			'Query vars naming a different post type must not resolve through the fallback pair.'
 		);
