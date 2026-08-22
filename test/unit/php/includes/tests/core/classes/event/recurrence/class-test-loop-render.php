@@ -889,6 +889,44 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
+	 * Coverage for `permalink()`'s third pass-through: an occurrence whose post
+	 * has no permalink to compose one on top of.
+	 *
+	 * `Rewrite::get_occurrence_url()` builds the occurrence URL from the series
+	 * permalink and answers with an empty string when there is none, which is
+	 * what `get_permalink()` returns for a post that is no longer there.
+	 * Returning that to the `post_link` filter publishes `href=""`, which
+	 * resolves to the current page. Reachability is narrow, because a resolved
+	 * occurrence normally implies a live post, but an empty href is a worse
+	 * answer than the permalink core already had.
+	 *
+	 * @covers ::permalink
+	 *
+	 * @return void
+	 */
+	public function test_permalink_falls_back_when_the_post_has_no_permalink(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$post      = get_post( $series_id );
+
+		Context::get_instance()->set( $series_id, $this->occurrence_id( $anchor, 1 ) );
+
+		wp_delete_post( $series_id, true );
+
+		$result = Context::get_instance()->permalink( 'https://example.test/original/', $post );
+
+		Context::get_instance()->clear();
+
+		$this->assertSame(
+			'https://example.test/original/',
+			$result,
+			'Failed to assert permalink() degrades to the permalink it was handed rather than to an empty href.'
+		);
+	}
+
+	/**
 	 * Coverage for `Occurrences::table_exists()` on both memo arms.
 	 *
 	 * The first call probes the schema, the second answers from the memo. The
