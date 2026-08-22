@@ -10,8 +10,8 @@
  *
  * Validation is positive, not merely a colon check: the string must appear in
  * `timezone_identifiers_list()` and must contain no colon. The colon test is
- * kept because it is the same test `rlanvin/php-rrule` applies before silently
- * rewriting `DTSTART` to UTC, and keeping it makes the guard's intent legible.
+ * kept because a colon is what a fixed offset looks like, so the check names
+ * the thing being refused and makes the guard's intent legible at a glance.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -41,11 +41,11 @@ final class Timezone_Guard {
 	 * appear in `timezone_identifiers_list()` and contain no colon. The colon
 	 * check alone would admit any malformed string without a colon
 	 * (`'Not/AZone'`, `'12345'`, `''`) straight through to `DateTimeZone`,
-	 * where it becomes a fatal rather than a rejection. Keeping the colon
-	 * check even though `timezone_identifiers_list()` already excludes
-	 * offsets mirrors the same test `rlanvin/php-rrule` applies at
-	 * `RRule.php:585-590` immediately before silently rewriting such a
-	 * `DTSTART` to UTC, which is the drift bug this project refuses to ship.
+	 * where it becomes a fatal rather than a rejection. The colon check is kept
+	 * even though `timezone_identifiers_list()` already excludes offsets
+	 * because a colon is the shape of the fixed offset being refused, and
+	 * naming the refusal in the guard is what keeps the next reader from
+	 * "simplifying" it into an implicit one.
 	 *
 	 * The colon check is provably redundant today: none of the 419 entries in
 	 * `timezone_identifiers_list()` contain a colon, so `in_array()` alone is
