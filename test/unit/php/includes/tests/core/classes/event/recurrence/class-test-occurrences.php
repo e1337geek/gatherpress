@@ -3677,6 +3677,173 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * The upcoming/past boundary predicate lives in `WHERE`, never `HAVING`.
+	 *
+	 * The horizon query has no `GROUP BY` and no aggregate, so filtering the
+	 * effective end through `HAVING` forces the entire joined result set into
+	 * a temporary table before a single row is discarded. Review measurement
+	 * on 999 events and 10,000 occurrence rows put `Handler_read_rnd_next` at
+	 * 10,600 with the `HAVING` form against 600 with the same predicate in
+	 * `WHERE`, for an identical ten-row result. The emitted statement is
+	 * pinned in both directions because the two forms return the same rows,
+	 * so no row-level assertion can tell them apart.
+	 *
+	 * @covers ::select_by_horizon
+	 * @covers ::select_upcoming
+	 * @covers ::select_past
+	 *
+	 * @return void
+	 */
+	public function test_horizon_boundary_predicate_lives_in_where_not_having(): void {
+		global $wpdb;
+
+		$events_table      = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$directions = array(
+			'>=' => true,
+			'<'  => false,
+		);
+
+		foreach ( $directions as $comparison => $upcoming ) {
+			$query_count_before = count( $wpdb->queries );
+
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'select_by_horizon',
+				array( 5, array(), $upcoming )
+			);
+
+			$statements = array_values(
+				array_filter(
+					array_slice( $wpdb->queries, $query_count_before ),
+					static function ( $query ) use ( $occurrences_table ) {
+						return str_contains( $query[0], $occurrences_table )
+							&& str_contains( $query[0], 'effective_start_gmt' );
+					}
+				)
+			);
+
+			$this->assertCount(
+				1,
+				$statements,
+				sprintf( 'Failed to capture exactly one "%s" horizon statement.', $comparison )
+			);
+			$this->assertStringNotContainsString(
+				'HAVING',
+				$statements[0][0],
+				sprintf(
+					'Failed to assert that the "%s" horizon query never filters through HAVING.',
+					$comparison
+				)
+			);
+			$this->assertStringContainsString(
+				sprintf(
+					'AND COALESCE( scheduled_occurrence.datetime_end_gmt, `%s`.datetime_end_gmt ) %s ',
+					$events_table,
+					$comparison
+				),
+				$statements[0][0],
+				sprintf(
+					'Failed to assert that the "%s" horizon query bounds the effective end in WHERE.',
+					$comparison
+				)
+			);
+		}
+	}
+
+	/**
+	 * Identity pin for the boundary predicate's `HAVING` to `WHERE` move: a
+	 * mixed fixture's exact bucket membership, in order, on both sides.
+	 *
+	 * This test is green before and after the predicate moves, by design.
+	 * Its role is the result-set-identity proof: it pins the exact
+	 * `(post_id, recurrence_id)` tuples both buckets return for a fixture
+	 * exercising every arm at once, an ended occurrence, a canceled ended
+	 * occurrence, a running occurrence, a future occurrence, and plain
+	 * past and future events on the `NULL` fallback branch. Any predicate
+	 * rewrite that changes membership or order in either bucket fails here.
+	 *
+	 * @covers ::select_upcoming
+	 * @covers ::select_past
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_horizon_bucket_membership_survives_the_where_move(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+		$anchor   = $now->modify( '-2 weeks' )->modify( '-1 hour' );
+
+		$series_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => 4,
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		// Cancel the oldest occurrence, so the status join predicate is
+		// exercised inside the same pinned result set.
+		Occurrences::get_instance()->set_status(
+			$series_id,
+			Occurrences::recurrence_id( $anchor ),
+			Occurrences::STATUS_CANCELED
+		);
+
+		$plain_ids = array();
+
+		foreach ( array( '+5 days' => 'future', '-5 days' => 'past' ) as $offset => $key ) {
+			$start             = $now->modify( $offset )->setTime( 12, 0, 0 );
+			$plain_ids[ $key ] = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+			add_post_meta(
+				$plain_ids[ $key ],
+				'gatherpress_datetime',
+				wp_json_encode(
+					array(
+						'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+						'dateTimeEnd'   => $start->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+						'timezone'      => 'America/New_York',
+					)
+				)
+			);
+			Event_Setup::get_instance()->set_datetimes( $plain_ids[ $key ] );
+		}
+
+		$tuples = static fn( array $refs ) => array_map(
+			static fn( Occurrence_Ref $ref ) => array( $ref->post_id, $ref->recurrence_id ),
+			$refs
+		);
+
+		$this->assertSame(
+			array(
+				// Started one hour ago, still running: upcoming, first.
+				array( $series_id, Occurrences::recurrence_id( $anchor->modify( '+14 days' ) ) ),
+				array( $plain_ids['future'], null ),
+				array( $series_id, Occurrences::recurrence_id( $anchor->modify( '+21 days' ) ) ),
+			),
+			$tuples( Occurrences::get_instance()->select_upcoming( 10 ) ),
+			'Failed to assert the exact upcoming bucket membership and order for the mixed fixture.'
+		);
+		$this->assertSame(
+			array(
+				array( $plain_ids['past'], null ),
+				// The canceled anchor occurrence is absent; only the second
+				// occurrence has both ended and kept its scheduled status.
+				array( $series_id, Occurrences::recurrence_id( $anchor->modify( '+7 days' ) ) ),
+			),
+			$tuples( Occurrences::get_instance()->select_past( 10 ) ),
+			'Failed to assert the exact past bucket membership and order for the mixed fixture.'
+		);
+	}
+
+	/**
 	 * Coverage for total ordering on the sweep's own
 	 * limited query. Rowless candidates all share one `NULL` sort key, so
 	 * without the `post_id` tie-breaker the batch boundary among them is
