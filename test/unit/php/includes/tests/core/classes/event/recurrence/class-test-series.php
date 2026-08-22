@@ -557,6 +557,55 @@ class Test_Series extends Base {
 	}
 
 	/**
+	 * Deleting one fragment of a surviving series flushes the membership memo.
+	 *
+	 * The flush used to live only inside the branch that deletes an orphaned
+	 * term, so deleting one fragment of a three-fragment series left the memo
+	 * naming the deleted post for the rest of the request, and a bulk delete
+	 * had `Revision::advance()` writing meta against posts that no longer
+	 * existed. A deletion changes membership whether or not the term survives
+	 * it, so the memo must be discarded on both branches.
+	 *
+	 * @covers ::maybe_delete_orphan_term
+	 * @covers ::resolve_from_taxonomy
+	 *
+	 * @return void
+	 */
+	public function test_deleting_a_fragment_flushes_the_membership_memo(): void {
+		$instance = Series::get_instance();
+
+		$post_a = $this->create_and_project();
+		$post_b = (int) Splitter::get_instance()->split_forward( $post_a, '20260917T180000' )['forward_post_id'];
+
+		$instance->flush_memo();
+
+		$post_c = (int) Splitter::get_instance()->split_forward( $post_b, '20261001T180000' )['forward_post_id'];
+
+		$instance->flush_memo();
+
+		$all = array( $post_a, $post_b, $post_c );
+		sort( $all );
+
+		// This read primes the memo with the three-member set.
+		$this->assertSame(
+			$all,
+			$instance->resolve_post_ids( $post_a ),
+			'Fixture setup: the twice-split series must resolve all three members.'
+		);
+
+		wp_delete_post( $post_b, true );
+
+		$expected = array( $post_a, $post_c );
+		sort( $expected );
+
+		$this->assertSame(
+			$expected,
+			$instance->resolve_post_ids( $post_a ),
+			'Deleting one fragment must drop it from resolution in the same request, not serve the stale memo.'
+		);
+	}
+
+	/**
 	 * A failed forward relationship write reports zero from an existing term.
 	 *
 	 * The other arm of the join failure: the origin already carries its series
