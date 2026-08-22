@@ -76,9 +76,8 @@ gatherpress_reset_custom_tables();
  * Only the rows are cleared. `create_tables()`'s other side effects are
  * deliberately not reproduced, neither adding the online-event term nor
  * scheduling a rewrite flush: re-registering the venue taxonomy outside a
- * test's own lifecycle
- * clobbers the object-type list the calendar suite reads, and the term insert
- * would commit permanently from the bootstrap.
+ * test's own lifecycle clobbers the object-type list the calendar suite reads,
+ * and the term insert would commit permanently from the bootstrap.
  *
  * @since 0.36.0
  *

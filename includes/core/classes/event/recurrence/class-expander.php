@@ -625,8 +625,7 @@ final class Expander {
 	 * undefined in a zone whose transition lands on midnight, and both
 	 * `America/Santiago` on 2026-09-06 and `Asia/Beirut` on 2026-03-29 return
 	 * 01:00 for it. `diff()->days` on a timezone-aware pair also misreports a
-	 * 23-hour day. Week
-	 * bucketing is not the reason: `floor( $timestamp / 604800 )` breaks at
+	 * 23-hour day. Week bucketing is not the reason: `floor( $timestamp / 604800 )` breaks at
 	 * Thursday 00:00 UTC, so a local Monday midnight sits in the bucket interior
 	 * and never crosses under a daylight saving shift. The series timezone is
 	 * reapplied in `materialize()` and nowhere else.
