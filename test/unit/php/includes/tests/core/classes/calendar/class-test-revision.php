@@ -216,6 +216,66 @@ class Test_Revision extends Base {
 	}
 
 	/**
+	 * An advance builds on the stored row, not on a read made before it.
+	 *
+	 * `current() + 1` followed by per-sibling writes is the interleave two
+	 * concurrent cancellations produce: both read revision S, both publish
+	 * S + 1, and a subscriber receives two different bodies carrying the same
+	 * `SEQUENCE`, which entitles it to ignore the second. One process cannot
+	 * run two writers, so the stale first read is forced through the meta
+	 * cache, which is the same seam a concurrent writer's snapshot lives
+	 * behind. The stored value sits ahead of the clock floor, as a burst of
+	 * same-second advances leaves it, so a write that builds on the stale
+	 * read cannot reach the required value by accident of timing.
+	 *
+	 * @covers ::advance
+	 *
+	 * @return void
+	 */
+	public function test_advance_builds_on_the_stored_row_not_a_stale_read(): void {
+		global $wpdb;
+
+		$post_id  = $this->make_event();
+		$instance = Revision::get_instance();
+		$high     = ( time() - Revision::EPOCH ) + HOUR_IN_SECONDS;
+
+		update_post_meta( $post_id, Revision::META_KEY, $high );
+
+		// The snapshot a concurrent writer holds from before this write.
+		wp_cache_set(
+			$post_id,
+			array( Revision::META_KEY => array( (string) ( $high - 50 ) ) ),
+			'post_meta'
+		);
+
+		$next = $instance->advance( $post_id );
+
+		$this->assertGreaterThan(
+			$high,
+			$next,
+			'An advance must move past the stored revision; repeating one already published lets a client ignore it.'
+		);
+
+		// Read the row back uncached, so the assertion measures storage.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stored = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT meta_value FROM %i WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1',
+				$wpdb->postmeta,
+				$post_id,
+				Revision::META_KEY
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->assertSame(
+			$next,
+			$stored,
+			'And the value the caller publishes must be the one the row holds.'
+		);
+	}
+
+	/**
 	 * A negative stored value cannot drag the revision below zero.
 	 *
 	 * @covers ::stored
