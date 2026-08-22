@@ -529,6 +529,61 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * The first date of an already-split fragment is refused under its own reason.
+	 *
+	 * Index 0 is index 0 **of the owning post**, and once a series has been
+	 * split the panel's chooser spans every fragment, so the first date of a
+	 * fragment reaches the same guard as the first date of a series that has
+	 * never been split. The two are not the same thing: this one leaves the
+	 * rest of the series on a sibling post that the refusal does not touch. The
+	 * panel renders the reason verbatim, so one name for both had it tell the
+	 * organizer the change applied to dates it does not reach.
+	 *
+	 * Both fragments are asserted, because the discriminator is whether the
+	 * post is the whole series and not whether the date is the earliest one.
+	 *
+	 * @covers ::split_owned_series
+	 * @covers ::result
+	 *
+	 * @return void
+	 */
+	public function test_the_first_date_of_a_fragment_is_refused_under_its_own_reason(): void {
+		$origin_id = $this->create_and_project();
+		$first     = Splitter::get_instance()->split_forward( $origin_id, self::FULL_SET[2] );
+
+		$this->assertTrue( $first['split'], 'Fixture setup: the series must be split once first.' );
+
+		$forward_id = (int) $first['forward_post_id'];
+
+		$this->assertSame(
+			array( '20260917T180000', '20260929T180000', '20261001T180000', '20261013T180000' ),
+			$this->identifiers_for( $forward_id ),
+			'Fixture setup: the forward fragment must own the later dates.'
+		);
+
+		$forward_refusal = Splitter::get_instance()->split_forward( $forward_id, self::FULL_SET[2] );
+		$origin_refusal  = Splitter::get_instance()->split_forward( $origin_id, self::FULL_SET[0] );
+
+		$this->assertSame(
+			array( false, 'fragment_first_occurrence' ),
+			array( $forward_refusal['split'], $forward_refusal['reason'] ),
+			'Failed to assert the later fragment\'s own first date is refused as a fragment,'
+				. ' not as the first date of the whole series.'
+		);
+		$this->assertSame(
+			array( false, 'fragment_first_occurrence' ),
+			array( $origin_refusal['split'], $origin_refusal['reason'] ),
+			'Failed to assert the earliest date of a split series is a fragment too: the post no longer'
+				. ' holds the series, so a retroactive edit on it cannot reach the dates that moved.'
+		);
+		$this->assertSame(
+			self::FULL_SET,
+			array_merge( $this->identifiers_for( $origin_id ), $this->identifiers_for( $forward_id ) ),
+			'Failed to assert neither refusal moved a row.'
+		);
+	}
+
+	/**
 	 * Every phase of a split names the split's own pair of posts.
 	 *
 	 * `gatherpress_split_phase_complete` is a published extension point whose

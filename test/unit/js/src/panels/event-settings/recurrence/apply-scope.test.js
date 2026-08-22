@@ -1216,4 +1216,44 @@ describe( 'ApplyScope', () => {
 		).not.toBeInTheDocument();
 		expect( screen.queryByText( 'nope' ) ).not.toBeInTheDocument();
 	} );
+
+	test( 'says the series is already split rather than claiming the whole series', async () => {
+		// The refusal for index 0 of a *fragment*. The dropdown spans both
+		// halves of a series that has already been split, so this date is only
+		// the first that its own post owns; the rest of the series is on a
+		// sibling event, and telling the organizer the change applies to the
+		// whole series would be false about the dates on the other side.
+		mockApiFetch.mockResolvedValueOnce( rows ).mockResolvedValueOnce( {
+			split: false,
+			reason: 'fragment_first_occurrence',
+			moved: 0,
+			forward_post_id: 0,
+			forward_recurring: false,
+		} );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'This event already starts at this date, so there is nothing here to split off: your change applies to every date this event holds. The rest of the series is on another event. Nothing was split.',
+				),
+			).toBeInTheDocument(),
+		);
+		expect(
+			screen.queryByText(
+				'This is the first occurrence, so applying the change forward is the same as applying it to the whole series. Nothing was split.',
+			),
+		).not.toBeInTheDocument();
+	} );
 } );

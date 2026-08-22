@@ -229,10 +229,24 @@ final class Splitter {
 		$index          = (int) array_search( (string) $row['recurrence_id'], $identifiers, true );
 
 		// "Forward" from the first occurrence is retroactive: every occurrence
-		// the series has is at or after it, so a split would leave the original
-		// holding nothing and the forward post holding the whole series.
+		// the owning post has is at or after it, so a split would leave that
+		// post holding nothing and the forward post holding all of it.
+		//
+		// Which of the organizer's two situations that is depends on whether
+		// the post is the whole series. Once a series has been split the
+		// occurrence list spans every fragment, so the first row of a later
+		// fragment reaches here too, and there the series does hold earlier
+		// dates: they sit on a sibling post that this refusal does not touch.
+		// The two get their own reason so the panel can say which one it is
+		// rather than asserting the first about both.
 		if ( 0 === $index ) {
-			return $this->result( false, 'first_occurrence', $origin_post_id );
+			$whole_series = array( $origin_post_id ) === Series::get_instance()->resolve_post_ids( $origin_post_id );
+
+			return $this->result(
+				false,
+				$whole_series ? 'first_occurrence' : 'fragment_first_occurrence',
+				$origin_post_id
+			);
 		}
 
 		// The origin's side is capped by `COUNT = $index` (see

@@ -133,6 +133,20 @@ const ApplyScope = ( { postId } ) => {
 	 */
 	const describe = ( result ) => {
 		if ( ! result.split ) {
+			// Two different refusals, and only the server can tell them apart.
+			// A series that lives on one post really is applied whole from its
+			// first date. A series already split spans several posts, and this
+			// date is only the first of the fragment that owns it: the rest of
+			// the series sits on a sibling event this refusal did not touch, so
+			// claiming the whole series would tell the organizer something
+			// untrue about the dates on the other side of the earlier split.
+			if ( 'fragment_first_occurrence' === result.reason ) {
+				return __(
+					'This event already starts at this date, so there is nothing here to split off: your change applies to every date this event holds. The rest of the series is on another event. Nothing was split.',
+					'gatherpress'
+				);
+			}
+
 			return __(
 				'This is the first occurrence, so applying the change forward is the same as applying it to the whole series. Nothing was split.',
 				'gatherpress'
