@@ -731,6 +731,123 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
+	 * An open-ended series' timezone is defined for every transition the tz
+	 * database knows, not only for a finite sampling window.
+	 *
+	 * The VEVENT rule is unbounded, so clients resolve occurrences arbitrarily
+	 * far ahead against the embedded `VTIMEZONE`. RFC 5545 section 3.6.5
+	 * resolves an instant against the observance with the last onset before
+	 * it, so a definition that stops enumerating while the zone keeps
+	 * transitioning silently shifts every later occurrence onto the last
+	 * emitted offset, an hour wrong for half of each year.
+	 *
+	 * The zone is a real irregular one: its civil-time decisions are
+	 * enumerated year by year in the tz database for decades ahead, so no
+	 * single yearly rule describes the near future and a finite enumeration
+	 * is the only honest prefix. The probe window sits beyond the six-year
+	 * span the old fixed lookahead covered, and is relative to now, so the
+	 * test keeps probing past the sampling window wherever the clock is.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::range_of
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::sub_component
+	 *
+	 * @return void
+	 */
+	public function test_an_open_ended_series_timezone_is_defined_beyond_the_sampling_window(): void {
+		$timezone = 'Asia/Gaza';
+		$zone     = new DateTimeZone( $timezone );
+		$date     = ( new DateTimeImmutable( 'now', $zone ) )->modify( '-10 days' )->format( 'Y-m-d' );
+		$anchor   = new DateTimeImmutable( $date . ' 18:00:00', $zone );
+		$post_id  = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'never',
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			$timezone
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$body  = $this->body_for( $this->series_ical_url( $post_id ) );
+		$block = $this->timezone_block( $body, $timezone );
+
+		$this->assertSame(
+			array(
+				sprintf(
+					'RRULE:FREQ=WEEKLY;BYDAY=%s',
+					strtoupper( substr( $anchor->format( 'D' ), 0, 2 ) )
+				),
+			),
+			$this->lines_for( $body, 'RRULE' ),
+			'Failed to build an unbounded rule, so the horizon assertions below would prove nothing.'
+		);
+		$this->assertNotSame( '', $block, 'The referenced zone must be defined in the same VCALENDAR.' );
+
+		// Real transitions the tz database knows, past the old six-year window.
+		$probe_from  = time() + ( 7 * YEAR_IN_SECONDS );
+		$transitions = (array) $zone->getTransitions( $probe_from, $probe_from + ( 2 * YEAR_IN_SECONDS ) );
+		$changes     = array_slice( $transitions, 1 );
+
+		$this->assertNotEmpty(
+			$changes,
+			'The tz database must know transitions in the probe window, or this fixture proves nothing.'
+		);
+
+		$previous = (int) ( $transitions[0]['offset'] ?? 0 );
+
+		foreach ( $changes as $change ) {
+			$onset = gmdate( 'Ymd\THis', (int) $change['ts'] + $previous );
+
+			$this->assertTrue(
+				$this->observance_covers( $block, $onset ),
+				sprintf(
+					'The definition must cover the %s transition; an unbounded rule paired with a'
+					. ' finite definition shifts every later occurrence by the daylight offset.',
+					(string) $change['time']
+				)
+			);
+
+			$previous = (int) $change['offset'];
+		}
+	}
+
+	/**
+	 * Whether a definition resolves one onset, explicitly or by terminal rule.
+	 *
+	 * Explicit coverage is an observance whose `DTSTART` is the onset itself.
+	 * A terminal unbounded yearly rule covers every onset after its own
+	 * anchor, which is how a zone that settles into a stable policy is
+	 * described past its irregular years.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $block A `VTIMEZONE` component.
+	 * @param string $onset Local onset in `Ymd\THis` form.
+	 *
+	 * @return bool True when the definition accounts for the onset.
+	 */
+	protected function observance_covers( string $block, string $onset ): bool {
+		if ( str_contains( $block, 'DTSTART:' . $onset ) ) {
+			return true;
+		}
+
+		preg_match_all( '/DTSTART:(\d{8}T\d{6})\r\nRRULE:FREQ=YEARLY/', $block, $ruled );
+
+		foreach ( $ruled[1] as $rule_anchor ) {
+			if ( $rule_anchor <= $onset ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Two transitions on the same yearly position with different offsets are
 	 * not one rule, however alike their names are.
 	 *
