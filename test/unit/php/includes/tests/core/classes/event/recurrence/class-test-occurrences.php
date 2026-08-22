@@ -4971,6 +4971,91 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * The `after` argument drops finished occurrences in SQL, end-inclusive.
+	 *
+	 * The bound compares `datetime_end_gmt`, so an occurrence that has started
+	 * but not finished still comes back: that is the one most urgently needing
+	 * an action. Asserted against a fixture whose middle occurrence straddles
+	 * the bound, so a start-based bound and an end-based bound give different
+	 * answers and only the required one passes.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_after_bound_is_end_inclusive(): void {
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => 5,
+			),
+			$now->modify( '-2 days -30 minutes' ),
+			$now->modify( '-2 days +90 minutes' ),
+			'UTC'
+		);
+
+		$instance = Occurrences::get_instance();
+		$all      = $instance->select_for_series( array( $post_id ) );
+
+		$this->assertCount( 5, $all, 'Failed to arrange the five-occurrence fixture.' );
+
+		$bounded = $instance->select_for_series(
+			array( $post_id ),
+			array( 'after' => $now->format( 'Y-m-d H:i:s' ) )
+		);
+
+		$this->assertCount(
+			3,
+			$bounded,
+			'Failed to assert the two finished occurrences are dropped and the running one is kept.'
+		);
+		$this->assertSame(
+			$all[2]['recurrence_id'],
+			$bounded[0]['recurrence_id'],
+			'Failed to assert the running occurrence, started but not finished, survives the bound.'
+		);
+	}
+
+	/**
+	 * The `limit` argument caps the rows and is clamped at both ends.
+	 *
+	 * A `limit` a caller can set to zero would return nothing and one it can
+	 * set past `Rule::MAX_COUNT` would hand back the unbounded read the
+	 * argument exists to prevent, so both are clamped rather than passed
+	 * through.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_limit_is_applied_and_clamped(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+		$all      = $instance->select_for_series( array( $post_id ) );
+
+		$this->assertGreaterThan( 2, count( $all ), 'Failed to arrange more rows than the limit asks for.' );
+
+		$this->assertCount(
+			2,
+			$instance->select_for_series( array( $post_id ), array( 'limit' => 2 ) ),
+			'Failed to assert the limit caps the returned rows.'
+		);
+		$this->assertCount(
+			1,
+			$instance->select_for_series( array( $post_id ), array( 'limit' => 0 ) ),
+			'Failed to assert a zero limit is clamped up to one rather than selecting nothing.'
+		);
+		$this->assertCount(
+			count( $all ),
+			$instance->select_for_series( array( $post_id ), array( 'limit' => Rule::MAX_COUNT + 500 ) ),
+			'Failed to assert an oversized limit is clamped to the largest projection a rule can produce.'
+		);
+	}
+
+	/**
 	 * Every path of the per-post display pick, guards included.
 	 *
 	 * The PHP twin of `display_occurrence_relation_sql()`, and the one the
@@ -5189,5 +5274,105 @@ class Test_Occurrences extends Base {
 			$rows[0]['datetime_start_gmt'],
 			'Failed to assert the canceled occurrence is skipped in favor of the latest finished one.'
 		);
+	}
+
+	/**
+	 * A sibling tie is broken by the post ID, which is the only column that can.
+	 *
+	 * `select_bounded_occurrence()` is `LIMIT 1`, and the tie it has to break
+	 * is between two posts of a split series contributing rows that share a
+	 * start. `recurrence_id` cannot break it: it is the occurrence's own local
+	 * start rendered `Ymd\THis`, so two rows sharing a start share it too.
+	 *
+	 * The emitted statement is pinned, not merely the row it returns. InnoDB
+	 * hands back tied rows in clustered-key order today, so the lowest post ID
+	 * comes back first with or without a tie-breaker, and a row-order
+	 * assertion would measure the current plan rather than the guarantee. Both
+	 * directions are pinned, because the bound flips the sort direction and
+	 * only the post ID stays ascending.
+	 *
+	 * @covers ::select_bounded_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_select_bounded_occurrence_breaks_a_sibling_tie_on_the_post_id(): void {
+		global $wpdb;
+
+		$now  = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$rule = array(
+			'frequency' => 'daily',
+			'interval'  => 1,
+			'end_type'  => 'count',
+			'count'     => 3,
+		);
+
+		$first  = $this->create_relative_recurring_event(
+			$rule,
+			$now->modify( '+5 hours' ),
+			$now->modify( '+6 hours' ),
+			'UTC'
+		);
+		$second = $this->create_relative_recurring_event(
+			$rule,
+			$now->modify( '+5 hours' ),
+			$now->modify( '+6 hours' ),
+			'UTC'
+		);
+
+		$lower    = min( $first, $second );
+		$higher   = max( $first, $second );
+		$instance = Occurrences::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$directions = array(
+			'ASC'  => true,
+			'DESC' => false,
+		);
+
+		foreach ( $directions as $direction => $upcoming ) {
+			$query_count_before = count( $wpdb->queries );
+
+			$row = $instance->select_bounded_occurrence( array( $higher, $lower ), $upcoming );
+
+			$statements = array_values(
+				array_filter(
+					array_slice( $wpdb->queries, $query_count_before ),
+					static function ( $query ) use ( $table ): bool {
+						return str_contains( $query[0], $table )
+							&& str_contains( $query[0], 'ORDER BY datetime_start_gmt' );
+					}
+				)
+			);
+
+			$this->assertCount(
+				1,
+				$statements,
+				sprintf( 'Failed to capture exactly one %s bounded statement.', $direction )
+			);
+			$this->assertStringContainsString(
+				sprintf(
+					'ORDER BY datetime_start_gmt %1$s, series_post_id ASC, recurrence_id %1$s',
+					$direction
+				),
+				$statements[0][0],
+				sprintf(
+					'Failed to assert the %s bounded read breaks a sibling tie on the post ID.',
+					$direction
+				)
+			);
+
+			if ( $upcoming ) {
+				$this->assertSame(
+					$lower,
+					(int) $row['series_post_id'],
+					'Failed to assert the earliest unfinished pick resolves to the lowest sibling post ID.'
+				);
+				$this->assertSame(
+					$lower,
+					(int) $instance->select_bounded_occurrence( array( $lower, $higher ), true )['series_post_id'],
+					'Failed to assert the pick is independent of the order the post IDs are passed in.'
+				);
+			}
+		}
 	}
 }

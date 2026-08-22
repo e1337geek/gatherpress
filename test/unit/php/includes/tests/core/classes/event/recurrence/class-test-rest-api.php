@@ -847,6 +847,171 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
+	 * Create a long daily series anchored an hour from now.
+	 *
+	 * Long enough that the route's default bound is smaller than the series,
+	 * so a bounded read and an unbounded one give different answers and only
+	 * the bounded one can pass.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $count Occurrences to project.
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_long_series( int $count ): int {
+		$start = $this->now()->modify( '+1 hour' );
+
+		return $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => $count,
+			),
+			$start,
+			$start->modify( '+1 hour' )
+		);
+	}
+
+	/**
+	 * The list route declares a bounded, schema'd `per_page`.
+	 *
+	 * The bound is only real if the schema states it: `minimum` is what stops
+	 * a caller asking for nothing, and `maximum` is what stops one asking the
+	 * unbounded read back. Asserted on the route definition rather than on a
+	 * response, because that is the artifact `register_rest_route()` consumes
+	 * and the one a client discovers.
+	 *
+	 * @covers ::occurrences_route
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_declares_a_bounded_per_page_argument(): void {
+		$route = Utility::invoke_hidden_method( Rest_Api::get_instance(), 'occurrences_route' );
+		$arg   = $route['args']['args']['per_page'];
+
+		$this->assertSame( 'integer', $arg['type'], 'The bound must be typed so the schema can enforce it.' );
+		$this->assertSame(
+			Rest_Api::DEFAULT_PER_PAGE,
+			$arg['default'],
+			'A caller naming no bound must still get one.'
+		);
+		$this->assertSame( 1, $arg['minimum'], 'A bound of zero would return nothing at all.' );
+		$this->assertSame(
+			Rest_Api::MAXIMUM_PER_PAGE,
+			$arg['maximum'],
+			'Without a maximum the caller asks the unbounded read straight back.'
+		);
+		$this->assertFalse( $arg['required'], 'The bound is a default, not something every client must send.' );
+	}
+
+	/**
+	 * The route returns at most `per_page` rows, defaulting when none is sent.
+	 *
+	 * `Rule::MAX_COUNT` is 730, so an unbounded route puts a legitimately
+	 * authored daily series through PHP and into a JSON response in full on
+	 * every editor open. The fixture is longer than the default, so the
+	 * default has to be doing the work rather than the series being short.
+	 *
+	 * @covers ::get_occurrences
+	 * @covers ::occurrences_route
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_bounds_the_rows_it_returns(): void {
+		$post_id = $this->create_long_series( Rest_Api::DEFAULT_PER_PAGE + 10 );
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$this->assertCount(
+			Rest_Api::DEFAULT_PER_PAGE,
+			$this->dispatch( $request )->get_data(),
+			'A request naming no bound must be bounded by the schema default.'
+		);
+
+		$request->set_param( 'per_page', 3 );
+
+		$bounded = $this->dispatch( $request )->get_data();
+
+		$this->assertCount( 3, $bounded, 'A request naming a bound must be held to it.' );
+		$this->assertSame(
+			array_slice(
+				array_column(
+					Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+					'recurrence_id'
+				),
+				0,
+				3
+			),
+			array_column( $bounded, 'recurrence_id' ),
+			'The bounded page must be the earliest occurrences, not an arbitrary three of them.'
+		);
+	}
+
+	/**
+	 * A `per_page` outside the declared range is refused by the schema.
+	 *
+	 * Both ends, because they fail for different reasons: zero would return an
+	 * empty list the panel reads as "nothing to show", and an oversized value
+	 * is the unbounded read the argument exists to prevent.
+	 *
+	 * @covers ::occurrences_route
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_refuses_an_out_of_range_per_page(): void {
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		foreach ( array( 0, Rest_Api::MAXIMUM_PER_PAGE + 1 ) as $per_page ) {
+			$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+			$request->set_param( 'post_id', $post_id );
+			$request->set_param( 'per_page', $per_page );
+
+			$this->assertSame(
+				400,
+				$this->dispatch( $request )->get_status(),
+				sprintf( 'A per_page of %d is outside the declared range and must be refused.', $per_page )
+			);
+		}
+	}
+
+	/**
+	 * A direct call with no `per_page` at all is still bounded.
+	 *
+	 * `get_occurrences()` is public, and the schema default only applies to a
+	 * dispatched request. A caller reaching the callback directly must not get
+	 * the unbounded read back through the side door.
+	 *
+	 * @covers ::get_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_get_occurrences_bounds_a_direct_call_carrying_no_per_page(): void {
+		$post_id = $this->create_long_series( Rest_Api::DEFAULT_PER_PAGE + 10 );
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$this->assertNull(
+			$request->get_param( 'per_page' ),
+			'Fixture failure: the request must carry no bound for this test to mean anything.'
+		);
+		$this->assertCount(
+			Rest_Api::DEFAULT_PER_PAGE,
+			Rest_Api::get_instance()->get_occurrences( $request )->get_data(),
+			'A direct call must fall back to the same default the schema declares.'
+		);
+	}
+
+	/**
 	 * A site that has never authored a recurring event pays no
 	 * occurrence-table query when the sidebar's occurrences route is hit.
 	 * Unlike the write route, this one runs from every ordinary event's
