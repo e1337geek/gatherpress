@@ -1051,6 +1051,13 @@ class Test_Query extends Base {
 	 * on none. The canonical `(post_id, recurrence_id)` list key is what makes
 	 * the ordering total.
 	 *
+	 * `Event\Query`'s datetime arm supplies the post ID half of that key
+	 * itself, because a site with no recurring events never reaches this
+	 * method and needs a total ordering just as much. Expansion then adds only
+	 * the `recurrence_id`, rather than a second post ID key that could not
+	 * change the order and would contradict the first one on a descending
+	 * list.
+	 *
 	 * @covers ::expand_event_clauses
 	 *
 	 * @return void
@@ -1073,12 +1080,48 @@ class Test_Query extends Base {
 		);
 		$this->assertStringContainsString(
 			sprintf(
-				') ASC, `%s`.ID ASC, `%s`.recurrence_id ASC',
+				') ASC, %s.ID ASC, `%s`.recurrence_id ASC',
 				$wpdb->posts,
 				Query::OCCURRENCE_ALIAS
 			),
 			$order_by,
 			'Failed to assert the occurrence list key follows the effective start as the tiebreaker.'
+		);
+		$this->assertSame(
+			1,
+			substr_count( $order_by, $wpdb->posts . '.ID' ),
+			'Failed to assert expansion adds no second post ID key behind the one already there.'
+		);
+	}
+
+	/**
+	 * Coverage for the other arm: an ordering with no post ID key gets one.
+	 *
+	 * Only `Event\Query`'s `datetime` and `id` arms emit the posts-table ID.
+	 * Ordering by title leaves two events sharing a title separated by
+	 * nothing, so expansion has to supply the full `(post_id, recurrence_id)`
+	 * list key rather than the `recurrence_id` alone.
+	 *
+	 * @covers ::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_expansion_supplies_the_post_id_key_when_the_ordering_lacks_one(): void {
+		global $wpdb;
+
+		$this->build_scenario();
+
+		$request  = $this->capture_request( 'upcoming', array( 'orderby' => 'title' ) );
+		$order_by = trim( substr( $request, (int) strrpos( $request, 'ORDER BY' ) ) );
+
+		$this->assertStringContainsString(
+			sprintf(
+				'.post_name ASC, `%s`.ID ASC, `%s`.recurrence_id ASC',
+				$wpdb->posts,
+				Query::OCCURRENCE_ALIAS
+			),
+			$order_by,
+			'Failed to assert a title ordering acquires the whole occurrence list key.'
 		);
 	}
 

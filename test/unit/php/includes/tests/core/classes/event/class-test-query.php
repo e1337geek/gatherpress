@@ -956,6 +956,49 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * Coverage for the secondary key that makes a datetime ordering total.
+	 *
+	 * `datetime_start_gmt` is not unique: any number of events can share one
+	 * start. MySQL's sort is not stable, so a tied pair can be ordered one way
+	 * for `LIMIT 0, 10` and the other for `LIMIT 10, 10`, which puts one event
+	 * on two pages of a paginated archive and leaves another off every page.
+	 * The posts-table ID is the column that breaks the tie, and it takes the
+	 * requested direction so a descending list is the exact reverse of the
+	 * ascending one.
+	 *
+	 * The whole clause is asserted rather than a substring, because the
+	 * requirement is the ID key's position and direction relative to the
+	 * datetime key, and a `assertStringContainsString( '.ID' )` would pass on
+	 * an `ORDER BY` that led with the ID.
+	 *
+	 * @covers ::adjust_event_sql
+	 *
+	 * @return void
+	 */
+	public function test_adjust_event_sql_datetime_ordering_is_total(): void {
+		global $wpdb;
+
+		$instance = Query::get_instance();
+		$table    = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+
+		$retval = $instance->adjust_event_sql( array(), 'upcoming', 'ASC' );
+
+		$this->assertSame(
+			sprintf( '%s.datetime_start_gmt ASC, %s.ID ASC', $table, $wpdb->posts ),
+			$retval['orderby'],
+			'Failed to assert an ascending datetime ordering breaks ties on the post ID, ascending.'
+		);
+
+		$retval = $instance->adjust_event_sql( array(), 'past', 'DESC' );
+
+		$this->assertSame(
+			sprintf( '%s.datetime_start_gmt DESC, %s.ID DESC', $table, $wpdb->posts ),
+			$retval['orderby'],
+			'Failed to assert a descending datetime ordering breaks ties on the post ID, descending.'
+		);
+	}
+
+	/**
 	 * Coverage for build_venue_tax_query method.
 	 *
 	 * @covers ::build_venue_tax_query

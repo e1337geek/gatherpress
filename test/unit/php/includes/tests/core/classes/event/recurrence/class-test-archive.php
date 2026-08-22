@@ -123,18 +123,33 @@ class Test_Archive extends Base {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param DateTimeImmutable $start Event start in UTC.
-	 * @param DateTimeImmutable $end   Event end in UTC.
+	 * The optional authoring date exists so a fixture can decouple the order
+	 * posts were created in from the order their IDs run in. Left unset, the
+	 * factory stamps every post with the current time and the two orders
+	 * coincide.
+	 *
+	 * @param DateTimeImmutable      $start    Event start in UTC.
+	 * @param DateTimeImmutable      $end      Event end in UTC.
+	 * @param DateTimeImmutable|null $authored Authoring date in UTC, or null for the factory default.
 	 *
 	 * @return int The created post ID.
 	 */
-	protected function create_event_at( DateTimeImmutable $start, DateTimeImmutable $end ): int {
-		$post_id = $this->factory->post->create(
-			array(
-				'post_type'   => Event::POST_TYPE,
-				'post_status' => 'publish',
-			)
+	protected function create_event_at(
+		DateTimeImmutable $start,
+		DateTimeImmutable $end,
+		?DateTimeImmutable $authored = null
+	): int {
+		$args = array(
+			'post_type'   => Event::POST_TYPE,
+			'post_status' => 'publish',
 		);
+
+		if ( null !== $authored ) {
+			$args['post_date_gmt'] = $authored->format( 'Y-m-d H:i:s' );
+			$args['post_date']     = get_date_from_gmt( $args['post_date_gmt'] );
+		}
+
+		$post_id = $this->factory->post->create( $args );
 
 		add_post_meta(
 			$post_id,
@@ -623,6 +638,126 @@ class Test_Archive extends Base {
 			$expected,
 			$this->entries( $query ),
 			'Failed to assert the widened first page lists the upcoming events in ascending datetime order.'
+		);
+	}
+
+	/**
+	 * Build the tied-start fixture: eleven upcoming events sharing one start.
+	 *
+	 * Eleven entries over ten per page is the smallest fixture that spans two
+	 * pages, and every one of them ties on `datetime_start_gmt`, so the
+	 * primary ordering key can separate none of them and only a secondary key
+	 * can decide which ten land on page one.
+	 *
+	 * The authoring dates run backwards as the post IDs run forwards. Without
+	 * that, the order MySQL falls back to when the ordering is not total, which
+	 * is whatever order the rows are read in, coincides with the ascending post
+	 * ID order the fix produces, and the assertions below would pass with the
+	 * secondary key entirely absent.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int[] The created post IDs, ascending.
+	 */
+	protected function build_tied_start_fixture(): array {
+		$now   = $this->now();
+		$start = $now->modify( '+6 hours' );
+		$ids   = array();
+
+		for ( $index = 0; $index < 11; $index++ ) {
+			$ids[] = $this->create_event_at(
+				$start,
+				$start->modify( '+30 minutes' ),
+				$now->modify( sprintf( '-%d hours', $index + 1 ) )
+			);
+		}
+
+		return $ids;
+	}
+
+	/**
+	 * Coverage for the archive ordering being total on a site with no recurring events.
+	 *
+	 * `Recurrence\Query::expand_event_clauses()` returns before it appends its
+	 * `post ID, recurrence_id` tie-breakers whenever
+	 * `site_has_recurring_events()` is false, which is the contract that keeps
+	 * a site with no recurring events on byte-identical SQL. The datetime
+	 * ordering the archive newly asks for therefore has to carry its own
+	 * secondary key, or eleven events sharing a start over ten per page can
+	 * put one event on both pages and leave another off both.
+	 *
+	 * The emitted `ORDER BY` is asserted alongside the two page listings.
+	 * MySQL is free to return a stable order for tied rows even with no
+	 * secondary key, so the listings alone can pass against an ordering that
+	 * is not total; the clause assertion is the one that cannot.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::substitute_archive_query
+	 *
+	 * @return void
+	 */
+	public function test_tied_start_archive_pages_partition_the_events(): void {
+		global $wpdb;
+
+		$expected = array_map(
+			static function ( int $post_id ): string {
+				return $post_id . '|';
+			},
+			$this->build_tied_start_fixture()
+		);
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$first = $this->request_archive_page( 1 );
+
+		$this->assertStringContainsString(
+			sprintf( '.datetime_start_gmt ASC, %s.ID ASC', $wpdb->posts ),
+			$first->request,
+			'Failed to assert the archive orders on the post ID once the event start ties.'
+		);
+		$this->assertSame(
+			11,
+			$first->found_posts,
+			'Failed to assert the archive counts all eleven tied events.'
+		);
+		$this->assertSame(
+			2,
+			$first->max_num_pages,
+			'Failed to assert the eleven tied events span two pages of ten.'
+		);
+
+		$second = $this->request_archive_page( 2 );
+
+		$this->assertFalse(
+			$second->is_404(),
+			'Failed to assert the second page of the tied archive is not a 404.'
+		);
+
+		$page_one = $this->entries( $first );
+		$page_two = $this->entries( $second );
+
+		$this->assertSame(
+			array_slice( $expected, 0, 10 ),
+			$page_one,
+			'Failed to assert page one lists the ten lowest post IDs of the tied set.'
+		);
+		$this->assertSame(
+			array_slice( $expected, 10 ),
+			$page_two,
+			'Failed to assert page two lists the remaining tied event.'
+		);
+		$this->assertSame(
+			array(),
+			array_values( array_intersect( $page_one, $page_two ) ),
+			'Failed to assert no event appears on both pages of the tied archive.'
+		);
+		$this->assertSame(
+			$expected,
+			array_merge( $page_one, $page_two ),
+			'Failed to assert the two pages together list every tied event exactly once.'
 		);
 	}
 
