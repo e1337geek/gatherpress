@@ -3444,6 +3444,49 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A negative limit never reaches the SQL as `LIMIT -1`.
+	 *
+	 * MySQL rejects a negative `LIMIT` outright, and `$wpdb` swallows the
+	 * syntax error into an empty result, so a caller passing a bad limit got
+	 * silence plus a poisoned `$wpdb->last_error` instead of a defined
+	 * answer. Both limit-taking readers clamp to zero, which legitimately
+	 * selects nothing.
+	 *
+	 * @covers ::select_upcoming
+	 * @covers ::select_by_horizon
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_negative_limit_is_clamped_rather_than_reaching_the_sql(): void {
+		global $wpdb;
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_upcoming( -1 ),
+			'Failed to assert that a negative upcoming limit selects nothing.'
+		);
+		$this->assertSame(
+			'',
+			$wpdb->last_error,
+			'Failed to assert that a negative upcoming limit produced no SQL error.'
+		);
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_series_needing_top_up( -1 ),
+			'Failed to assert that a negative top-up limit selects nothing.'
+		);
+		$this->assertSame(
+			'',
+			$wpdb->last_error,
+			'Failed to assert that a negative top-up limit produced no SQL error.'
+		);
+	}
+
+	/**
 	 * Coverage for total ordering on the limited event
 	 * query: `ORDER BY effective_start_gmt` alone is not a total order, so
 	 * two events sharing one start instant can swap places between two
