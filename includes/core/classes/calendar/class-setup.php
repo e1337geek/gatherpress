@@ -821,12 +821,14 @@ final class Setup {
 		$post_ids = array( $post_id );
 
 		// An occurrence override describes one instance of the post that owns
-		// it; a site with no recurring events has no siblings to resolve and
-		// must not pay the taxonomy read to learn that.
+		// it; a site with neither recurring events nor a split series has no
+		// siblings to resolve and must not pay the taxonomy read to learn
+		// that. The split flag keeps a fully demoted split's export carrying
+		// both fragments after the recurring flag has returned to '0'.
 		if ( 0 === $post_id
 			|| null !== Context::get_instance()->current()
 			|| ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' )
-			|| ! Recurrence_Query::site_has_recurring_events()
+			|| ! ( Recurrence_Query::site_has_recurring_events() || Series::site_has_split_series() )
 		) {
 			return $post_ids;
 		}

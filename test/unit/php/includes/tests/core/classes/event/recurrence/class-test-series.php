@@ -8,6 +8,8 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use GatherPress\Core\Calendar\Calendar;
+use GatherPress\Core\Calendar\Setup as Calendar_Setup;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Meta;
@@ -875,6 +877,104 @@ class Test_Series extends Base {
 			get_option( 'gatherpress_has_split_series' ),
 			'Deleting the last fragment must clear the flag with the term, recomputed from storage rather'
 				. ' than decremented.'
+		);
+	}
+
+	/**
+	 * A site with neither flag adds not one query on the widened entry points.
+	 *
+	 * The split-series flag widened four read paths: taxonomy registration,
+	 * series resolution, the calendar origin lookup and the export's
+	 * component set. On a site with no recurring events and no split series,
+	 * every one of them must stay free of SQL, including the flag read
+	 * itself: the option does not exist on such a site, and a `get_option()`
+	 * read of a missing option costs one `wp_options` SELECT per request,
+	 * which is exactly the byte-identical-SQL surface being protected. The
+	 * capture opens after the alloptions load every real request performs and
+	 * after the fixtures are cached, so anything it observes is a query the
+	 * widened entry points themselves added.
+	 *
+	 * The control at the end proves the capture can observe queries at all;
+	 * without it, a capture broken by a `SAVEQUERIES` regression would pass
+	 * the emptiness assertion vacuously.
+	 *
+	 * @covers ::register
+	 * @covers ::resolve_post_ids
+	 * @covers ::site_has_split_series
+	 * @covers ::refresh_has_split_series
+	 * @covers \GatherPress\Core\Calendar\Setup::series_component_post_ids
+	 *
+	 * @return void
+	 */
+	public function test_a_site_with_neither_flag_adds_no_queries_on_the_widened_entry_points(): void {
+		global $wpdb;
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		Recurrence_Query::refresh_has_recurring_events();
+		delete_option( Series::HAS_SPLIT_SERIES_OPTION );
+
+		$this->assertFalse(
+			Recurrence_Query::site_has_recurring_events(),
+			'Fixture setup: the site must have no recurring events.'
+		);
+		$this->assertFalse(
+			Series::site_has_split_series(),
+			'Fixture setup: the site must have no split series, with the option absent as on a real site'
+				. ' that never split.'
+		);
+
+		// The calendar entry points read the queried post, so establish it and
+		// warm every cache the fixtures need before the capture opens.
+		$this->go_to( get_permalink( $post_id ) );
+
+		$calendar = new Calendar( $post_id );
+
+		wp_cache_flush();
+		wp_load_alloptions();
+		get_post( $post_id );
+		get_post_meta( $post_id );
+
+		$previous_queries   = $wpdb->queries;
+		$previous_save      = $wpdb->save_queries;
+		$wpdb->queries      = array();
+		$wpdb->save_queries = true;
+
+		Series::get_instance()->register( Event::POST_TYPE );
+		Series::get_instance()->resolve_post_ids( $post_id );
+		Utility::invoke_hidden_method( $calendar, 'series_origin_post_id', array( $post_id ) );
+		Calendar_Setup::get_instance()->series_component_post_ids();
+
+		$captured = wp_list_pluck( $wpdb->queries, 0 );
+
+		// The falsifiability control: a recompute is a lifecycle write path
+		// and must be the thing that queries, proving the capture observes.
+		Series::refresh_has_split_series();
+
+		$control = wp_list_pluck( $wpdb->queries, 0 );
+
+		$wpdb->queries      = $previous_queries;
+		$wpdb->save_queries = $previous_save;
+
+		$this->assertSame(
+			array(),
+			$captured,
+			'A site with neither flag must not pay one query on any widened entry point.'
+		);
+		$this->assertNotSame(
+			array(),
+			$control,
+			'Failed to assert the capture observes queries at all; SAVEQUERIES must be on for the emptiness'
+				. ' assertion to mean anything.'
+		);
+		$this->assertFalse(
+			taxonomy_exists( Series::TAXONOMY ),
+			'A site with neither flag must not register the series taxonomy.'
 		);
 	}
 

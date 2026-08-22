@@ -655,9 +655,11 @@ final class Calendar {
 	 * @return int The origin post ID, or 0 when this post belongs to no series term.
 	 */
 	private function series_origin_post_id( int $post_id ): int {
-		// A site that has never authored a recurring event reads neither
-		// the taxonomy nor the term cache on a calendar request.
-		if ( ! Recurrence_Query::site_has_recurring_events() ) {
+		// A site with neither recurring events nor a split series reads
+		// neither the taxonomy nor the term cache on a calendar request. The
+		// split flag keeps a fully demoted split's fragments pointing at the
+		// origin's UID after the recurring flag has returned to '0'.
+		if ( ! ( Recurrence_Query::site_has_recurring_events() || Series::site_has_split_series() ) ) {
 			return 0;
 		}
 

@@ -64,6 +64,22 @@ final class Series {
 	const TAXONOMY = '_gatherpress_series';
 
 	/**
+	 * Option recording whether any series term exists on the site.
+	 *
+	 * The companion to `Query::HAS_RECURRING_OPTION`, and independent of it
+	 * by necessity: a two-occurrence series split at its second date demotes
+	 * both sides to plain events, which turns the recurring flag off while
+	 * the series relationship persists in the taxonomy. Gating the taxonomy
+	 * on the recurring flag alone therefore made the durable series vanish on
+	 * the very next request. Autoloaded, and recomputed authoritatively from
+	 * term storage on the term lifecycle, never incremented.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const HAS_SPLIT_SERIES_OPTION = 'gatherpress_has_split_series';
+
+	/**
 	 * Resolved series membership, memoized per post for the life of the request.
 	 *
 	 * A single front-end response resolves the same post many times, once per
@@ -114,6 +130,14 @@ final class Series {
 		add_action( 'registered_post_type', array( $this, 'register' ), 11 );
 		add_action( 'before_delete_post', array( $this, 'remember_series_term' ), 10, 2 );
 		add_action( 'after_delete_post', array( $this, 'maybe_delete_orphan_term' ) );
+		// The split-series flag recomputes on the term lifecycle itself rather
+		// than inside the callers that create or delete terms, so every path
+		// that writes one keeps it true: the first join, the last fragment's
+		// orphan-term deletion, and a rolled-back split's own term removal.
+		// Neither hook can fire on a site with no series terms, so a site with
+		// neither flag pays nothing for them.
+		add_action( 'created_' . self::TAXONOMY, array( $this, 'refresh_has_split_series' ) );
+		add_action( 'delete_' . self::TAXONOMY, array( $this, 'refresh_has_split_series' ) );
 	}
 
 	/**
@@ -178,9 +202,9 @@ final class Series {
 	}
 
 	/**
-	 * Register the series taxonomy on a post type, when the site has recurring events.
+	 * Register the series taxonomy on a post type, when the site can have a series.
 	 *
-	 * The has-recurring-events check lives on the second guard, and it is not a
+	 * The flag check lives on the second guard, and it is not a
 	 * micro-optimization: `WP_Query` primes term caches through
 	 * `update_object_term_cache()`, which reads `get_object_taxonomies()` and
 	 * issues **one** query naming every taxonomy registered for the post type.
@@ -188,6 +212,12 @@ final class Series {
 	 * text of a query that runs on every event listing, on a site that has never
 	 * authored a recurring event, producing a byte-for-byte difference where
 	 * such a site is promised none.
+	 *
+	 * Either flag admits the registration. The recurring flag covers every
+	 * site that could split; the split flag covers the site whose every
+	 * fragment has since demoted to a plain event, where the durable series
+	 * relationship must stay readable after the recurring flag returns to
+	 * `'0'`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -197,12 +227,68 @@ final class Series {
 	 */
 	public function register( string $post_type ): void {
 		if ( ! post_type_supports( $post_type, 'gatherpress-event-date' )
-			|| ! Query::site_has_recurring_events()
+			|| ! ( Query::site_has_recurring_events() || self::site_has_split_series() )
 		) {
 			return;
 		}
 
 		self::register_taxonomy_for( $post_type );
+	}
+
+	/**
+	 * Report whether any split series exists on the site.
+	 *
+	 * Read off the autoloaded-options cache directly rather than through
+	 * `get_option()`, and the difference is the whole point of the flag. On a
+	 * site that has never split, the option does not exist, and `get_option()`
+	 * answers a missing option with one `wp_options` SELECT per request before
+	 * the not-found cache absorbs it. This read happens inside `register()` on
+	 * every request, so that SELECT would be a byte-for-byte SQL difference on
+	 * exactly the sites promised none. The alloptions cache is already loaded
+	 * on every request, the option is only ever written with autoload on, and
+	 * an absent option authoritatively means no split has ever happened,
+	 * because every series term write recomputes it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when at least one series term exists.
+	 */
+	public static function site_has_split_series(): bool {
+		$options = wp_load_alloptions();
+
+		return '1' === ( $options[ self::HAS_SPLIT_SERIES_OPTION ] ?? '0' );
+	}
+
+	/**
+	 * Recompute the has-split-series option from term storage.
+	 *
+	 * Authoritative rather than incremental, exactly as
+	 * `Query::refresh_has_recurring_events()` is for its flag: the option is
+	 * derived from what is stored, so a lost or duplicated lifecycle event
+	 * cannot desynchronize it. The read goes straight to the term-taxonomy
+	 * table because the recompute runs from term-lifecycle hooks that also
+	 * fire while the taxonomy is mid-teardown, where `get_terms()` would
+	 * answer a `WP_Error` instead of the storage truth.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public static function refresh_has_split_series(): void {
+		global $wpdb;
+
+		// A lifecycle-triggered recompute, not a read path query; caching it
+		// would only cache the flag it is itself in the process of producing.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$has = (bool) $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT 1 FROM %i WHERE taxonomy = %s LIMIT 1',
+				$wpdb->term_taxonomy,
+				self::TAXONOMY
+			)
+		);
+
+		update_option( self::HAS_SPLIT_SERIES_OPTION, $has ? '1' : '0', true );
 	}
 
 	/**
@@ -269,9 +355,13 @@ final class Series {
 	public function resolve_post_ids( int $post_id ): array {
 		$post_ids = array( $post_id );
 
-		// With no recurring events on the site the taxonomy is never registered,
-		// so no term relationship can exist and none is read.
-		if ( Query::site_has_recurring_events() && taxonomy_exists( self::TAXONOMY ) ) {
+		// With neither recurring events nor a split series on the site the
+		// taxonomy is never registered, so no term relationship can exist and
+		// none is read. The split flag keeps a fully demoted split resolving
+		// after the recurring flag has returned to '0'.
+		if ( ( Query::site_has_recurring_events() || self::site_has_split_series() )
+			&& taxonomy_exists( self::TAXONOMY )
+		) {
 			$post_ids = $this->resolve_from_taxonomy( $post_id );
 		}
 

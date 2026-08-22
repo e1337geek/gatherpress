@@ -801,19 +801,21 @@ class Test_Split_Subscription extends Base {
 	}
 
 	/**
-	 * The flag, not the absence of a series term, is what keeps the origin
+	 * The flags, not the absence of a series term, are what keep the origin
 	 * lookup off the series taxonomy.
 	 *
 	 * The test above drives a series nothing has split, which carries no term,
 	 * so it answers zero whether or not the flag guard exists and deleting the
 	 * guard leaves it green. Removing that coincidence takes a post that *does*
-	 * carry a series term while the flag says the site has no recurring events:
-	 * the option is recomputed from storage on every lifecycle event, so the
-	 * two being out of step is a bug state rather than an authored one, and it
-	 * is exactly the state the guard is there for. The object term cache is
-	 * cleared before the measurement, since a warm cache would answer
-	 * `get_the_terms()` without a query and the cost assertion would hold with
-	 * the guard gone.
+	 * carry a series term while both flags say the site has no series to read:
+	 * each option is recomputed from storage on its own lifecycle events, so
+	 * the flags being out of step with the term is a bug state rather than an
+	 * authored one, and it is exactly the state the guard is there for. Both
+	 * flags are forced off because either one admits the lookup: the split
+	 * flag exists precisely so a fully demoted split resolves after the
+	 * recurring flag returns to '0'. The object term cache is cleared before
+	 * the measurement, since a warm cache would answer `get_the_terms()`
+	 * without a query and the cost assertion would hold with the guard gone.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Calendar::series_origin_post_id
 	 *
@@ -844,6 +846,7 @@ class Test_Split_Subscription extends Base {
 		);
 
 		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '0', true );
+		update_option( Series::HAS_SPLIT_SERIES_OPTION, '0', true );
 		Series::get_instance()->flush_memo();
 		clean_object_term_cache( $origin_id, (string) get_post_type( $origin_id ) );
 
