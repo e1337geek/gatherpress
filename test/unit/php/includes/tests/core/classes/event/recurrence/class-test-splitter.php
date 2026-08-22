@@ -1016,6 +1016,72 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * A rollback that completed adds nothing to the failure that caused it.
+	 *
+	 * The other return path of `report_rollback()`, reached on every rolled
+	 * back split in this file and driven directly here because xdebug does not
+	 * trace a same-class helper called from a short delegation. The whole
+	 * point of the null arm is that an ordinary abort still reports exactly
+	 * one failure, so a client sees the reason and nothing about consistency.
+	 *
+	 * @covers ::report_rollback
+	 *
+	 * @return void
+	 */
+	public function test_a_completed_rollback_adds_nothing_to_the_reported_failure(): void {
+		$failure = new WP_Error( 'gatherpress_split_series_not_joined', 'Original failure.', array( 'status' => 500 ) );
+
+		Utility::invoke_hidden_method( Splitter::get_instance(), 'report_rollback', array( $failure, null ) );
+
+		$this->assertSame(
+			array( 'gatherpress_split_series_not_joined' ),
+			$failure->get_error_codes(),
+			'Failed to assert a rollback that completed leaves the reported failure alone.'
+		);
+	}
+
+	/**
+	 * A failed rollback is appended under its own code, carrying the refusal that broke it.
+	 *
+	 * Driven directly, and with the *same* code on both failures, which is the
+	 * case the split's own tests cannot reach: a database refusing every write
+	 * makes the abort and the rollback both
+	 * `gatherpress_occurrence_write_failed`, and reusing that code for the
+	 * second entry would let `WP_Error::add()` fold it into the first and
+	 * report a clean rollback. The distinct code is what survives that.
+	 *
+	 * @covers ::report_rollback
+	 *
+	 * @return void
+	 */
+	public function test_a_failed_rollback_is_reported_even_when_both_failures_share_a_code(): void {
+		$failure  = new WP_Error( 'gatherpress_occurrence_write_failed', 'Abort.', array( 'status' => 500 ) );
+		$rollback = new WP_Error( 'gatherpress_occurrence_write_failed', 'Rollback.', array( 'post_id' => 7 ) );
+
+		Utility::invoke_hidden_method( Splitter::get_instance(), 'report_rollback', array( $failure, $rollback ) );
+
+		$this->assertSame(
+			array( 'gatherpress_occurrence_write_failed', 'gatherpress_split_rollback_failed' ),
+			$failure->get_error_codes(),
+			'Failed to assert a rollback failure sharing the abort\'s code is still reported separately.'
+		);
+		$this->assertSame(
+			array(
+				'status'              => 500,
+				'rollback_error_code' => 'gatherpress_occurrence_write_failed',
+				'rollback_error_data' => array( 'post_id' => 7 ),
+			),
+			$failure->get_error_data( 'gatherpress_split_rollback_failed' ),
+			'Failed to assert the appended entry carries the rollback failure it stands for.'
+		);
+		$this->assertSame(
+			array( 'status' => 500 ),
+			$failure->get_error_data(),
+			'Failed to assert the abort still owns the data a REST response reads.'
+		);
+	}
+
+	/**
 	 * A missing occurrence is refused rather than splitting something arbitrary.
 	 *
 	 * @covers ::split_forward

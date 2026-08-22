@@ -247,13 +247,15 @@ final class Splitter {
 		// `verify_partition()`'s contract and something an `UNTIL` bound
 		// cannot promise for an open-ended rule.
 		if ( $index > Rule::MAX_COUNT ) {
+			/* translators: %d: the maximum number of dates a recurrence rule may count. */
+			$message = __(
+				'A series cannot be split past its first %d dates. Choose an earlier date to split from.',
+				'gatherpress'
+			);
+
 			return new WP_Error(
 				'gatherpress_split_too_long',
-				sprintf(
-					/* translators: %d: the maximum number of dates a recurrence rule may count. */
-					__( 'A series cannot be split past its first %d dates. Choose an earlier date to split from.', 'gatherpress' ),
-					Rule::MAX_COUNT
-				),
+				sprintf( $message, Rule::MAX_COUNT ),
 				array( 'status' => 400 )
 			);
 		}
@@ -271,12 +273,53 @@ final class Splitter {
 		);
 
 		if ( is_wp_error( $result ) ) {
-			$this->roll_back( $origin_post_id );
+			$this->report_rollback( $result, $this->roll_back( $origin_post_id ) );
 		} else {
 			$this->undo = array();
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Append a failed rollback to the failure that caused it.
+	 *
+	 * A rollback that could not finish is the one outcome a caller must not
+	 * read as "nothing happened": the compensating undos put the stored values
+	 * back, but the re-derivation that follows them did not run, so the series
+	 * is left describing rows it does not have. The report therefore carries
+	 * both failures, the original first so `WP_Error::get_error_data()` and
+	 * every REST `status` derived from it still describe why the split was
+	 * refused.
+	 *
+	 * The second entry is filed under its own code rather than under the
+	 * rollback failure's. A database refusing every write produces the same
+	 * code twice, and `WP_Error::add()` would fold the second message into the
+	 * first code's list, hiding the rollback failure in exactly the situation
+	 * that produces it most often. The refusal's own code and data travel in
+	 * this entry's data instead.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Error      $failure  The failure that aborted the split, appended to in place.
+	 * @param WP_Error|null $rollback The rollback's own failure, or null when it completed.
+	 *
+	 * @return void
+	 */
+	protected function report_rollback( WP_Error $failure, ?WP_Error $rollback ): void {
+		if ( null === $rollback ) {
+			return;
+		}
+
+		$failure->add(
+			'gatherpress_split_rollback_failed',
+			__( 'The split failed and could not be fully undone. This series may be inconsistent.', 'gatherpress' ),
+			array(
+				'status'              => 500,
+				'rollback_error_code' => $rollback->get_error_code(),
+				'rollback_error_data' => $rollback->get_error_data(),
+			)
+		);
 	}
 
 	/**
@@ -352,7 +395,7 @@ final class Splitter {
 			$forward_post_id,
 			$forward_ids,
 			$origin_post_id,
-			fn (): bool => $this->apply_forward_rule( $forward_post_id, $rule, $index, $forward_rows )
+			fn () => $this->apply_forward_rule( $forward_post_id, $rule, $index, $forward_rows )
 		);
 
 		if ( is_wp_error( $forward_recurring ) ) {
@@ -364,7 +407,7 @@ final class Splitter {
 			$origin_post_id,
 			$origin_ids,
 			$origin_post_id,
-			fn (): bool => $this->apply_capped_rule( $origin_post_id, $rule, $index, $rows[0] )
+			fn () => $this->apply_capped_rule( $origin_post_id, $rule, $index, $rows[0] )
 		);
 
 		if ( is_wp_error( $origin_recurring ) ) {
@@ -547,13 +590,18 @@ final class Splitter {
 	 * rows are still half-moved would upsert a second copy of every moved
 	 * occurrence under the origin.
 	 *
+	 * The undo is recorded **before** the write runs, which is what makes a
+	 * write that fails half-way recoverable: the blob is already on the post by
+	 * the time its projection is refused, and only a recorded undo takes it off
+	 * again.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param string   $phase          Phase name, for the failure-injection seam.
 	 * @param int      $post_id        Post whose rule is being written.
 	 * @param string[] $recurrence_ids Identifiers that post is meant to keep.
 	 * @param int      $origin_post_id Origin post, reported to the phase seam.
-	 * @param callable $write          Writes the rule and reports whether the post stays recurring.
+	 * @param callable $write          Writes the rule and reports whether the post stays recurring, or the failure.
 	 *
 	 * @return bool|WP_Error Whether the post remains recurring, or the failure.
 	 */
@@ -572,10 +620,15 @@ final class Splitter {
 			}
 		);
 
-		$recurring = (bool) $write();
-		$failure   = $this->phase( $phase, $origin_post_id, $post_id );
+		$recurring = $write();
 
-		return null === $failure ? $recurring : $failure;
+		if ( is_wp_error( $recurring ) ) {
+			return $recurring;
+		}
+
+		$failure = $this->phase( $phase, $origin_post_id, $post_id );
+
+		return null === $failure ? (bool) $recurring : $failure;
 	}
 
 	/**
@@ -779,18 +832,27 @@ final class Splitter {
 	 * restore stored values only, and re-deriving before the rows are back
 	 * under the origin would upsert a duplicate of every moved occurrence.
 	 *
+	 * That final re-derivation is a database write like any other, and the
+	 * database that refused a projection during the split can refuse this one
+	 * too. A refusal here is reported rather than swallowed: the compensating
+	 * undos have already run, so the rows are back, but the origin's rule and
+	 * its rows have not been reconciled and a caller told the split simply
+	 * failed would have no reason to look. The revisions and caches are settled
+	 * first regardless, so a failed re-derivation does not also strand the
+	 * calendar revision the split advanced.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $origin_post_id Post to re-derive once the stack is empty.
 	 *
-	 * @return void
+	 * @return WP_Error|null The re-derivation's failure, or null when the rollback completed.
 	 */
-	protected function roll_back( int $origin_post_id ): void {
+	protected function roll_back( int $origin_post_id ): ?WP_Error {
 		// A failure before the first durable phase completed has nothing to
 		// undo, and re-deriving anyway would advance the calendar revision for a
 		// split that never touched the series.
 		if ( array() === $this->undo ) {
-			return;
+			return null;
 		}
 
 		while ( array() !== $this->undo ) {
@@ -801,7 +863,8 @@ final class Splitter {
 
 		Meta::get_instance()->set_recurrence( $origin_post_id );
 		Event_Setup::get_instance()->set_datetimes( $origin_post_id );
-		Occurrences::get_instance()->project( $origin_post_id );
+
+		$projected = Occurrences::get_instance()->project( $origin_post_id );
 
 		foreach ( $this->revisions as $sibling_id => $value ) {
 			if ( null === $value ) {
@@ -816,6 +879,8 @@ final class Splitter {
 		Context::flush_resolved();
 		Series::get_instance()->flush_memo();
 		Rsvp_Cache::delete( $origin_post_id );
+
+		return is_wp_error( $projected ) ? $projected : null;
 	}
 
 	/**
@@ -1044,9 +1109,9 @@ final class Splitter {
 	 * @param int   $index      Index of the split occurrence, and so the number of rows staying.
 	 * @param array $first_row  The origin's first occurrence row, for the demotion path.
 	 *
-	 * @return bool True when the origin remains a recurring series.
+	 * @return bool|WP_Error True when the origin remains a recurring series, or the write's failure.
 	 */
-	protected function apply_capped_rule( int $post_id, Rule $rule, int $index, array $first_row ): bool {
+	protected function apply_capped_rule( int $post_id, Rule $rule, int $index, array $first_row ) {
 		$values             = $rule->to_array();
 		$values['end_type'] = Rule::END_TYPE_COUNT;
 		$values['count']    = $index;
@@ -1055,12 +1120,12 @@ final class Splitter {
 		// One occurrence left behind is not a series: that side becomes a plain
 		// non-recurring event.
 		if ( 1 === $index ) {
-			return ! $this->demote_to_plain_event( $post_id, $first_row, $values );
+			$demoted = $this->demote_to_plain_event( $post_id, $first_row, $values );
+
+			return is_wp_error( $demoted ) ? $demoted : ! $demoted;
 		}
 
-		$this->write_rule( $post_id, $values );
-
-		return true;
+		return $this->write_rule( $post_id, $values ) ?? true;
 	}
 
 	/**
@@ -1077,9 +1142,9 @@ final class Splitter {
 	 * @param int   $index        Index of the split occurrence.
 	 * @param array $forward_rows Occurrence rows that moved to the forward post.
 	 *
-	 * @return bool True when the forward post is a recurring series.
+	 * @return bool|WP_Error True when the forward post is a recurring series, or the write's failure.
 	 */
-	protected function apply_forward_rule( int $post_id, Rule $rule, int $index, array $forward_rows ): bool {
+	protected function apply_forward_rule( int $post_id, Rule $rule, int $index, array $forward_rows ) {
 		$values = $rule->to_array();
 
 		if ( Rule::END_TYPE_COUNT === $rule->end_type() ) {
@@ -1092,12 +1157,12 @@ final class Splitter {
 		// have run into the projection horizon, and demoting it would silently
 		// discard every date beyond it.
 		if ( 1 === count( $forward_rows ) && Rule::END_TYPE_COUNT === $rule->end_type() ) {
-			return ! $this->demote_to_plain_event( $post_id, $forward_rows[0], $values );
+			$demoted = $this->demote_to_plain_event( $post_id, $forward_rows[0], $values );
+
+			return is_wp_error( $demoted ) ? $demoted : ! $demoted;
 		}
 
-		$this->write_rule( $post_id, $values );
-
-		return true;
+		return $this->write_rule( $post_id, $values ) ?? true;
 	}
 
 	/**
@@ -1111,18 +1176,28 @@ final class Splitter {
 	 * therefore reports the state it produced, not the state a `shutdown`
 	 * handler will produce later.
 	 *
+	 * Because the projection is synchronous, its refusal is this split's to
+	 * handle. `Occurrences::project()` answers a `WP_Error` when the database
+	 * refuses a write, and discarding it left the post carrying a rule whose
+	 * rows do not exist while every later phase measured the rows that do. The
+	 * failure is returned instead, so the caller aborts and the undo stack that
+	 * was recorded before this ran takes the blob back off.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int   $post_id Post to write the rule on.
 	 * @param array $values  Rule values, in `Rule::to_array()` shape.
 	 *
-	 * @return void
+	 * @return WP_Error|null The projection's failure, or null when the rows were written.
 	 */
-	protected function write_rule( int $post_id, array $values ): void {
+	protected function write_rule( int $post_id, array $values ): ?WP_Error {
 		update_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $values ) );
 
 		Meta::get_instance()->set_recurrence( $post_id );
-		Occurrences::get_instance()->project( $post_id );
+
+		$projected = Occurrences::get_instance()->project( $post_id );
+
+		return is_wp_error( $projected ) ? $projected : null;
 	}
 
 	/**
@@ -1145,17 +1220,15 @@ final class Splitter {
 	 * @param array $row     Its single remaining occurrence row.
 	 * @param array $values  Rule values to fall back to when the occurrence is canceled.
 	 *
-	 * @return bool True when the post was demoted.
+	 * @return bool|WP_Error True when the post was demoted, or the fallback write's failure.
 	 */
-	protected function demote_to_plain_event( int $post_id, array $row, array $values ): bool {
+	protected function demote_to_plain_event( int $post_id, array $row, array $values ) {
 		if ( Occurrences::STATUS_SCHEDULED !== (string) $row['status'] ) {
 			$values['end_type'] = Rule::END_TYPE_COUNT;
 			$values['count']    = 1;
 			$values['until']    = '';
 
-			$this->write_rule( $post_id, $values );
-
-			return false;
+			return $this->write_rule( $post_id, $values ) ?? false;
 		}
 
 		Meta::get_instance()->remove_recurrence( $post_id );
