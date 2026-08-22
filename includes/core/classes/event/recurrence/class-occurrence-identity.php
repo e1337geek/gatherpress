@@ -63,10 +63,15 @@ final class Occurrence_Identity {
 	 * that touched storage there would answer "does this occurrence exist?" for
 	 * a caller who has not yet been authorized to ask.
 	 *
+	 * Anchored with `\A` and `\z` rather than `^` and `$`, because in PCRE `$`
+	 * also matches before a final newline and this gate's contract is
+	 * byte-exactness: the classic form path reads the posted field with no
+	 * sanitizer, so the unsanitized value is what reaches this pattern.
+	 *
 	 * @since 0.36.0
 	 * @var string
 	 */
-	const CANONICAL_PATTERN = '/^\d{8}T\d{6}$/';
+	const CANONICAL_PATTERN = '/\A\d{8}T\d{6}\z/';
 
 	/**
 	 * Class constructor.
