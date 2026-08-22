@@ -117,7 +117,20 @@ class Test_Occurrence_Identity extends Base {
 			'Failed to assert a canonical identifier is accepted.'
 		);
 
-		foreach ( array( '', 'not-a-recurrence-id', '20260903180000', '20260903T1800', '20260903t180000 ' ) as $bad ) {
+		// The newline case is the PCRE trap: `$` matches before a final newline,
+		// so a `$`-anchored pattern accepts a value the docblock's "and nothing
+		// else" contract refuses. `Form::posted_occurrence()` reads the posted
+		// field with no sanitizer, so the unsanitized value reaches this gate.
+		$bad_identifiers = array(
+			'',
+			'not-a-recurrence-id',
+			'20260903180000',
+			'20260903T1800',
+			'20260903t180000 ',
+			"20260903T180000\n",
+		);
+
+		foreach ( $bad_identifiers as $bad ) {
 			$this->assertFalse(
 				Occurrence_Identity::is_canonical( $bad ),
 				sprintf( 'Failed to assert "%s" is refused as a non-canonical identifier.', $bad )
