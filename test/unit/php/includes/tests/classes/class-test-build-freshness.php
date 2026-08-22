@@ -15,6 +15,8 @@
 
 namespace GatherPress\Tests;
 
+use ReflectionFunction;
+
 // The guard walks real directories, so the fixtures have to build real ones.
 // WordPress is loaded here, but `WP_Filesystem` writes through a credentialed
 // abstraction meant for plugin-managed paths, not for a scratch tree under
@@ -143,6 +145,37 @@ class Test_Build_Freshness extends Base {
 
 		$this->assertSame( 3000, gatherpress_oldest_file_mtime( $tree, '/nested' ) );
 		$this->assertSame( 1000, gatherpress_oldest_file_mtime( $tree ) );
+	}
+
+	/**
+	 * The newest reading takes no skip fragment, and excludes nothing.
+	 *
+	 * The exclusion exists for one tree, `build/coverage-report`, and that
+	 * tree only ever appears on the build side of the comparison. A skip
+	 * parameter on this half would be a branch nothing could reach, so the
+	 * signature carries one argument and a `coverage`-shaped path under the
+	 * source tree still counts toward the reading.
+	 *
+	 * @return void
+	 */
+	public function test_newest_mtime_takes_no_skip_fragment(): void {
+		$tree = $this->make_tree(
+			array(
+				'artifact.txt'        => 1000,
+				'nested/coverage.txt' => 3000,
+			)
+		);
+
+		$this->assertSame(
+			1,
+			( new ReflectionFunction( 'gatherpress_newest_mtime' ) )->getNumberOfParameters(),
+			'Failed to assert that the newest reading takes the directory alone.'
+		);
+		$this->assertSame(
+			3000,
+			gatherpress_newest_mtime( $tree ),
+			'Failed to assert that the newest reading counted a coverage-shaped path.'
+		);
 	}
 
 	/**

@@ -29,25 +29,25 @@
  * Directories are stat'd alongside files, so a deletion or a rename registers
  * as a change even though no surviving file's own timestamp moved.
  *
+ * Unlike its mirror below, this half takes no skip fragment. The exclusion
+ * exists for `build/coverage-report`, which only ever needs excluding from the
+ * build side of the comparison; the source tree has no equivalent, so a skip
+ * parameter here would be a branch no caller can reach.
+ *
  * @since 0.36.0
  *
  * @param string $directory Absolute directory to walk.
- * @param string $skip      Path fragment to exclude, or '' to exclude nothing.
  *
  * @return int The newest modification time found, or 0 for an empty directory.
  */
-function gatherpress_newest_mtime( string $directory, string $skip = '' ): int {
+function gatherpress_newest_mtime( string $directory ): int {
 	$newest   = 0;
 	$iterator = new RecursiveIteratorIterator(
 		new RecursiveDirectoryIterator( $directory, FilesystemIterator::SKIP_DOTS ),
 		RecursiveIteratorIterator::SELF_FIRST
 	);
 
-	foreach ( $iterator as $path => $info ) {
-		if ( '' !== $skip && str_contains( (string) $path, $skip ) ) {
-			continue;
-		}
-
+	foreach ( $iterator as $info ) {
 		$newest = max( $newest, (int) $info->getMTime() );
 	}
 
