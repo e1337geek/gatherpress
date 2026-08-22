@@ -1551,7 +1551,7 @@ class Test_Occurrences extends Base {
 		$announced = 0;
 
 		$this->assertTrue(
-			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
 			'Failed to cancel the date, so the repeat below would not be a repeat.'
 		);
 
@@ -1563,7 +1563,7 @@ class Test_Occurrences extends Base {
 		);
 
 		$this->assertTrue(
-			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
 			'The composite key still matches, so the caller is still told so.'
 		);
 		$this->assertSame(

@@ -401,7 +401,7 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
-	 * Cancelled occurrences appear as `EXDATE`, derived from the rows rather
+	 * Canceled occurrences appear as `EXDATE`, derived from the rows rather
 	 * than written into the rule.
 	 *
 	 * @covers ::get_ical_event_string
@@ -410,11 +410,11 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrences_are_emitted_as_exdate(): void {
+	public function test_canceled_occurrences_are_emitted_as_exdate(): void {
 		$post_id = $this->create_weekly_series();
 
-		Occurrences::get_instance()->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
-		Occurrences::get_instance()->set_status( $post_id, $this->occurrence_id( 3 ), Occurrences::STATUS_CANCELLED );
+		Occurrences::get_instance()->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELED );
+		Occurrences::get_instance()->set_status( $post_id, $this->occurrence_id( 3 ), Occurrences::STATUS_CANCELED );
 
 		$this->enable_pretty_permalinks();
 
@@ -430,7 +430,7 @@ class Test_Calendar_Recurrence extends Base {
 				),
 			),
 			$this->lines_for( $body, 'EXDATE' ),
-			'Cancelled occurrences must appear as exclusions on the series component.'
+			'Canceled occurrences must appear as exclusions on the series component.'
 		);
 		$this->assertSame(
 			array( 'RRULE:FREQ=WEEKLY;BYDAY=' . $this->byday() . ';COUNT=5' ),
@@ -592,7 +592,7 @@ class Test_Calendar_Recurrence extends Base {
 			Occurrences::get_instance()->set_status(
 				$post_id,
 				$this->occurrence_id( $index ),
-				Occurrences::STATUS_CANCELLED
+				Occurrences::STATUS_CANCELED
 			);
 		}
 
@@ -1122,12 +1122,12 @@ class Test_Calendar_Recurrence extends Base {
 		$url         = $this->series_ical_url( $post_id );
 		$occurrences = Occurrences::get_instance();
 
-		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
+		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELED );
 
 		$first     = $this->body_for( $url );
 		$first_key = Calendar_Cache::get_instance()->get_versioned_key( 'probe' );
 
-		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
+		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELED );
 
 		$second     = $this->body_for( $url );
 		$second_key = Calendar_Cache::get_instance()->get_versioned_key( 'probe' );
@@ -1197,11 +1197,11 @@ class Test_Calendar_Recurrence extends Base {
 
 		$before = $revision->current( $post_id );
 
-		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
+		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELED );
 
 		$middle = $revision->current( $post_id );
 
-		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
+		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELED );
 
 		$after = $revision->current( $post_id );
 
@@ -1600,7 +1600,7 @@ class Test_Calendar_Recurrence extends Base {
 		Occurrences::get_instance()->set_status(
 			$post_id,
 			$this->occurrence_id( 1 ),
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		$moved = Calendar_Cache::get_instance()->get_last_modified();
@@ -1666,12 +1666,12 @@ class Test_Calendar_Recurrence extends Base {
 
 		$occurrences = Occurrences::get_instance();
 
-		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
+		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELED );
 
 		// The client revalidated after the first change and holds its stamp.
 		$held = Calendar_Cache::get_instance()->get_last_modified();
 
-		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
+		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELED );
 
 		$moved = Calendar_Cache::get_instance()->get_last_modified();
 
@@ -1772,7 +1772,7 @@ class Test_Calendar_Recurrence extends Base {
 		Occurrences::get_instance()->set_status(
 			$sibling,
 			$this->occurrence_id( 2 ),
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		add_filter(
@@ -2397,7 +2397,7 @@ class Test_Calendar_Recurrence extends Base {
 		Occurrences::get_instance()->set_status(
 			$post_id,
 			$this->occurrence_id( 1 ),
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		$url = $this->series_ical_url( $post_id );

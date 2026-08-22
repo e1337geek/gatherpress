@@ -805,7 +805,7 @@ class Test_Query extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_a_fully_cancelled_series_is_absent_from_a_folded_ids_list(): void {
+	public function test_a_fully_canceled_series_is_absent_from_a_folded_ids_list(): void {
 		$now      = $this->now();
 		$anchor   = $now->modify( '+6 hours' );
 		$series   = $this->create_series_at( $anchor, $now->modify( '+7 hours' ) );
@@ -822,7 +822,7 @@ class Test_Query extends Base {
 				Occurrences::get_instance()->set_status(
 					$series,
 					$this->occurrence_id( $anchor, $index ),
-					Occurrences::STATUS_CANCELLED
+					Occurrences::STATUS_CANCELED
 				),
 				'Failed to cancel every occurrence; the assertion below would pass for the wrong reason.'
 			);

@@ -493,7 +493,7 @@ final class Calendar {
 	private function exdate_line( string $timezone ): string {
 		$rows = Occurrences::get_instance()->select_for_series(
 			Series::get_instance()->resolve_post_ids( $this->event->event->ID ),
-			array( 'status' => Occurrences::STATUS_CANCELLED )
+			array( 'status' => Occurrences::STATUS_CANCELED )
 		);
 
 		if ( array() === $rows ) {
