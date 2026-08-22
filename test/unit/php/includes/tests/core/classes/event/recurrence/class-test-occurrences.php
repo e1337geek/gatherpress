@@ -3927,6 +3927,110 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * `set_status()` refuses a status that is not one of the two constants,
+	 * leaving the row untouched.
+	 *
+	 * `select_by_horizon()` matches `status = 'scheduled'` exactly, so a row
+	 * carrying any other string silently vanishes from every listing without
+	 * having been canceled. The write boundary is where that is stopped.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_set_status_refuses_an_unrecognized_status(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+
+		$this->assertFalse(
+			$instance->set_status( $post_id, '20260903T180000', 'bogus' ),
+			'Failed to assert set_status refuses a status outside the two constants.'
+		);
+
+		$row = $instance->get( $post_id, '20260903T180000' );
+
+		$this->assertSame(
+			Occurrences::STATUS_SCHEDULED,
+			$row['status'],
+			'Failed to assert the refused status left the row untouched.'
+		);
+	}
+
+	/**
+	 * A corrupted `end_type` mirror holding an unrecognized value must not
+	 * become a permanent sweep candidate.
+	 *
+	 * `Rule::is_valid()` rejects such a rule, so projecting it can never
+	 * produce rows, and a negative `!= 'count'` predicate would keep
+	 * selecting it on every sweep forever. The candidate query must admit
+	 * only the two end types a projection can actually extend.
+	 *
+	 * The fixture passes every other candidate predicate on purpose: the
+	 * post is published, its mirror key exists, and it has no occurrence
+	 * rows, so only the end-type predicate can exclude it.
+	 *
+	 * @covers ::select_series_needing_top_up
+	 *
+	 * @return void
+	 */
+	public function test_sweep_candidates_exclude_an_unrecognized_end_type(): void {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		update_post_meta( $post_id, 'gatherpress_recurrence_end_type', 'bogus' );
+
+		$this->assertNotContains(
+			$post_id,
+			Occurrences::get_instance()->select_series_needing_top_up( 10 ),
+			'Failed to assert an unrecognized end type is never a sweep candidate.'
+		);
+	}
+
+	/**
+	 * A filter forcing a non-positive projection horizon is clamped rather
+	 * than allowed to build a horizon in the past, which would expand every
+	 * open-ended rule to zero rows and delete all existing rows as stale.
+	 *
+	 * @covers ::project
+	 * @covers ::resolve_horizon
+	 *
+	 * @return void
+	 */
+	public function test_a_negative_horizon_filter_cannot_delete_every_row(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$destructive = static fn() => -1;
+		add_filter( 'gatherpress_recurrence_horizon_months', $destructive );
+
+		$written = Occurrences::get_instance()->project( $post_id );
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $destructive );
+
+		$this->assertIsInt( $written, 'Failed to assert the clamped projection reported success.' );
+		$this->assertGreaterThan(
+			0,
+			$written,
+			'Failed to assert a negative horizon filter is clamped instead of expanding to nothing.'
+		);
+		$this->assertNotSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the clamped horizon left the projected rows in place.'
+		);
+	}
+
+	/**
 	 * Direct coverage for `execute_write()`'s success path: the statement's
 	 * affected-row count comes back as an integer.
 	 *
