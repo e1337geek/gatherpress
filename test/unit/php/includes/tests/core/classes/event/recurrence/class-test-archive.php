@@ -977,6 +977,132 @@ class Test_Archive extends Base {
 	}
 
 	/**
+	 * Direct coverage for every arm of the shared archive-request guard.
+	 *
+	 * Each declining case flips exactly one guard while satisfying all the
+	 * others, so the arm named is the only one that can act. Driven through
+	 * `Utility::invoke_hidden_method()` because xdebug does not reliably
+	 * trace same-class helper bodies called from their parent callbacks.
+	 *
+	 * @covers ::is_event_archive_request
+	 *
+	 * @return void
+	 */
+	public function test_is_event_archive_request_arms(): void {
+		$instance = Event_Setup::get_instance();
+		$build    = static function ( array $flags, array $vars ): WP_Query {
+			$query = new WP_Query();
+
+			foreach ( $flags as $flag => $value ) {
+				$query->$flag = $value;
+			}
+
+			foreach ( $vars as $key => $value ) {
+				$query->set( $key, $value );
+			}
+
+			return $query;
+		};
+
+		$archive = array(
+			'is_post_type_archive' => true,
+			'is_feed'              => false,
+		);
+		$event   = array( 'post_type' => Event::POST_TYPE );
+
+		$cases = array(
+			array( $archive, $event, true, 'an event archive request is accepted' ),
+			array(
+				array(
+					'is_post_type_archive' => false,
+					'is_feed'              => false,
+				),
+				$event,
+				false,
+				'a non-archive request is declined',
+			),
+			array(
+				array(
+					'is_post_type_archive' => true,
+					'is_feed'              => true,
+				),
+				$event,
+				false,
+				'a feed request is declined',
+			),
+			array(
+				$archive,
+				array(
+					'post_type'                    => Event::POST_TYPE,
+					Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+				),
+				false,
+				'an already-claimed archive is declined',
+			),
+			array( $archive, array( 'post_type' => 'post' ), false, 'a non-event archive is declined' ),
+		);
+
+		foreach ( $cases as list( $flags, $vars, $expected, $label ) ) {
+			$this->assertSame(
+				$expected,
+				Utility::invoke_hidden_method(
+					$instance,
+					'is_event_archive_request',
+					array( $build( $flags, $vars ) )
+				),
+				sprintf( 'Failed to assert %s.', $label )
+			);
+		}
+	}
+
+	/**
+	 * Direct coverage for the concrete-post-type resolver, one case per
+	 * return shape: a plain string, a widened array holding an event type,
+	 * and a widened array holding none.
+	 *
+	 * @covers ::first_queried_event_post_type
+	 *
+	 * @return void
+	 */
+	public function test_first_queried_event_post_type_resolves_from_the_intersection(): void {
+		$instance = Event_Setup::get_instance();
+		$build    = static function ( $post_type ): WP_Query {
+			$query = new WP_Query();
+			$query->set( 'post_type', $post_type );
+
+			return $query;
+		};
+
+		$this->assertSame(
+			Event::POST_TYPE,
+			Utility::invoke_hidden_method(
+				$instance,
+				'first_queried_event_post_type',
+				array( $build( Event::POST_TYPE ) )
+			),
+			'Failed to assert a plain string post type resolves to itself.'
+		);
+		$this->assertSame(
+			Event::POST_TYPE,
+			Utility::invoke_hidden_method(
+				$instance,
+				'first_queried_event_post_type',
+				array( $build( array( 'post', Event::POST_TYPE ) ) )
+			),
+			'Failed to assert a widened array resolves to its event-supporting member.'
+		);
+		$this->assertSame(
+			'',
+			Utility::invoke_hidden_method(
+				$instance,
+				'first_queried_event_post_type',
+				array( $build( array( 'post', 'page' ) ) )
+			),
+			'Failed to assert an array holding no event-supporting type resolves to the empty string.'
+		);
+	}
+
+	/**
 	 * Data provider for the 404 deferral guards.
 	 *
 	 * @since 0.36.0

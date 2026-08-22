@@ -377,19 +377,19 @@ final class Setup {
 	public function handle_event_archive_redirect(): void {
 		global $wp_query;
 
-		// Bail on feeds (handled separately by Feed) or when something
-		// else already claimed this page as an event archive.
-		if ( is_feed() || $wp_query->get( Query::EVENT_QUERY_PARAM ) ) {
+		// The one guard `defer_event_archive_404()` also uses: whatever query
+		// shape defers core's 404 decision is exactly the shape this method
+		// owes a decision back to. Deciding the two independently is how the
+		// widened-array `post_type` case deferred the 404 and then bailed
+		// here on a `(string)` cast that read `Array`.
+		if ( ! $this->is_event_archive_request( $wp_query ) ) {
 			return;
 		}
 
-		// Bail when not on a post type archive at all, or when the
-		// queried post type doesn't declare event-date support.
-		$post_type = (string) get_query_var( 'post_type' );
-
-		if ( ! is_post_type_archive() || ! post_type_supports( $post_type, 'gatherpress-event-date' ) ) {
-			return;
-		}
+		// The concrete post type this request archives, resolved from the
+		// intersection rather than from a cast, because a `pre_get_posts`
+		// widening routinely turns the main query's `post_type` into an array.
+		$post_type = $this->first_queried_event_post_type( $wp_query );
 
 		// The page-as-archive flow below reads settings that exist only
 		// for the standard event post type (`events_url`,
@@ -567,30 +567,56 @@ final class Setup {
 	 * @return mixed `true` to defer the decision on an event archive request, otherwise `$preempt` unchanged.
 	 */
 	public function defer_event_archive_404( $preempt, WP_Query $wp_query ) {
-		// Anything already preempting wins, and the four remaining arms mirror
-		// handle_event_archive_redirect()'s own guards: if it is not going to
-		// handle this request, core must be left to decide the 404. The post
-		// type check intersects rather than casts, because a `pre_get_posts`
-		// widening routinely turns the main query's `post_type` into an
-		// array, and casting that produced the literal string `Array`,
-		// declining the deferral for exactly the sites that widened. Mirrors
-		// `Recurrence\Query::is_event_query()`.
-		$queried_post_types = array_map( 'strval', (array) $wp_query->get( 'post_type' ) );
-
-		if (
-			false !== $preempt
-			|| ! $wp_query->is_post_type_archive
-			|| $wp_query->is_feed
-			|| $wp_query->get( Query::EVENT_QUERY_PARAM )
-			|| array() === array_intersect(
-				$queried_post_types,
-				get_post_types_by_support( 'gatherpress-event-date' )
-			)
-		) {
+		// Anything already preempting wins. Beyond that the deferral and
+		// `handle_event_archive_redirect()` share one guard, so the query
+		// shapes that lose core's 404 decision and the shapes that get a
+		// decision back cannot drift apart.
+		if ( false !== $preempt || ! $this->is_event_archive_request( $wp_query ) ) {
 			return $preempt;
 		}
 
 		return true;
+	}
+
+	/**
+	 * Decide whether a query is an event archive request this class handles.
+	 *
+	 * The single rule shared by `defer_event_archive_404()` and
+	 * `handle_event_archive_redirect()`: a front-end post type archive, not a
+	 * feed, not already claimed as an event archive, whose queried post types
+	 * include at least one with event-date support. The post type check
+	 * intersects rather than casts, because a `pre_get_posts` widening
+	 * routinely turns the main query's `post_type` into an array, and casting
+	 * that produced the literal string `Array`, declining for exactly the
+	 * sites that widened. Mirrors `Recurrence\Query::is_event_query()`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $wp_query The query being judged.
+	 *
+	 * @return bool True when both callbacks should treat it as an event archive request.
+	 */
+	protected function is_event_archive_request( WP_Query $wp_query ): bool {
+		return $wp_query->is_post_type_archive
+			&& ! $wp_query->is_feed
+			&& ! $wp_query->get( Query::EVENT_QUERY_PARAM )
+			&& '' !== $this->first_queried_event_post_type( $wp_query );
+	}
+
+	/**
+	 * Resolve the first event-date-supporting post type a query asks for.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $wp_query The query to read.
+	 *
+	 * @return string The first supported post type queried, or '' when none is.
+	 */
+	protected function first_queried_event_post_type( WP_Query $wp_query ): string {
+		$queried   = array_map( 'strval', (array) $wp_query->get( 'post_type' ) );
+		$supported = array_intersect( $queried, get_post_types_by_support( 'gatherpress-event-date' ) );
+
+		return (string) reset( $supported );
 	}
 
 	/**
