@@ -1532,6 +1532,48 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A status write that changes nothing announces nothing.
+	 *
+	 * Re-canceling an already canceled date is a write on paper only: the row
+	 * is byte-identical after it. Announcing it advances the series' SEQUENCE
+	 * and invalidates every calendar response cache on the site for a change
+	 * no client can observe, so subscribers re-ingest an unchanged component.
+	 * The gate follows `move_to_post()`: announce on evidence of change,
+	 * never on the statement having run.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_setting_an_unchanged_status_announces_nothing(): void {
+		$post_id   = $this->create_and_project();
+		$instance  = Occurrences::get_instance();
+		$announced = 0;
+
+		$this->assertTrue(
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			'Failed to cancel the date, so the repeat below would not be a repeat.'
+		);
+
+		add_action(
+			'gatherpress_occurrences_changed',
+			static function () use ( &$announced ): void {
+				++$announced;
+			}
+		);
+
+		$this->assertTrue(
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			'The composite key still matches, so the caller is still told so.'
+		);
+		$this->assertSame(
+			0,
+			$announced,
+			'A write that changed nothing must not invalidate every calendar on the site.'
+		);
+	}
+
+	/**
 	 * Coverage for `set_status()` returning false when the composite key matches nothing.
 	 *
 	 * @covers ::set_status
