@@ -8,7 +8,14 @@ This directory contains end-to-end tests for GatherPress using Playwright. These
 npm run test:e2e
 ```
 
-`pretest:e2e` starts the WordPress instance with `wp-env start --config .wp-env.test.json`, and `playwright.config.js` derives its `baseURL` from that same pair of files, reading `.wp-env.test.override.json` first (wp-env applies it last) and then `.wp-env.test.json`. **Do not hard-code the port anywhere.** The override file is local, untracked, per-checkout state: it is how parallel git worktrees keep off each other's ports, so its value differs between checkouts and is not in git.
+`pretest:e2e` starts the WordPress instance with `wp-env start --config .wp-env.test.json`, and `playwright.config.js` derives its `baseURL` from the same inputs wp-env reads, in the same order wp-env applies them (`test/e2e/resolve-wp-env-port.js`):
+
+1. `WP_ENV_PORT`, which wp-env consults ahead of every config file. A value that is not a whole number between 1 and 65535 is ignored and resolution falls through to the files.
+2. `.wp-env.test.override.json`, which wp-env layers on top of the tracked config.
+3. `.wp-env.test.json`, the tracked config.
+4. `8888`, wp-env's own default, when none of the above supplies a port.
+
+**Do not hard-code the port anywhere.** The override file is local, untracked, per-checkout state: it is how parallel git worktrees keep off each other's ports, so its value differs between checkouts and is not in git.
 
 This matters more than it looks. If the config and the running environment disagree on the port, Playwright does not fail fast. It finds *a* WordPress on the stale port, either another worktree's or a leftover container, authenticates against it, and then fails deep in the specs with REST errors that read like application bugs.
 
