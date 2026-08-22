@@ -569,13 +569,23 @@ final class Setup {
 	public function defer_event_archive_404( $preempt, WP_Query $wp_query ) {
 		// Anything already preempting wins, and the four remaining arms mirror
 		// handle_event_archive_redirect()'s own guards: if it is not going to
-		// handle this request, core must be left to decide the 404.
+		// handle this request, core must be left to decide the 404. The post
+		// type check intersects rather than casts, because a `pre_get_posts`
+		// widening routinely turns the main query's `post_type` into an
+		// array, and casting that produced the literal string `Array`,
+		// declining the deferral for exactly the sites that widened. Mirrors
+		// `Recurrence\Query::is_event_query()`.
+		$queried_post_types = array_map( 'strval', (array) $wp_query->get( 'post_type' ) );
+
 		if (
 			false !== $preempt
 			|| ! $wp_query->is_post_type_archive
 			|| $wp_query->is_feed
 			|| $wp_query->get( Query::EVENT_QUERY_PARAM )
-			|| ! post_type_supports( (string) $wp_query->get( 'post_type' ), 'gatherpress-event-date' )
+			|| array() === array_intersect(
+				$queried_post_types,
+				get_post_types_by_support( 'gatherpress-event-date' )
+			)
 		) {
 			return $preempt;
 		}
