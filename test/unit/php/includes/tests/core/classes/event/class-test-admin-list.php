@@ -14,6 +14,7 @@ use GatherPress\Core\Event;
 use GatherPress\Core\Event\Admin_List;
 use GatherPress\Core\Event\Recurrence\Meta as Recurrence_Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Rsvp;
 use GatherPress\Core\Settings;
@@ -1993,6 +1994,94 @@ class Test_Admin_List extends Base {
 			'gatherpress-recurring-badge',
 			$output,
 			'Failed to assert that a non-recurring event is not marked as recurring.'
+		);
+	}
+
+	/**
+	 * An ordinary event's date column issues no occurrence-table queries.
+	 *
+	 * On a site with one recurring series, every other row of the admin list
+	 * is an ordinary event whose occurrence probes cannot match anything: a
+	 * twenty-row page would pay up to forty uncached `LIMIT 1` queries for
+	 * nothing. The rule check is a post-meta-cache read, so the guard costs
+	 * no query of its own.
+	 *
+	 * The fixture deliberately satisfies every *other* guard on the path:
+	 * the recurring series flips the site-level flag on, the table exists,
+	 * and the resolved post ID list is non-empty, so a zero count can only
+	 * come from the per-post rule check.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_queries_no_occurrences_for_ordinary_event(): void {
+		global $wpdb;
+
+		// A real recurring series elsewhere on the site turns the site flag on.
+		$this->create_daily_series_fixture( 5 );
+
+		$this->assertTrue(
+			Recurrence_Query::site_has_recurring_events(),
+			'Fixture failure: the site-level recurring flag must be on for this guard test to mean anything.'
+		);
+
+		$start   = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->modify( '+3 days' );
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $start->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		// Prime the meta cache the way the admin list's main query does, so
+		// the counted window reflects a real page render rather than a cold
+		// cache paying a meta query the list would not.
+		get_post_meta( $post_id );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$counter = static function ( string $query ) use ( &$seen, $table ): string {
+			if ( str_contains( $query, $table ) ) {
+				++$seen;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $counter );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', (int) $post_id );
+		$output = ob_get_clean();
+
+		remove_filter( 'query', $counter );
+
+		$this->assertSame(
+			0,
+			$seen,
+			'An ordinary event with no recurrence rule must not probe the occurrence table at all.'
+		);
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $start ),
+			$output,
+			'The guard must not change what the column renders for an ordinary event.'
 		);
 	}
 }
