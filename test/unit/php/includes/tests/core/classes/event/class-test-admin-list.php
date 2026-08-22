@@ -10,8 +10,10 @@ namespace GatherPress\Tests\Core\Event;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Exception;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Admin_List;
+use GatherPress\Core\Event\Recurrence\Context as Recurrence_Context;
 use GatherPress\Core\Event\Recurrence\Meta as Recurrence_Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
@@ -2083,5 +2085,67 @@ class Test_Admin_List extends Base {
 			$output,
 			'The guard must not change what the column renders for an ordinary event.'
 		);
+	}
+
+	/**
+	 * A throw during rendering must not leak this row's occurrence context.
+	 *
+	 * The column enters occurrence context before formatting and restores
+	 * the previous context after. `Event` initialization and
+	 * `get_display_datetime()` are both documented to throw, and a plugin's
+	 * `gatherpress_date_format` filter can throw too; if an outer list-table
+	 * extension catches the exception and continues, the next render would
+	 * inherit this row's context and read the wrong occurrence's values.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_render_datetime_column_restores_context_when_rendering_throws(): void {
+		$fixture = $this->create_daily_series_fixture( 5 );
+		$context = Recurrence_Context::get_instance();
+
+		// A context some other surface established and expects to keep. The
+		// first projected row differs from the display occurrence the column
+		// would enter (the next unfinished one), so a leak is detectable.
+		$standing = Occurrences::get_instance()->select_for_series(
+			array( $fixture['post_id'] )
+		)[0];
+
+		$context->restore( $standing );
+
+		$thrower = static function (): string {
+			throw new Exception( 'plugin formatting failure' );
+		};
+
+		add_filter( 'gatherpress_date_format', $thrower );
+
+		$caught = null;
+
+		ob_start();
+
+		try {
+			Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		} catch ( Exception $thrown ) {
+			// An outer list-table extension catching the throw and moving on.
+			$caught = $thrown->getMessage();
+		} finally {
+			ob_end_clean();
+			remove_filter( 'gatherpress_date_format', $thrower );
+		}
+
+		$this->assertSame(
+			'plugin formatting failure',
+			$caught,
+			'Fixture failure: the render must actually throw for this test to mean anything.'
+		);
+		$this->assertSame(
+			$standing,
+			$context->current(),
+			'A throw during rendering must leave the previously standing occurrence context in place.'
+		);
+
+		$context->restore( null );
 	}
 }
