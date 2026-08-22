@@ -5918,7 +5918,6 @@ class Test_Occurrences extends Base {
 			)
 		);
 	}
-
 	/**
 	 * Coverage for the bounded read's refusal arm.
 	 *
