@@ -32,6 +32,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 use DateTimeImmutable;
 use DateTimeZone;
 use GatherPress\Core\Calendar\Revision;
+use GatherPress\Core\Calendar\Setup as Calendar_Setup;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Occurrence_Identity;
@@ -1257,6 +1258,208 @@ class Test_Split_Continuity extends Base {
 			$before,
 			$this->whole_surface(),
 			'Failed to assert the refused split left everything as it found it.'
+		);
+	}
+
+	/**
+	 * Split a two-occurrence series so both sides demote to plain events.
+	 *
+	 * The exact case of body step 14, and the only split whose result leaves
+	 * the site without a single recurrence rule: demotion removes both rules
+	 * and all occurrence rows, so `gatherpress_has_recurring_events`
+	 * recomputes to `'0'` while the series term relationship persists. The
+	 * sanity assertions are what make the fresh-request tests below tests of
+	 * the registration gate and nothing else: were any rule left standing, the
+	 * recurring flag alone would register the taxonomy and the gate under
+	 * test could never act.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array{0: int, 1: int} Origin and forward post IDs.
+	 */
+	protected function split_two_dates_into_plain_events(): array {
+		$anchor    = $this->relative_anchor();
+		$origin_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( 2 ),
+				'end_type'  => 'count',
+				'count'     => 2,
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' )
+		);
+
+		Recurrence_Query::refresh_has_recurring_events();
+		Context::flush_resolved();
+
+		$identifiers = $this->identifiers_for( $origin_id );
+
+		$this->assertCount( 2, $identifiers, 'Fixture setup: the series must project exactly two occurrences.' );
+
+		$result  = Splitter::get_instance()->split_forward( $origin_id, $identifiers[1] );
+		$forward = (int) $result['forward_post_id'];
+
+		$this->assertTrue( (bool) $result['split'], 'Fixture setup: the split must succeed.' );
+		$this->assertFalse(
+			(bool) $result['origin_recurring'],
+			'Fixture setup: the origin side must demote to a plain event.'
+		);
+		$this->assertFalse(
+			(bool) $result['forward_recurring'],
+			'Fixture setup: the forward side must demote to a plain event.'
+		);
+		$this->assertFalse(
+			Recurrence_Query::site_has_recurring_events(),
+			'Fixture setup: demoting both sides must leave the site with no recurring events at all.'
+		);
+
+		return array( $origin_id, $forward );
+	}
+
+	/**
+	 * Simulate the next request's registration pass.
+	 *
+	 * Taxonomy registration is process global, so the registration the split
+	 * performed mid-request is torn down first; only the production
+	 * `registered_post_type` hook can bring it back, exactly as the next real
+	 * request would.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function simulate_fresh_request_registration(): void {
+		if ( taxonomy_exists( Series::TAXONOMY ) ) {
+			unregister_taxonomy( Series::TAXONOMY );
+		}
+
+		Series::get_instance()->flush_memo();
+
+		do_action( 'registered_post_type', Event::POST_TYPE, get_post_type_object( Event::POST_TYPE ) );
+	}
+
+	/**
+	 * Both halves of a fully demoted split still resolve as one series next request.
+	 *
+	 * Splitting a two-occurrence series at its second date demotes both sides
+	 * to plain events and turns the recurring flag off, but the durable series
+	 * relationship the changelog promises for links and calendars persists in
+	 * the taxonomy. On the next request the taxonomy must therefore still be
+	 * registered and the two events must still resolve as one series, or the
+	 * relationship silently stops being readable while its rows sit in the
+	 * database.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Series::register
+	 * @covers \GatherPress\Core\Event\Recurrence\Series::resolve_post_ids
+	 *
+	 * @return void
+	 */
+	public function test_two_date_split_fragments_resolve_as_one_series_after_a_fresh_request(): void {
+		list( $origin_id, $forward ) = $this->split_two_dates_into_plain_events();
+
+		$this->simulate_fresh_request_registration();
+
+		$this->assertTrue(
+			taxonomy_exists( Series::TAXONOMY ),
+			'A site whose only series is a fully demoted split must still register the series taxonomy on the'
+				. ' next request.'
+		);
+
+		$expected = array( min( $origin_id, $forward ), max( $origin_id, $forward ) );
+
+		$this->assertSame(
+			$expected,
+			Series::get_instance()->resolve_post_ids( $origin_id ),
+			'The demoted origin must still resolve to both fragments of the split series.'
+		);
+
+		Series::get_instance()->flush_memo();
+
+		$this->assertSame(
+			$expected,
+			Series::get_instance()->resolve_post_ids( $forward ),
+			'The demoted forward post must still resolve to both fragments of the split series.'
+		);
+	}
+
+	/**
+	 * A fully demoted split's calendar continuity survives the next request.
+	 *
+	 * The aggregate assertion the immediate split response cannot stand in
+	 * for: the fragment's single export must still carry every fragment of
+	 * the series, and its `RELATED-TO` must still point at the `UID` the
+	 * subscription was first taken out against, on a request where no
+	 * recurrence rule exists anywhere on the site.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Setup::series_component_post_ids
+	 * @covers \GatherPress\Core\Calendar\Setup::get_ical_file
+	 *
+	 * @return void
+	 */
+	public function test_a_two_date_splits_calendar_continuity_survives_a_fresh_request(): void {
+		list( $origin_id, $forward ) = $this->split_two_dates_into_plain_events();
+
+		$this->simulate_fresh_request_registration();
+
+		$this->go_to( get_permalink( $forward ) );
+
+		$this->assertSame(
+			array( min( $origin_id, $forward ), max( $origin_id, $forward ) ),
+			Calendar_Setup::get_instance()->series_component_post_ids(),
+			'The fragment\'s single export must carry every fragment of the demoted split series.'
+		);
+
+		$ical = Calendar_Setup::get_instance()->get_ical_file();
+
+		$this->assertStringContainsString(
+			sprintf( 'UID:gatherpress_%d', $origin_id ),
+			$ical,
+			'The origin fragment\'s component must be part of the export.'
+		);
+		$this->assertStringContainsString(
+			sprintf( 'UID:gatherpress_%d', $forward ),
+			$ical,
+			'The forward fragment\'s component must be part of the export.'
+		);
+		$this->assertStringContainsString(
+			sprintf( 'RELATED-TO:gatherpress_%d', $origin_id ),
+			$ical,
+			'The fragment must keep pointing at the UID the subscription was first taken out against.'
+		);
+	}
+
+	/**
+	 * A rolled-back split leaves the split-series flag off.
+	 *
+	 * The join phase records the flag the moment the term is created; a later
+	 * phase's failure rolls the term back out. The flag is recomputed from
+	 * storage on that deletion, so a site whose only split ever was rolled
+	 * back stays a site with no split series and keeps its byte-identical
+	 * SQL promise.
+	 *
+	 * The option name is asserted literally rather than through a class
+	 * constant, because the stored name is a site contract: renaming the
+	 * constant must break this test.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Series::refresh_has_split_series
+	 *
+	 * @return void
+	 */
+	public function test_a_rolled_back_split_leaves_the_split_series_flag_off(): void {
+		$origin_id = $this->create_and_project();
+		$result    = $this->split_failing_after( 'verify_partition', $origin_id, $this->identifiers[2] );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Fixture setup: the injected failure must abort the split.'
+		);
+		$this->assertSame(
+			'0',
+			get_option( 'gatherpress_has_split_series' ),
+			'A rolled back split must clear the flag its own join recorded, recomputed from the deleted term.'
 		);
 	}
 

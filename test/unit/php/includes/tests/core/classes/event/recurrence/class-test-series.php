@@ -785,9 +785,97 @@ class Test_Series extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'maybe_delete_orphan_term' ),
 			),
+			array(
+				'type'     => 'action',
+				'name'     => 'created_' . Series::TAXONOMY,
+				'priority' => 10,
+				'callback' => array( $instance, 'refresh_has_split_series' ),
+			),
+			array(
+				'type'     => 'action',
+				'name'     => 'delete_' . Series::TAXONOMY,
+				'priority' => 10,
+				'callback' => array( $instance, 'refresh_has_split_series' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );
+	}
+
+	/**
+	 * The first split records that the site has a split series.
+	 *
+	 * The flag is what lets the series taxonomy register and resolve on a
+	 * later request even after every fragment has demoted to a plain event
+	 * and the recurring flag has gone back to `'0'`. It is recomputed from
+	 * term storage on the term lifecycle, never incremented.
+	 *
+	 * The option name is asserted literally rather than through a class
+	 * constant, because the stored name is a site contract: renaming the
+	 * constant must break this test.
+	 *
+	 * @covers ::join
+	 * @covers ::refresh_has_split_series
+	 *
+	 * @return void
+	 */
+	public function test_the_first_split_records_the_split_series_flag(): void {
+		$origin_id = $this->create_and_project();
+
+		$this->assertNotSame(
+			'1',
+			get_option( 'gatherpress_has_split_series' ),
+			'Fixture setup: a site that has never split must not report a split series.'
+		);
+
+		$forward = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+		$this->assertSame(
+			'1',
+			get_option( 'gatherpress_has_split_series' ),
+			'The first series term must record that the site has a split series, independently of the'
+				. ' recurring rule flag.'
+		);
+	}
+
+	/**
+	 * Deleting the last fragment clears the split-series flag with the term.
+	 *
+	 * The clearing point is the term deletion the last fragment's hard delete
+	 * performs, so the two stay wired together: a site that deletes its whole
+	 * split series returns to the byte-identical SQL of a site that never
+	 * split. The control half matters as much: one fragment's deletion keeps
+	 * the flag, because the surviving fragment still resolves through the
+	 * term.
+	 *
+	 * @covers ::maybe_delete_orphan_term
+	 * @covers ::refresh_has_split_series
+	 *
+	 * @return void
+	 */
+	public function test_deleting_the_last_fragment_clears_the_split_series_flag(): void {
+		$origin_id = $this->create_and_project();
+		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+
+		wp_delete_post( $origin_id, true );
+
+		$this->assertSame(
+			'1',
+			get_option( 'gatherpress_has_split_series' ),
+			'Deleting one fragment must keep the flag: the surviving fragment still resolves through the term.'
+		);
+
+		wp_delete_post( $forward, true );
+
+		$this->assertSame(
+			'0',
+			get_option( 'gatherpress_has_split_series' ),
+			'Deleting the last fragment must clear the flag with the term, recomputed from storage rather'
+				. ' than decremented.'
+		);
 	}
 
 	/**
