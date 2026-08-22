@@ -745,6 +745,89 @@ class Test_Cache extends Base {
 	}
 
 	/**
+	 * A count read before the first allocation does not stick at zero.
+	 *
+	 * Production is always in this order: a feed request reads the counter
+	 * before any change has allocated it, and the miss writes the option into
+	 * the `notoptions` memo, which is a persistent group on a site with an
+	 * external object cache. The allocation writes the row by bare SQL and
+	 * must drop that memo along with the per-key entries, or `get_option()`
+	 * answers the default without touching the database on every later read,
+	 * and the counter reads as zero forever while the row keeps incrementing.
+	 *
+	 * @covers ::mark_changed
+	 * @covers ::get_change_count
+	 *
+	 * @return void
+	 */
+	public function test_a_count_read_before_the_first_allocation_does_not_stick_at_zero(): void {
+		$instance = Cache::get_instance();
+
+		delete_option( Cache::CHANGE_COUNT_OPTION );
+		wp_cache_delete( Cache::CHANGE_COUNT_OPTION, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+
+		$this->assertSame(
+			0,
+			$instance->get_change_count(),
+			'Failed to read before the first allocation; the memo state below would not be production\'s.'
+		);
+
+		$instance->mark_changed();
+
+		$this->assertSame(
+			1,
+			$instance->get_change_count(),
+			'An allocation must reach a reader that primed the missing-option memo before it.'
+		);
+	}
+
+	/**
+	 * The change counter moves the cache key inside one validator second.
+	 *
+	 * Separating two changes the one-second validator cannot is the whole
+	 * reason the counter is part of the versioned key. With the validator
+	 * pinned to one value, only the counter can move the key, so this is the
+	 * test that fails if the counter's contribution is ever dropped from
+	 * `get_versioned_key()`, which every counter-value test would survive.
+	 *
+	 * @covers ::get_versioned_key
+	 * @covers ::mark_changed
+	 *
+	 * @return void
+	 */
+	public function test_the_change_counter_moves_the_cache_key_inside_one_validator_second(): void {
+		$instance = Cache::get_instance();
+		$frozen   = '2026-01-01 00:00:00';
+
+		delete_option( Cache::CHANGE_COUNT_OPTION );
+		wp_cache_delete( Cache::CHANGE_COUNT_OPTION, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+		update_option( Cache::LAST_MODIFIED_OPTION, $frozen, false );
+
+		$first = $instance->get_versioned_key( 'feed' );
+
+		$instance->mark_changed();
+
+		// Pin the validator back to the pre-change value: the stamp has
+		// one-second resolution, and this is the state two changes inside one
+		// second leave a reader in.
+		update_option( Cache::LAST_MODIFIED_OPTION, $frozen, false );
+
+		$this->assertSame(
+			$frozen,
+			$instance->get_last_modified(),
+			'Failed to pin the validator, so the assertion below would not isolate the counter.'
+		);
+		$this->assertNotSame(
+			$first,
+			$instance->get_versioned_key( 'feed' ),
+			'With the validator standing still, the counter is the only thing that can move the key,'
+			. ' and it must.'
+		);
+	}
+
+	/**
 	 * A second database connection cannot write beside the open allocation.
 	 *
 	 * Two real connections, which is what two concurrent requests are. The
