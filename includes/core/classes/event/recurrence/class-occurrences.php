@@ -2161,14 +2161,22 @@ final class Occurrences {
 	 * `status = 'scheduled'` exactly, so a row holding any other string would
 	 * vanish from every listing without having been canceled.
 	 *
+	 * The update runs first and the affected-row count decides, rather than a
+	 * check-then-update. A concurrent rule save reprojecting the series can
+	 * delete the row between any two statements here, and a preliminary
+	 * existence check would report that vanished row as updated. Zero
+	 * affected rows is still ambiguous in MySQL, since a same-value write
+	 * also reports zero, so only that case pays a follow-up existence read:
+	 * row present means a no-op success, row gone means gone.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
 	 * @param string $status        One of the `STATUS_*` constants.
 	 *
-	 * @return bool True when a row was updated, false when the composite key
-	 *              matched nothing or the status is not one of the constants.
+	 * @return bool True when the row holds the status; false when the composite
+	 *              key matched nothing or the status is not one of the constants.
 	 */
 	public function set_status( int $post_id, string $recurrence_id, string $status ): bool {
 		global $wpdb;
@@ -2179,6 +2187,35 @@ final class Occurrences {
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
+		// `execute_write()` rather than a bare query: it reports what the
+		// database did instead of that a statement was issued, and it carries
+		// the missing-table self-heal the other writes in this class have.
+		$updated = $this->execute_write(
+			$wpdb->prepare(
+				'UPDATE %i SET status = %s WHERE series_post_id = %d AND recurrence_id = %s',
+				$table,
+				$status,
+				$post_id,
+				$recurrence_id
+			)
+		);
+
+		// A refused statement is not a vanished row, and the probe below cannot
+		// tell them apart: a deadlock or a read-only replica leaves the row
+		// sitting there, so probing would answer `true` for a write that never
+		// landed and show an occurrence canceled that is still scheduled.
+		if ( false === $updated ) {
+			return false;
+		}
+
+		if ( $updated > 0 ) {
+			return true;
+		}
+
+		// Zero affected rows is the ambiguous case: the row may already carry
+		// this status, or it may be gone. Only a probe separates them, and the
+		// caller needs them separated, since one is a success and the other is
+		// an occurrence that no longer exists.
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$exists = (bool) $wpdb->get_var(
 			$wpdb->prepare(
@@ -2190,27 +2227,7 @@ final class Occurrences {
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-		if ( ! $exists ) {
-			return false;
-		}
-
-		// Reports what the database did rather than that a statement was
-		// issued. The row existing a moment ago is not evidence the update
-		// landed: a deadlock, a read-only replica, or the table being dropped
-		// between the probe above and this write all return false, and a
-		// caller told `true` would show an occurrence canceled that is still
-		// scheduled and still in every listing. Routing through
-		// `execute_write()` also gets the missing-table self-heal the other
-		// writes have.
-		return false !== $this->execute_write(
-			$wpdb->prepare(
-				'UPDATE %i SET status = %s WHERE series_post_id = %d AND recurrence_id = %s',
-				$table,
-				$status,
-				$post_id,
-				$recurrence_id
-			)
-		);
+		return $exists;
 	}
 
 	/**

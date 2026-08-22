@@ -260,7 +260,22 @@ final class Rest_Api {
 			);
 		}
 
-		return new WP_REST_Response( Occurrences::get_instance()->get( $post_id, $recurrence_id ) );
+		// The write can succeed and the row still be gone by this read: a
+		// concurrent rule save reprojecting a shortened rule deletes rows. A
+		// success response with a null body would make the client's
+		// `updated.status` read throw and surface as a failure notice, so a
+		// vanished row is reported as the 404 it has become.
+		$row = Occurrences::get_instance()->get( $post_id, $recurrence_id );
+
+		if ( null === $row ) {
+			return new WP_Error(
+				'gatherpress_occurrence_not_found',
+				__( 'No occurrence matches the given post and recurrence ID.', 'gatherpress' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		return new WP_REST_Response( $row );
 	}
 
 	/**
