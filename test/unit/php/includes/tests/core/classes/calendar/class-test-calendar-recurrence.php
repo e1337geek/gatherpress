@@ -963,6 +963,40 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
+	 * Free text cannot make the feed define additional timezones.
+	 *
+	 * `escape_ical_text()` turns a semicolon into `\;`, which still contains
+	 * the literal `;TZID=` an unanchored reference scan looks for, so a title
+	 * naming valid zones added whole `VTIMEZONE` definitions nothing
+	 * references. The scan reads only the properties that can legitimately
+	 * carry a `TZID` parameter.
+	 *
+	 * @covers \GatherPress\Core\Calendar\Timezone_Component::render_for_body
+	 *
+	 * @return void
+	 */
+	public function test_free_text_cannot_reference_additional_timezone_definitions(): void {
+		$this->enable_pretty_permalinks();
+
+		$post_id = $this->create_titled_event(
+			'Meetup ;TZID=Europe/Berlin:x ;TZID=Asia/Tokyo:x',
+			'tzid-title-event'
+		);
+		$body    = $this->body_for( $this->series_ical_url( $post_id ) );
+
+		$this->assertStringContainsString(
+			'TZID=Europe/Berlin',
+			$body,
+			'Failed to carry the token into the body, so the assertion below would measure nothing.'
+		);
+		$this->assertSame(
+			array( self::TIMEZONE ),
+			$this->declared_timezone_ids( $body ),
+			'Only zones referenced by date-bearing properties are defined; free text cannot add one.'
+		);
+	}
+
+	/**
 	 * Two transitions on the same yearly position with different offsets are
 	 * not one rule, however alike their names are.
 	 *
