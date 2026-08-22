@@ -1942,7 +1942,12 @@ final class Occurrences {
 	public function find_in_series( array $post_ids, string $recurrence_id ): ?array {
 		global $wpdb;
 
-		if ( array() === $post_ids || '' === $recurrence_id ) {
+		// The schema probe belongs here for the same reason it does on `get()`
+		// and `select_for_series()`: a blog whose recurring-events flag is on
+		// but whose table was never installed would otherwise take a database
+		// error. This read in particular resolves occurrence context on a
+		// front-end request, so the error would surface to a visitor.
+		if ( array() === $post_ids || '' === $recurrence_id || ! $this->table_exists() ) {
 			return null;
 		}
 
