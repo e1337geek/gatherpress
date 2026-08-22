@@ -546,19 +546,27 @@ final class Occurrences {
 		// places between two identical reads and a paginated list repeats or
 		// drops one. Only the `recurrence_id` leg of the joined order is
 		// dropped, because this arm has no occurrence rows to name.
+		//
+		// The upcoming/past split reads the event's own end as
+		// `effective_end_gmt`, the same boundary the joined arm applies, while
+		// ordering stays on the effective start. Splitting on the start
+		// instead demotes a running event into the past bucket the moment it
+		// begins, and only on sites where nothing happens to recur.
 		if ( ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
 			$sql = 'SELECT %i.ID AS post_id, NULL AS recurrence_id,'
-				. ' %i.datetime_start_gmt AS effective_start_gmt'
+				. ' %i.datetime_start_gmt AS effective_start_gmt,'
+				. ' %i.datetime_end_gmt AS effective_end_gmt'
 				. ' FROM %i'
 				. ' LEFT JOIN %i ON %i.ID = %i.post_id'
 				. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
-				. " HAVING effective_start_gmt {$comparison} %s"
+				. " HAVING effective_end_gmt {$comparison} %s"
 				. " ORDER BY effective_start_gmt {$order}, %i.ID {$order}"
 				. ' LIMIT %d';
 
 			$values = array_merge(
 				array(
 					$wpdb->posts,
+					$events_table,
 					$events_table,
 					$wpdb->posts,
 					$events_table,
