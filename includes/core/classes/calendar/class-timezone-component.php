@@ -154,9 +154,20 @@ final class Timezone_Component {
 	 * @return string The definitions, in first-reference order, or '' when none are referenced.
 	 */
 	public function render_for_body( string $body ): string {
-		preg_match_all( '/;TZID=([^:;\r\n]+)/', $body, $matches );
+		// Unfolded so a folded property reads as one content line, and
+		// anchored to the properties that can carry a `TZID` parameter:
+		// `escape_ical_text()` leaves the literal `;TZID=` inside escaped
+		// author text, and a scan of the whole body would define zones a
+		// title names and nothing references.
+		$unfolded = str_replace( array( "\r\n ", "\r\n\t" ), '', $body );
 
-		[ $from, $to ] = $this->range_of( $body );
+		preg_match_all(
+			'/^(?:' . self::DATE_BEARING_PROPERTIES . ')[^:\r\n]*;TZID=([^:;\r\n]+)/m',
+			$unfolded,
+			$matches
+		);
+
+		[ $from, $to ] = $this->range_of( $unfolded );
 
 		$components = array();
 
