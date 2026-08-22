@@ -271,6 +271,46 @@ class Test_Timezone_Component extends Base {
 	}
 
 	/**
+	 * A definition window crossing year 10000 still collapses to a rule.
+	 *
+	 * `gmdate( 'Ymd\THis' )` writes a five-digit year past 9999, so a parse
+	 * that indexes the local onset at fixed byte offsets reads garbage for
+	 * every transition after the boundary, the terminal-rule walk breaks on
+	 * its first candidate, and roughly sixteen thousand transitions are
+	 * written out individually instead of collapsing behind two ruled
+	 * sub-components. Measured as a cliff at exactly the four-digit-year
+	 * boundary: 342 bytes at end year 9996, 1,674,990 bytes at end year
+	 * 10121. The positional reads have to carry the day and the month length
+	 * as numbers, so the two renders below stay byte-identical: the wider
+	 * window only adds transitions the terminal rule already generates.
+	 *
+	 * @covers ::render
+	 * @covers ::terminal_rule
+	 * @covers ::day_of
+	 * @covers ::in_last_week
+	 *
+	 * @return void
+	 */
+	public function test_a_window_crossing_year_ten_thousand_still_collapses_to_a_rule(): void {
+		$instance = Timezone_Component::get_instance();
+		$now      = time();
+		$bounded  = $instance->render( 'America/New_York', $now, $now + ( 7000 * YEAR_IN_SECONDS ) );
+		$crossing = $instance->render( 'America/New_York', $now, $now + ( 8100 * YEAR_IN_SECONDS ) );
+
+		$this->assertSame(
+			2,
+			substr_count( $bounded, 'RRULE:' ),
+			'Failed to collapse the four-digit-year render, so the comparison below would prove nothing.'
+		);
+		$this->assertSame(
+			$bounded,
+			$crossing,
+			'A window past year 10000 adds only transitions the terminal rule already generates, so'
+			. ' the definition must not change, let alone enumerate them.'
+		);
+	}
+
+	/**
 	 * An empty transition list still yields a usable standard sub-component.
 	 *
 	 * `getTransitions()` always returns at least the entry describing the state
