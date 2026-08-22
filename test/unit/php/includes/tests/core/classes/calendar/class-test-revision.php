@@ -414,8 +414,9 @@ class Test_Revision extends Base {
 	 * A separate read is the window a concurrent writer interleaves through,
 	 * so the property pinned here is the statement's shape: exactly one
 	 * `UPDATE` touches the revision key, and it computes from the row rather
-	 * than writing a value computed in PHP. The mirrors publish the allocated
-	 * value afterwards; on the canonical row that publish must be a no-op.
+	 * than writing a value computed in PHP. The mirror loop publishes the
+	 * allocated value to the siblings afterwards; the canonical row is
+	 * excluded from it, because the allocating statement already wrote it.
 	 *
 	 * @covers ::advance
 	 *

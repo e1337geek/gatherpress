@@ -155,6 +155,14 @@ final class Revision {
 	 * serialized on the row lock still allocate distinct values even when both
 	 * computed the same floor from the same stale snapshot.
 	 *
+	 * Publication has to be monotonic for the same reason. A writer that
+	 * pauses between its allocation and its mirror loop resumes after a
+	 * faster writer has already published a newer value, so each mirror takes
+	 * the greater of what it holds and what is being published, and the
+	 * canonical row is left to the allocating statement entirely: an
+	 * unconditional write there would hand a subscriber a lower `SEQUENCE`
+	 * and regress the allocation row itself, reissuing the values between.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Any post ID belonging to the series.
@@ -177,8 +185,12 @@ final class Revision {
 		);
 
 		// The allocation row must exist for the statement below to serialize
-		// writers on. Idempotent: with the row present this is one read.
-		add_post_meta( $canonical, self::META_KEY, 0, true );
+		// writers on, and every mirror row must exist for the monotonic
+		// publication below to have a row to raise. Idempotent: with the rows
+		// present this is one read per post.
+		foreach ( $post_ids as $sibling_id ) {
+			add_post_meta( $sibling_id, self::META_KEY, 0, true );
+		}
 
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$updated = $wpdb->query(
@@ -210,10 +222,32 @@ final class Revision {
 		wp_cache_delete( $canonical, 'post_meta' );
 
 		foreach ( $post_ids as $sibling_id ) {
-			// As a string, because meta storage is strings: an integer never
-			// strictly equals the stored value, so publishing it would run one
-			// redundant identical-value UPDATE per advance on the canonical row.
-			update_post_meta( $sibling_id, self::META_KEY, (string) $next );
+			// The allocating statement already wrote the canonical row, and an
+			// unconditional write here is the window a slower writer publishes
+			// an older allocation through.
+			if ( $canonical === $sibling_id ) {
+				continue;
+			}
+
+			// Monotonic rather than unconditional, so a writer resuming its
+			// mirror loop after a faster writer has published cannot drag the
+			// mirror back below the newer value. MySQL stores the computed
+			// integer as its decimal string, which is the form the meta layer
+			// writes and the `(int)` casts in the readers expect.
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->query(
+				$wpdb->prepare(
+					'UPDATE %i SET meta_value = GREATEST( CAST( meta_value AS SIGNED ), %d )
+					WHERE post_id = %d AND meta_key = %s',
+					$wpdb->postmeta,
+					$next,
+					$sibling_id,
+					self::META_KEY
+				)
+			);
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+			wp_cache_delete( $sibling_id, 'post_meta' );
 		}
 
 		return $next;
