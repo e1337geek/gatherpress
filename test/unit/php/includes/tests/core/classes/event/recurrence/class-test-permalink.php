@@ -2,19 +2,13 @@
 /**
  * Class handles unit tests for occurrence-aware permalinks.
  *
- * Two separate defects share one symptom, a link to an occurrence resolving to
- * a different date. They share this file because they share the fixture that
- * can tell them apart.
- *
- * The first is `Context::permalink()` declining to answer for the request's
- * own occurrence, so `get_permalink()` on `/event/my-series/20260903T180000/`
- * returned the bare series URL. Every link emitted from that page inherited it:
- * the iCal `URL:` field, `rel="canonical"`, share links.
- *
- * The second is the RSVP confirmation email, composed from `Rsvp\Token` while
- * the comment is being inserted, on paths that never reach `wp`. There is no
- * request context to read, so the comment's own `_gatherpress_occurrence` term
- * is the authoritative source.
+ * The defect this file pins is `Context::permalink()` declining to answer for
+ * the request's own occurrence, so `get_permalink()` on
+ * `/event/my-series/20260903T180000/` returned the bare series URL. Every link
+ * emitted from that page inherited it: the iCal `URL:` field,
+ * `rel="canonical"`, share links. The RSVP confirmation email shares the
+ * symptom but is composed on paths that never reach `wp`; its tests live with
+ * the per-occurrence RSVP work, which is where that fix lands.
  *
  * **Every assertion here names an exact URL**, and every fixture puts the
  * occurrence under test somewhere other than first. A bare series URL resolves
@@ -38,15 +32,9 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
-use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
-use GatherPress\Core\Event\Rest_Api;
 use GatherPress\Core\Event\Setup as Event_Setup;
-use GatherPress\Core\Rsvp\Setup as Rsvp_Setup;
-use GatherPress\Core\Rsvp\Token;
-use GatherPress\Core\Settings;
 use GatherPress\Core\Topic;
 use GatherPress\Tests\Base;
-use WP_REST_Request;
 
 /**
  * Class Test_Permalink.
@@ -70,18 +58,10 @@ class Test_Permalink extends Base {
 	);
 
 	/**
-	 * Bodies of every email `wp_mail()` was asked to send.
-	 *
-	 * @since 0.36.0
-	 * @var string[]
-	 */
-	protected array $sent_mail = array();
-
-	/**
-	 * Create the occurrence table, register the RSVP routes, and put the event
-	 * post type behind pretty permalinks with the occurrence rewrite rule
-	 * flushed, so `get_permalink()` and `$this->go_to()` both exercise the real
-	 * URL shape rather than the plain `?p=` form.
+	 * Create the occurrence table, register the calendar endpoints, and put
+	 * the event post type behind pretty permalinks with the occurrence rewrite
+	 * rule flushed, so `get_permalink()` and `$this->go_to()` both exercise
+	 * the real URL shape rather than the plain `?p=` form.
 	 *
 	 * @return void
 	 */
@@ -89,10 +69,7 @@ class Test_Permalink extends Base {
 		parent::setUp();
 
 		gatherpress_reset_custom_tables();
-		Rsvp_Setup::get_instance()->register_taxonomy();
-		Rest_Api::get_instance()->register_endpoints();
 		Calendar_Setup::get_instance()->register_endpoints();
-		Settings::get_instance()->set( 'enable_open_rsvp', true );
 
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '/%postname%/' );
@@ -109,10 +86,6 @@ class Test_Permalink extends Base {
 		$wp_rewrite->flush_rules();
 
 		Context::get_instance()->clear();
-
-		$this->sent_mail = array();
-
-		add_filter( 'pre_wp_mail', array( $this, 'capture_mail' ), 10, 2 );
 	}
 
 	/**
@@ -121,8 +94,6 @@ class Test_Permalink extends Base {
 	 * @return void
 	 */
 	public function tearDown(): void {
-		remove_filter( 'pre_wp_mail', array( $this, 'capture_mail' ), 10 );
-
 		global $wp_rewrite;
 		$wp_rewrite->set_permalink_structure( '' );
 		$wp_rewrite->flush_rules();
@@ -133,28 +104,12 @@ class Test_Permalink extends Base {
 	}
 
 	/**
-	 * Short-circuit `wp_mail()` and record the body it was handed.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @param null|bool $short_circuit Short-circuit value, null when nothing has filtered yet.
-	 * @param array     $attributes    The `wp_mail()` arguments.
-	 *
-	 * @return bool True, so nothing is actually delivered from a test run.
-	 */
-	public function capture_mail( $short_circuit, array $attributes ): bool {
-		$this->sent_mail[] = (string) ( $attributes['message'] ?? '' );
-
-		return true;
-	}
-
-	/**
 	 * Build the anchor every fixture here is dated from.
 	 *
-	 * Thirty days out, so nothing is ever in the past: `Rsvp\Form::process_rsvp()`
-	 * bails 400 on `has_event_past()`, reading the *series* meta, and against a
-	 * pinned anchor the email tests would silently stop writing anything once
-	 * real time crossed it.
+	 * Thirty days out, so nothing is ever in the past: the assertions here
+	 * lean on the bare-series fallback resolving to the *first* occurrence,
+	 * and against a pinned anchor that answer would silently drift to a later
+	 * occurrence once real time crossed it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -247,33 +202,6 @@ class Test_Permalink extends Base {
 		Recurrence_Query::refresh_has_recurring_events();
 
 		return (int) $post_id;
-	}
-
-	/**
-	 * Dispatch one open-RSVP submission through the real REST server.
-	 *
-	 * `rest_do_request()`, never `Form::process_rsvp()` directly: the argument
-	 * definition, its validation and the occurrence-context entry all live
-	 * between the two, and the confirmation email is composed inside the
-	 * innermost one.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @param array $params Request parameters.
-	 *
-	 * @return \WP_REST_Response The dispatched response.
-	 */
-	protected function submit_rsvp( array $params ) {
-		$request = new WP_REST_Request(
-			'POST',
-			sprintf( '/%s/event/rsvp-form', GATHERPRESS_REST_NAMESPACE )
-		);
-
-		foreach ( $params as $key => $value ) {
-			$request->set_param( $key, $value );
-		}
-
-		return rest_do_request( $request );
 	}
 
 	/**
