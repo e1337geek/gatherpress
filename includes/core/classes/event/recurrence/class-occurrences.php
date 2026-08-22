@@ -321,6 +321,11 @@ final class Occurrences {
 	/**
 	 * Select upcoming occurrences and non-recurring events as one ordered list.
 	 *
+	 * Upcoming is inclusive: an entry that has started but not yet ended
+	 * still counts, matching `Event\Query::get_datetime_comparison_column()`'s
+	 * admin-list semantics. The buckets split at the effective end, so a
+	 * running entry appears here and never in `select_past()`.
+	 *
 	 * Returns value objects rather than bare IDs, so identity travels on the
 	 * object and no index-correspondence contract exists between caller and
 	 * callee.
@@ -338,6 +343,9 @@ final class Occurrences {
 
 	/**
 	 * Select past occurrences and non-recurring events as one ordered list.
+	 *
+	 * Past is exclusive of running entries: only what has already ended
+	 * qualifies, the other half of `select_upcoming()`'s inclusive bound.
 	 *
 	 * @since 0.36.0
 	 *
@@ -367,11 +375,19 @@ final class Occurrences {
 	 * `NULL` fallback to posts with **no occurrence rows at all**, so a
 	 * canceled series is correctly absent rather than misrepresented.
 	 *
+	 * The upcoming/past split reads the effective *end*, while ordering
+	 * stays on the effective start. Upcoming is inclusive of running entries
+	 * and past excludes them, matching
+	 * `Event\Query::get_datetime_comparison_column()`: splitting on the
+	 * start instead demotes every event and occurrence into the past bucket
+	 * the moment it begins, while it is still exactly what an upcoming list
+	 * should be showing.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int   $limit    Maximum entries to return.
 	 * @param array $args     Optional query arguments, including `status`.
-	 * @param bool  $upcoming True for ascending/future, false for descending/past.
+	 * @param bool  $upcoming True for ascending/unfinished, false for descending/ended.
 	 *
 	 * @return Occurrence_Ref[] Ordered by effective start.
 	 */
@@ -394,7 +410,8 @@ final class Occurrences {
 		$order             = $upcoming ? 'ASC' : 'DESC';
 
 		$sql = 'SELECT %i.ID AS post_id, scheduled_occurrence.recurrence_id AS recurrence_id,'
-			. ' COALESCE( scheduled_occurrence.datetime_start_gmt, %i.datetime_start_gmt ) AS effective_start_gmt'
+			. ' COALESCE( scheduled_occurrence.datetime_start_gmt, %i.datetime_start_gmt ) AS effective_start_gmt,'
+			. ' COALESCE( scheduled_occurrence.datetime_end_gmt, %i.datetime_end_gmt ) AS effective_end_gmt'
 			. ' FROM %i'
 			. ' LEFT JOIN %i ON %i.ID = %i.post_id'
 			. ' LEFT JOIN %i AS scheduled_occurrence ON %i.ID = scheduled_occurrence.series_post_id'
@@ -402,7 +419,7 @@ final class Occurrences {
 			. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
 			. ' AND ( scheduled_occurrence.recurrence_id IS NOT NULL'
 			. ' OR NOT EXISTS ( SELECT 1 FROM %i WHERE series_post_id = %i.ID ) )'
-			. " HAVING effective_start_gmt {$comparison} %s"
+			. " HAVING effective_end_gmt {$comparison} %s"
 			// The sort key alone is not unique: any number of events can
 			// share one start instant, and one series contributes many rows
 			// with the same key only by coincidence. Ties under a
@@ -419,6 +436,7 @@ final class Occurrences {
 		$values = array_merge(
 			array(
 				$wpdb->posts,
+				$events_table,
 				$events_table,
 				$wpdb->posts,
 				$events_table,
