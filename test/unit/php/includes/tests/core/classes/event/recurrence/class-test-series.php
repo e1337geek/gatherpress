@@ -930,6 +930,70 @@ class Test_Series extends Base {
 	}
 
 	/**
+	 * The split-series flag autoloads only while it is on.
+	 *
+	 * `site_has_split_series()` reads the alloptions cache, so `'1'` must ride
+	 * it: that is the fast path every request on a split site takes. `'0'`
+	 * must not: the row only exists on a site that split and then deleted
+	 * every fragment, and autoloading it would make that site pay one
+	 * alloptions row per request forever, one row worse off than the
+	 * never-split site the design optimizes for, when absent and `'0'` are
+	 * the same answer. The row is kept rather than deleted, because deleting
+	 * it would hand the next `get_option()` read of the missing option a
+	 * `wp_options` SELECT on exactly the surface promised byte-identical SQL.
+	 *
+	 * Both assertions reload the alloptions cache from storage first, so they
+	 * measure what a fresh request would find rather than what this request's
+	 * cache still holds.
+	 *
+	 * @covers ::refresh_has_split_series
+	 * @covers ::site_has_split_series
+	 *
+	 * @return void
+	 */
+	public function test_the_split_series_flag_autoloads_only_while_on(): void {
+		$origin_id = $this->create_and_project();
+		$forward   = (int) Splitter::get_instance()->split_forward( $origin_id, '20260917T180000' )['forward_post_id'];
+
+		$this->assertGreaterThan( 0, $forward, 'Fixture setup: the split should have produced a forward post.' );
+
+		wp_cache_delete( 'alloptions', 'options' );
+
+		$this->assertArrayHasKey(
+			Series::HAS_SPLIT_SERIES_OPTION,
+			wp_load_alloptions(),
+			'While on, the flag must autoload so site_has_split_series() stays on the alloptions fast path.'
+		);
+		$this->assertTrue(
+			Series::site_has_split_series(),
+			'The autoloaded row must be the one the alloptions read reports.'
+		);
+
+		wp_delete_post( $origin_id, true );
+		wp_delete_post( $forward, true );
+
+		$this->assertSame(
+			'0',
+			get_option( Series::HAS_SPLIT_SERIES_OPTION ),
+			'Fixture setup: the row must survive the recompute as \'0\' rather than being deleted.'
+		);
+
+		wp_cache_delete( 'alloptions', 'options' );
+
+		$this->assertArrayNotHasKey(
+			Series::HAS_SPLIT_SERIES_OPTION,
+			wp_load_alloptions(),
+			'While off, the flag must not autoload: an autoloaded \'0\' row costs every request what an'
+				. ' absent row answers for free.'
+		);
+		$this->assertFalse(
+			Series::site_has_split_series(),
+			'An off flag outside the alloptions cache must still read as off, absent and \'0\' being the'
+				. ' same answer.'
+		);
+	}
+
+	/**
 	 * A site with neither flag adds not one query on the widened entry points.
 	 *
 	 * The split-series flag widened four read paths: taxonomy registration,
