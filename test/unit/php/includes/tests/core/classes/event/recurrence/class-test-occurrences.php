@@ -1862,6 +1862,13 @@ class Test_Occurrences extends Base {
 	 * projected with a short horizon so it starts out needing a top-up once
 	 * the horizon filter is restored to its default.
 	 *
+	 * The extra hour in the anchor keeps every projected occurrence off the
+	 * second this fixture is created on. Anchored at exactly `now -3 weeks`,
+	 * the weekly expansion lands one occurrence on that same wall-clock
+	 * second, and any strict past/upcoming partition taken against a "now"
+	 * read moments later flips its membership on whether the clock ticked in
+	 * between. An hour is a gap no execution-time jitter can cross.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $horizon_months Horizon, in months, used only while creating
@@ -1873,7 +1880,7 @@ class Test_Occurrences extends Base {
 	 */
 	protected function create_short_horizon_never_ending_series( int $horizon_months = 1 ): array {
 		$timezone = new DateTimeZone( 'America/New_York' );
-		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 weeks' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-3 weeks -1 hour' );
 
 		$short_horizon = static fn() => $horizon_months;
 		add_filter( 'gatherpress_recurrence_horizon_months', $short_horizon );
