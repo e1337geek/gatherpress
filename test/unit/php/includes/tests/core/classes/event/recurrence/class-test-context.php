@@ -1459,6 +1459,56 @@ class Test_Context extends Base {
 	}
 
 	/**
+	 * Coverage for `occurrence_url()`'s documented empty-identifier contract
+	 * inside a loop. The docblock promises the series permalink when no
+	 * occurrence is named, but reading `get_permalink()` mid-iteration
+	 * returns the stamped row's occurrence URL, because the permalink filter
+	 * is active for the current row. The fixture proves the two answers
+	 * differ before asserting which one the method returns.
+	 *
+	 * @covers ::occurrence_url
+	 *
+	 * @return void
+	 */
+	public function test_occurrence_url_returns_the_series_permalink_in_a_loop(): void {
+		list( $post_id, ) = $this->create_series_straddling_now();
+
+		$series_permalink = (string) get_permalink( $post_id );
+
+		$loop = new WP_Query(
+			array(
+				'post_type'                    => Event::POST_TYPE,
+				'post__in'                     => array( $post_id ),
+				Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+				'posts_per_page'               => 20,
+				'orderby'                      => 'datetime',
+				'order'                        => 'ASC',
+			)
+		);
+
+		$this->assertGreaterThan( 0, $loop->post_count, 'Fixture is inert: the loop returned no rows.' );
+
+		$loop->the_post();
+
+		$this->assertNotSame(
+			$series_permalink,
+			(string) get_permalink( $post_id ),
+			'Fixture is inert: the loop row must filter the permalink so the two answers differ.'
+		);
+
+		$actual = Context::occurrence_url( $post_id, '' );
+
+		wp_reset_postdata();
+
+		$this->assertSame(
+			$series_permalink,
+			$actual,
+			'Failed to assert occurrence_url() returns the series permalink when no occurrence is named,'
+				. ' even while a stamped loop row is current.'
+		);
+	}
+
+	/**
 	 * Coverage for the scheduled-same-series arm of the cancellation notice.
 	 *
 	 * The existing cancellation test checks a *different post* in the inner
