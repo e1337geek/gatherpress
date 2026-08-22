@@ -1747,6 +1747,59 @@ class Test_Query extends Base {
 			'Failed to assert that plain events still sort by their own datetime.'
 		);
 	}
+
+	/**
+	 * The filter is a no-op during admin-ajax, where expansion already runs.
+	 *
+	 * `expand_event_clauses()` deliberately carves admin-ajax back in, because
+	 * those requests serve front-end reads, so `is_admin()` alone does not
+	 * separate the two filters: on `admin-ajax.php` both guards hold, and the
+	 * per-series sort join would ride along as a redundant grouped aggregate
+	 * on top of the real expansion, on an unauthenticated endpoint.
+	 *
+	 * Every other guard is deliberately satisfied: the screen is an event
+	 * `edit.php` screen so `is_admin()` holds, the fixture stores a projected
+	 * series so the flag is on and the table exists, the query is a bucketed
+	 * date-ordered event query so the events join and the anchor ordering are
+	 * both present, and the expansion assertion below proves the request took
+	 * the expanded path. The admin-ajax arm is the only guard left that can
+	 * return these clauses unchanged.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_during_admin_ajax(): void {
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+		add_filter( 'wp_doing_ajax', '__return_true' );
+
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		new WP_Query( $this->event_query_args( 'upcoming' ) );
+		remove_filter( 'posts_request', $capture );
+
+		remove_filter( 'wp_doing_ajax', '__return_true' );
+		set_current_screen( 'front' );
+
+		$this->assertStringContainsString(
+			Query::OCCURRENCE_ALIAS,
+			$captured,
+			'Failed to assert that the admin-ajax request took the expanded front-end path.'
+		);
+		$this->assertStringNotContainsString(
+			Query::ADMIN_SORT_ALIAS,
+			$captured,
+			'Failed to assert that the per-series sort join stays off an expanded admin-ajax query.'
+		);
+	}
 	/**
 	 * The results filter stamps nothing yet, and it has to leave both result
 	 * shapes alone: the plugin's own read API asks for IDs, while a template
