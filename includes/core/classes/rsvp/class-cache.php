@@ -29,7 +29,7 @@ final class Cache {
 	 *
 	 * @since 0.35.0
 	 *
-	 * @var string $CACHE_KEY
+	 * @var string
 	 */
 	const CACHE_KEY = 'gatherpress_rsvp_%d';
 
@@ -45,7 +45,7 @@ final class Cache {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @var string $CACHE_KEY_OCCURRENCE
+	 * @var string
 	 */
 	const CACHE_KEY_OCCURRENCE = 'gatherpress_rsvp_%d_%s';
 

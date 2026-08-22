@@ -1958,7 +1958,7 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
-		return null === $row ? null : $row;
+		return $row;
 	}
 
 	/**

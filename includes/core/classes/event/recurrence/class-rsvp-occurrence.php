@@ -21,7 +21,6 @@ namespace GatherPress\Core\Event\Recurrence;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Traits\Singleton;
-use WP_Term;
 
 /**
  * Class Rsvp_Occurrence.
