@@ -133,6 +133,29 @@ const rows = [
 	occurrence( '20260917T180000', '2026-09-17 18:00:00' ),
 ];
 
+/**
+ * Three dates of one unsplit series, all owned by the post being edited.
+ *
+ * Three rather than two so a split at the default selection still leaves a
+ * later date to split again from, which is what a second split in one session
+ * needs.
+ */
+const threeRows = [
+	occurrence( '20260903T180000', '2026-09-03 18:00:00' ),
+	occurrence( '20260917T180000', '2026-09-17 18:00:00' ),
+	occurrence( '20261001T180000', '2026-10-01 18:00:00' ),
+];
+
+/**
+ * The same three dates as the server reports them once the second and third
+ * have been moved onto post 99, which is what a split at the second date does.
+ */
+const threeRowsAfterFirstSplit = [
+	threeRows[ 0 ],
+	{ ...threeRows[ 1 ], series_post_id: 99 },
+	{ ...threeRows[ 2 ], series_post_id: 99 },
+];
+
 beforeEach( () => {
 	jest.clearAllMocks();
 	// A queued mockResolvedValueOnce a test did not consume would otherwise
@@ -231,7 +254,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -286,7 +310,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( freshRecord );
+			.mockResolvedValueOnce( freshRecord )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -369,7 +394,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockRejectedValueOnce( new Error( 'nope' ) );
+			.mockRejectedValueOnce( new Error( 'nope' ) )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -383,8 +409,11 @@ describe( 'ApplyScope', () => {
 
 		fireEvent.click( screen.getByText( 'Split series' ) );
 
+		// The entity refresh, then the occurrence list on the end of the same
+		// chain: a failed entity refresh must not cost the panel the rows the
+		// next split is aimed with.
 		await waitFor( () =>
-			expect( mockApiFetch ).toHaveBeenCalledTimes( 3 ),
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 4 ),
 		);
 
 		// The split itself succeeded; a failed refresh must not disturb the
@@ -397,16 +426,19 @@ describe( 'ApplyScope', () => {
 		expect( mockReceiveEntityRecords ).not.toHaveBeenCalled();
 	} );
 
-	test( 'skips the refresh when the post type REST base is unresolved', async () => {
+	test( 'skips the entity refresh when the post type REST base is unresolved', async () => {
 		mockGetPostType.mockReturnValue( undefined );
 
-		mockApiFetch.mockResolvedValueOnce( rows ).mockResolvedValueOnce( {
-			split: true,
-			reason: '',
-			moved: 4,
-			forward_post_id: 99,
-			forward_recurring: true,
-		} );
+		mockApiFetch
+			.mockResolvedValueOnce( rows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 4,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -428,20 +460,30 @@ describe( 'ApplyScope', () => {
 			).toBeInTheDocument(),
 		);
 
-		expect( mockApiFetch ).toHaveBeenCalledTimes( 2 );
+		// Two calls plus the occurrence refresh: the entity fetch is the only
+		// one an unresolved REST base can skip. The rows still have to be
+		// re-read, or the next split is aimed with the owners this one just
+		// rewrote.
+		expect( mockApiFetch ).toHaveBeenCalledTimes( 3 );
+		expect( mockApiFetch ).toHaveBeenLastCalledWith( {
+			path: '/gatherpress/v1/event/occurrences?post_id=42',
+		} );
 		expect( mockReceiveEntityRecords ).not.toHaveBeenCalled();
 	} );
 
-	test( 'skips the refresh when no post type is resolved at all', async () => {
+	test( 'skips the entity refresh when no post type is resolved at all', async () => {
 		mockGetCurrentPostType.mockReturnValue( undefined );
 
-		mockApiFetch.mockResolvedValueOnce( rows ).mockResolvedValueOnce( {
-			split: true,
-			reason: '',
-			moved: 4,
-			forward_post_id: 99,
-			forward_recurring: true,
-		} );
+		mockApiFetch
+			.mockResolvedValueOnce( rows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 4,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -463,7 +505,10 @@ describe( 'ApplyScope', () => {
 			).toBeInTheDocument(),
 		);
 
-		expect( mockApiFetch ).toHaveBeenCalledTimes( 2 );
+		expect( mockApiFetch ).toHaveBeenCalledTimes( 3 );
+		expect( mockApiFetch ).toHaveBeenLastCalledWith( {
+			path: '/gatherpress/v1/event/occurrences?post_id=42',
+		} );
 		expect( mockReceiveEntityRecords ).not.toHaveBeenCalled();
 	} );
 
@@ -482,7 +527,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -515,7 +561,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -546,7 +593,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( undefined );
+			.mockResolvedValueOnce( undefined )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -561,7 +609,7 @@ describe( 'ApplyScope', () => {
 		fireEvent.click( screen.getByText( 'Split series' ) );
 
 		await waitFor( () =>
-			expect( mockApiFetch ).toHaveBeenCalledTimes( 3 ),
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 4 ),
 		);
 
 		expect( mockReceiveEntityRecords ).not.toHaveBeenCalled();
@@ -621,7 +669,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: false,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -843,7 +892,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 99,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -906,7 +956,8 @@ describe( 'ApplyScope', () => {
 				moved: 4,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		render( <ApplyScope postId={ 42 } /> );
 
@@ -958,12 +1009,19 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 77,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( rows );
 
 		fireEvent.click( screen.getByText( 'Split series' ) );
 
 		await waitFor( () =>
 			expect( screen.getByText( 'Edit the new event' ) ).toBeInTheDocument(),
+		);
+		// The split's whole chain has to have drained before the queue below is
+		// primed, or the post-split occurrence refresh consumes the response
+		// this test queues for post 99's own list request.
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 4 ),
 		);
 
 		let resolveNext;
@@ -1123,7 +1181,8 @@ describe( 'ApplyScope', () => {
 				forward_post_id: 77,
 				forward_recurring: true,
 			} )
-			.mockResolvedValueOnce( { id: 42, meta: {} } );
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( [] );
 
 		fireEvent.click( screen.getByText( 'Split series' ) );
 
@@ -1215,6 +1274,212 @@ describe( 'ApplyScope', () => {
 			screen.queryByText( 'Could not split this series.' ),
 		).not.toBeInTheDocument();
 		expect( screen.queryByText( 'nope' ) ).not.toBeInTheDocument();
+	} );
+
+	test( 'aims a second split at the post the first split gave the date to', async () => {
+		// The defect this test exists for: each row names the post that owns
+		// its date, the split rewrites those owners, and the panel used to keep
+		// the rows it read before the split. A second split in the same session
+		// was therefore submitted against the post that no longer produces the
+		// chosen date.
+		mockApiFetch
+			.mockResolvedValueOnce( threeRows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 2,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( threeRowsAfterFirstSplit )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 1,
+				forward_post_id: 123,
+				forward_recurring: false,
+			} )
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( threeRowsAfterFirstSplit );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+				'20260917T180000',
+			),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		// The whole post-split chain: the entity refresh, then the occurrence
+		// list on the end of it.
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 4 ),
+		);
+		expect( mockApiFetch ).toHaveBeenNthCalledWith( 2, {
+			path: '/gatherpress/v1/event/split-series',
+			method: 'POST',
+			data: { post_id: 42, recurrence_id: '20260917T180000' },
+		} );
+
+		// Neither of the two pieces of state the naive fix would have cost the
+		// organizer: the notice the split just wrote, and the occurrence they
+		// chose. Re-running the list effect would have cleared the first and
+		// reset the second to the default one row past the top.
+		expect(
+			screen.getByText(
+				'2 occurrences moved to a new event. Make your change there.',
+			),
+		).toBeInTheDocument();
+		expect( screen.getByLabelText( 'Split from' ) ).toHaveValue(
+			'20260917T180000',
+		);
+
+		fireEvent.change( screen.getByLabelText( 'Split from' ), {
+			target: { value: '20261001T180000' },
+		} );
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenNthCalledWith( 5, {
+				path: '/gatherpress/v1/event/split-series',
+				method: 'POST',
+				data: { post_id: 99, recurrence_id: '20261001T180000' },
+			} ),
+		);
+	} );
+
+	test( 'keeps the split notice when the occurrence refresh fails', async () => {
+		mockApiFetch
+			.mockResolvedValueOnce( rows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 4,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockRejectedValueOnce( new Error( 'nope' ) );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 4 ),
+		);
+
+		// The split succeeded. A list that could not be re-read leaves the rows
+		// as they were rather than emptying the chooser or reporting a failure
+		// the organizer cannot act on.
+		expect(
+			screen.getByText(
+				'4 occurrences moved to a new event. Make your change there.',
+			),
+		).toBeInTheDocument();
+		expect( screen.getByLabelText( 'Split from' ).children ).toHaveLength( 2 );
+		expect( screen.getByText( 'Split series' ) ).not.toBeDisabled();
+	} );
+
+	test( 'empties the chooser when the refreshed list carries no rows at all', async () => {
+		mockApiFetch
+			.mockResolvedValueOnce( rows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 4,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockResolvedValueOnce( undefined );
+
+		render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ).children ).toHaveLength(
+				0,
+			),
+		);
+		expect(
+			screen.getByText(
+				'4 occurrences moved to a new event. Make your change there.',
+			),
+		).toBeInTheDocument();
+	} );
+
+	test( 'ignores a refreshed occurrence list that arrives for a post it has left', async () => {
+		let resolveRows;
+
+		mockApiFetch
+			.mockResolvedValueOnce( rows )
+			.mockResolvedValueOnce( {
+				split: true,
+				reason: '',
+				moved: 4,
+				forward_post_id: 99,
+				forward_recurring: true,
+			} )
+			.mockResolvedValueOnce( { id: 42, meta: {} } )
+			.mockReturnValueOnce(
+				new Promise( ( resolve ) => {
+					resolveRows = resolve;
+				} ),
+			);
+
+		const { rerender } = render( <ApplyScope postId={ 42 } /> );
+
+		fireEvent.change( screen.getByLabelText( 'Applying changes' ), {
+			target: { value: 'forward' },
+		} );
+
+		await waitFor( () =>
+			expect( screen.getByLabelText( 'Split from' ) ).toBeInTheDocument(),
+		);
+
+		fireEvent.click( screen.getByText( 'Split series' ) );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 4 ),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		rerender( <ApplyScope postId={ 99 } /> );
+
+		await act( async () => {
+			resolveRows( rows );
+		} );
+
+		// Post 42's rows landing on post 99's panel would offer occurrences the
+		// post being edited does not own, and the next split would be aimed
+		// with owners from a different series.
+		expect( screen.getByLabelText( 'Split from' ).children ).toHaveLength( 0 );
 	} );
 
 	test( 'says the series is already split rather than claiming the whole series', async () => {

@@ -6,7 +6,7 @@ import apiFetch from '@wordpress/api-fetch';
 import { Button, RadioControl, SelectControl } from '@wordpress/components';
 import { useDispatch, useSelect } from '@wordpress/data';
 import { dateI18n, getSettings } from '@wordpress/date';
-import { useEffect, useRef, useState } from '@wordpress/element';
+import { useCallback, useEffect, useRef, useState } from '@wordpress/element';
 import { addQueryArgs } from '@wordpress/url';
 
 /**
@@ -72,6 +72,29 @@ const ApplyScope = ( { postId } ) => {
 
 	const latestRequest = useRef( 0 );
 
+	/**
+	 * Read the series' upcoming occurrences.
+	 *
+	 * Shared by the effect below, which seeds the panel, and by the post-split
+	 * refresh, which re-reads the same list for a different reason. The two
+	 * differ only in what they do with the rows, so the request itself lives
+	 * here and neither can drift from the other's path.
+	 *
+	 * Memoized on the post alone so the effect below can depend on it without
+	 * the identity of a fresh closure re-running the fetch on every render.
+	 *
+	 * @return {Promise} The occurrence list request.
+	 */
+	const fetchOccurrences = useCallback(
+		() =>
+			apiFetch( {
+				path: addQueryArgs( `${ EVENT_REST_API }/occurrences`, {
+					post_id: postId,
+				} ),
+			} ),
+		[ postId ]
+	);
+
 	useEffect( () => {
 		// Everything below is scoped to one post, and this component survives
 		// navigation from event A to event B. Clearing first means B's panel
@@ -93,11 +116,7 @@ const ApplyScope = ( { postId } ) => {
 			return;
 		}
 
-		apiFetch( {
-			path: addQueryArgs( `${ EVENT_REST_API }/occurrences`, {
-				post_id: postId,
-			} ),
-		} )
+		fetchOccurrences()
 			.then( ( rows ) => {
 				if ( ! isCurrent() ) {
 					return;
@@ -120,7 +139,7 @@ const ApplyScope = ( { postId } ) => {
 					setOccurrences( [] );
 				}
 			} );
-	}, [ scope, postId ] );
+	}, [ scope, postId, fetchOccurrences ] );
 
 	/**
 	 * Describe what a completed split did, including the two automatic
@@ -175,6 +194,45 @@ const ApplyScope = ( { postId } ) => {
 	};
 
 	/**
+	 * Re-read the occurrence list after a split moved rows between posts.
+	 *
+	 * Every row names the post that owns its date, and `handleSplit()` reads
+	 * that owner to aim the next split. A split rewrites those owners, so rows
+	 * left over from before it point a second split in one session at the post
+	 * that no longer produces the chosen date.
+	 *
+	 * Deliberately not a dependency of the list effect above. That effect
+	 * begins by clearing every post-scoped piece of state, so re-running it
+	 * here would reset `splitFrom` to the default two rows past the
+	 * organizer's choice and wipe the notice the split had just written. This
+	 * writes the rows and nothing else, which leaves both intact.
+	 *
+	 * @param {Function} isCurrent Whether the panel still shows this post.
+	 *
+	 * @return {Promise|undefined} The refresh request, when one is still wanted.
+	 */
+	const refreshOccurrences = ( isCurrent ) => {
+		// The panel has moved to another post, whose own list request is
+		// already in flight. Reading this one would spend a request on rows
+		// nothing may use.
+		if ( ! isCurrent() ) {
+			return undefined;
+		}
+
+		return fetchOccurrences()
+			.then( ( rows ) => {
+				if ( isCurrent() ) {
+					setOccurrences( rows ?? [] );
+				}
+			} )
+			.catch( () => {
+				// The split succeeded and its notice stands. Rows that could
+				// not be re-read stay as they were, which is what the panel
+				// had before this refresh existed.
+			} );
+	};
+
+	/**
 	 * Refresh the origin post's stored entity after a split rewrote it.
 	 *
 	 * The split caps the origin's rule server side (and can rewrite its
@@ -187,15 +245,21 @@ const ApplyScope = ( { postId } ) => {
 	 * `gatherpress_datetime` in the store, and the panel's own meta effect
 	 * re-parses the capped rule from it.
 	 *
+	 * The occurrence list is re-read on the end of the same chain rather than
+	 * beside it, so the button stays busy until both the store and the rows the
+	 * next split is aimed with are consistent again.
+	 *
 	 * @param {Function} isCurrent Whether the panel still shows this post.
 	 *
-	 * @return {Promise|undefined} The refresh request, when one can be built.
+	 * @return {Promise|undefined} The refresh request, when one is still wanted.
 	 */
 	const refreshOriginEntity = ( isCurrent ) => {
 		// A post type whose REST base has not resolved leaves nothing to
-		// fetch; the next full entity resolution catches the editor up.
+		// fetch; the next full entity resolution catches the editor up. The
+		// occurrence list is still re-read, because nothing else corrects the
+		// owners a second split in this session would be aimed with.
 		if ( ! postType || ! restBase ) {
-			return undefined;
+			return refreshOccurrences( isCurrent );
 		}
 
 		return apiFetch( {
@@ -211,7 +275,8 @@ const ApplyScope = ( { postId } ) => {
 			.catch( () => {
 				// The split itself succeeded. A failed refresh leaves the
 				// notice in place and the stale panel to the next resolution.
-			} );
+			} )
+			.then( () => refreshOccurrences( isCurrent ) );
 	};
 
 	/**
@@ -248,8 +313,10 @@ const ApplyScope = ( { postId } ) => {
 				setForwardPostId( result.forward_post_id ?? 0 );
 
 				// Nothing changed server side when nothing was split, so
-				// there is nothing to refresh. Returning the refresh keeps
-				// the button busy until the store is consistent again.
+				// there is nothing to refresh: neither the origin's entity
+				// nor the owners its occurrence rows name. Returning the
+				// refresh keeps the button busy until both are consistent
+				// again.
 				return result.split
 					? refreshOriginEntity( isCurrent )
 					: undefined;
