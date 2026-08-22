@@ -21,6 +21,7 @@ use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
+use WP_Error;
 
 /**
  * Class Test_Occurrences.
@@ -3723,6 +3724,291 @@ class Test_Occurrences extends Base {
 			array( min( $first_id, $second_id ) ),
 			$candidates,
 			'Failed to assert that a batch of one takes the lowest-ID rowless candidate.'
+		);
+	}
+
+	/**
+	 * Install a `query` filter that redirects matching occurrence-table
+	 * statements to a nonexistent table, so the write genuinely fails at the
+	 * database without any DDL.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $statement_prefix Statement type to break, e.g. `INSERT INTO`.
+	 * @param string $required_needle  Extra substring the statement must contain.
+	 *
+	 * @return callable The filter, for `remove_filter()`.
+	 */
+	protected function break_occurrence_statements( string $statement_prefix, string $required_needle = '' ): callable {
+		global $wpdb;
+
+		$table  = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$filter = static function ( $query ) use ( $table, $statement_prefix, $required_needle ) {
+			if (
+				str_starts_with( $query, $statement_prefix )
+				&& str_contains( $query, $table )
+				&& ( '' === $required_needle || str_contains( $query, $required_needle ) )
+			) {
+				return str_replace( $table, $table . '_gone', $query );
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $filter );
+
+		return $filter;
+	}
+
+	/**
+	 * A failed occurrence insert must surface as a `WP_Error`, never as a row
+	 * count claiming the rows were written.
+	 *
+	 * The failure is produced at the database itself, by redirecting the
+	 * insert to a nonexistent table, so this drives the same `false` return
+	 * a missing table, a `max_allowed_packet` overflow, or a read-only
+	 * replica produces in production.
+	 *
+	 * @covers ::project
+	 * @covers ::upsert_occurrences
+	 * @covers ::insert_or_update_rows
+	 *
+	 * @return void
+	 */
+	public function test_project_returns_wp_error_when_the_occurrence_insert_fails(): void {
+		$post_id = $this->create_recurring_event( self::WEEKLY_RULE );
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$filter = $this->break_occurrence_statements( 'INSERT INTO' );
+
+		$result = Occurrences::get_instance()->project( $post_id );
+
+		remove_filter( 'query', $filter );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert that project() reports a failed insert instead of a row count.'
+		);
+		$this->assertSame(
+			'gatherpress_occurrence_write_failed',
+			$result->get_error_code(),
+			'Failed to assert the error code names the occurrence write failure.'
+		);
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that no rows landed when the insert failed.'
+		);
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to assert the site flag still reflects the stored rule after a write failure.'
+		);
+	}
+
+	/**
+	 * A failed stale-row delete must surface as a `WP_Error` too, so a rule
+	 * edit that could not remove its stale rows is never reported clean.
+	 *
+	 * @covers ::project
+	 * @covers ::upsert_occurrences
+	 * @covers ::delete_stale_rows
+	 *
+	 * @return void
+	 */
+	public function test_project_returns_wp_error_when_the_stale_delete_fails(): void {
+		$post_id = $this->create_recurring_event( self::WEEKLY_RULE );
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$filter = $this->break_occurrence_statements( 'DELETE FROM', 'NOT IN' );
+
+		$result = Occurrences::get_instance()->project( $post_id );
+
+		remove_filter( 'query', $filter );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert that project() reports a failed stale-row delete.'
+		);
+	}
+
+	/**
+	 * A projection against a missing occurrence table recreates the table once
+	 * and retries, so a site running this code without a version bump heals on
+	 * the first recurring save instead of failing silently forever.
+	 *
+	 * The drops are the first statements of the test, per this suite's DDL
+	 * convention: DDL commits the test transaction, and dropping before
+	 * anything is written leaves nothing to leak. Everything the test creates
+	 * after the drop is removed by hand at the end for the same reason. Both
+	 * drop forms run because the test bootstrap leaves the occurrence table
+	 * existing twice on this connection, as a real table shadowed by a
+	 * temporary one, and dropping only one of the pair leaves a working
+	 * table behind and the "missing table" precondition never holds. The
+	 * precondition is asserted rather than assumed for exactly that reason.
+	 *
+	 * @covers ::project
+	 * @covers ::upsert_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_project_self_heals_a_missing_occurrence_table(): void {
+		global $wpdb;
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// The test framework rewrites DROP TABLE and CREATE TABLE statements
+		// into their TEMPORARY forms through the `query` filter, which would
+		// leave the real table standing here and make the heal's `dbDelta()`
+		// create an invisible temporary table. Dropped for the duration; the
+		// framework's hook backup restores the filters in tearDown.
+		remove_all_filters( 'query' );
+
+		// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- Required to test the self-heal.
+		$wpdb->query( "DROP TEMPORARY TABLE IF EXISTS {$table}" );
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		$this->assertNull(
+			$wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ),
+			'Failed to make the occurrence table genuinely missing before the write.'
+		);
+		// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
+
+		$post_id = $this->create_recurring_event( self::WEEKLY_RULE );
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		// The production save path, not a direct project() call: the wiring
+		// from a save to the healed write is the thing under test.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'wp_after_insert_post', $post_id, get_post( $post_id ), true, null );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->assertSame( $table, $exists, 'Failed to assert the missing table was recreated by the write path.' );
+		$this->assertCount(
+			5,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the rows landed after the self-heal recreated the table.'
+		);
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to assert the site flag agrees with the healed state.'
+		);
+
+		// Manual cleanup: the DROP committed the test transaction, so the
+		// fixture post and the once-per-request heal guard survive rollback.
+		Utility::set_and_get_hidden_property( Occurrences::get_instance(), 'table_heal_attempted', false );
+		wp_delete_post( $post_id, true );
+	}
+
+	/**
+	 * A projection larger than one chunk is split into bounded statements and
+	 * still lands completely, with the summed count truthful.
+	 *
+	 * A daily rule over a 40-month horizon expands to roughly 1,200 rows,
+	 * comfortably above the 1,000-row chunk bound and safely clear of any
+	 * calendar-length wobble ever dropping it below one chunk.
+	 *
+	 * @covers ::project
+	 * @covers ::upsert_occurrences
+	 * @covers ::insert_or_update_rows
+	 *
+	 * @return void
+	 */
+	public function test_projection_wider_than_one_chunk_is_chunked_and_complete(): void {
+		global $wpdb;
+
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'never',
+			)
+		);
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$wide_horizon = static fn() => 40;
+		add_filter( 'gatherpress_recurrence_horizon_months', $wide_horizon );
+
+		$queries_before = count( (array) $wpdb->queries );
+
+		$written = Occurrences::get_instance()->project( $post_id );
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $wide_horizon );
+
+		$table      = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$row_groups = array();
+
+		foreach ( array_slice( (array) $wpdb->queries, $queries_before ) as $query ) {
+			$sql = (string) $query[0];
+
+			if ( ! str_starts_with( $sql, 'INSERT INTO' ) || ! str_contains( $sql, $table ) ) {
+				continue;
+			}
+
+			// Count the per-row value groups between VALUES and the
+			// ON DUPLICATE clause; nothing inside a value produces a paren.
+			$values_part  = substr( $sql, strpos( $sql, ' VALUES ' ) );
+			$values_part  = substr( $values_part, 0, strpos( $values_part, ' ON DUPLICATE' ) );
+			$row_groups[] = substr_count( $values_part, '(' );
+		}
+
+		$this->assertIsInt( $written, 'Failed to assert the oversized projection reported success.' );
+		$this->assertGreaterThan(
+			1000,
+			$written,
+			'Failed to build a projection wider than one chunk; the fixture no longer exercises chunking.'
+		);
+		$this->assertSame(
+			(int) ceil( $written / 1000 ),
+			count( $row_groups ),
+			'Failed to assert the insert was split into one statement per chunk.'
+		);
+		$this->assertLessThanOrEqual(
+			1000,
+			max( $row_groups ),
+			'Failed to assert no single insert statement exceeds the chunk bound.'
+		);
+		$this->assertSame(
+			$written,
+			array_sum( $row_groups ),
+			'Failed to assert the chunked statements carry exactly the reported rows.'
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stored = (int) $wpdb->get_var(
+			$wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE series_post_id = %d', $table, $post_id )
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->assertSame( $written, $stored, 'Failed to assert every reported row is present in the table.' );
+	}
+
+	/**
+	 * `top_up()` counts only series whose projection actually succeeded, so a
+	 * sweep that failed every write does not report the batch as topped up.
+	 *
+	 * @covers ::top_up
+	 *
+	 * @return void
+	 */
+	public function test_top_up_reports_only_series_that_projected_successfully(): void {
+		$this->create_short_horizon_never_ending_series();
+		$this->create_short_horizon_never_ending_series();
+
+		$filter = $this->break_occurrence_statements( 'INSERT INTO' );
+
+		$written = Occurrences::get_instance()->top_up();
+
+		remove_filter( 'query', $filter );
+
+		$this->assertSame(
+			0,
+			$written,
+			'Failed to assert that top_up reports zero when every projection failed.'
 		);
 	}
 }
