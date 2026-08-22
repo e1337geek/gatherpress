@@ -529,6 +529,68 @@ class Test_Splitter extends Base {
 	}
 
 	/**
+	 * A split projects each rewritten rule once, and leaves no shutdown re-projection queued.
+	 *
+	 * The splitter writes each side's rule blob and projects immediately, in
+	 * the save-path order, so the REST response reports the state it
+	 * produced. The blob write itself also queues a deferred reconciliation
+	 * for `shutdown`, the safety net for writers that never project, and
+	 * that queue entry must be consumed by the immediate projection the same
+	 * way the ordinary editor save's is. Left queued, every split re-ran
+	 * both projections at shutdown: idempotent, but a full expand-and-upsert
+	 * of both fragments paid for nothing.
+	 *
+	 * @covers ::split_forward
+	 * @covers ::write_rule
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::project
+	 *
+	 * @return void
+	 */
+	public function test_a_split_projects_each_side_once_with_no_shutdown_extra(): void {
+		global $wpdb;
+
+		$origin_id = $this->create_and_project();
+
+		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$inserts = array();
+		$capture = static function ( $query ) use ( &$inserts, $table ) {
+			if ( str_starts_with( $query, 'INSERT' ) && str_contains( $query, $table ) ) {
+				$inserts[] = $query;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $capture );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, self::FULL_SET[2] );
+
+		$this->assertTrue( $result['split'], 'Fixture setup: the split must succeed.' );
+		$this->assertCount(
+			2,
+			$inserts,
+			'A split writes occurrence rows exactly twice: the forward rule projection and the origin cap projection.'
+		);
+		$this->assertSame(
+			array(),
+			Utility::get_hidden_property( Occurrences::get_instance(), 'pending_projection' ),
+			'The deliberate projections must consume the reconciliations their own blob writes queued.'
+		);
+
+		// The shutdown pass must find nothing left to do: no entry, no
+		// expand, no write.
+		Occurrences::get_instance()->resolve_pending_projection();
+
+		remove_filter( 'query', $capture );
+
+		$this->assertCount(
+			2,
+			$inserts,
+			'The shutdown reconciliation pass must not re-project a split the request already projected.'
+		);
+	}
+
+	/**
 	 * Create and project a daily series longer than `Rule::MAX_COUNT` rows.
 	 *
 	 * A never-ending daily rule under a widened projection horizon, the shape
