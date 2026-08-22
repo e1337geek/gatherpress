@@ -1206,6 +1206,171 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for total ordering on `select_for_series()`.
+	 *
+	 * `ORDER BY datetime_start_gmt` alone is not a total order, and
+	 * `recurrence_id` cannot complete it: the identifier is derived from the
+	 * local start, so two sibling posts of one series sharing a start share
+	 * the identifier too. Only `series_post_id` breaks that tie. The emitted
+	 * statement is pinned rather than the row order, for the same reason the
+	 * horizon query's total-order test pins its statement: InnoDB returns
+	 * tied rows in clustered-key order today, which for this table *is*
+	 * `(series_post_id, recurrence_id)` order, so a row-order assertion
+	 * passes with or without the tie-breakers.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_emits_a_total_order(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$this->assertStringContainsString(
+			'ORDER BY datetime_start_gmt ASC, series_post_id ASC, recurrence_id ASC',
+			$wpdb->last_query,
+			'Failed to assert that select_for_series breaks ties on series post ID and recurrence ID.'
+		);
+	}
+
+	/**
+	 * Coverage for `select_for_series()`'s `after` argument: the bound reads
+	 * the effective end and is inclusive of it, so a row whose
+	 * `datetime_end_gmt` equals the bound still returns.
+	 *
+	 * End-inclusive matches `select_upcoming()`'s definition of upcoming: an
+	 * occurrence that has started but not ended is still one a forward-looking
+	 * caller wants, and a bound on the start would drop it the moment it
+	 * begins. The fixture's second occurrence ends exactly at the bound, so
+	 * an exclusive `>` comparison fails here by dropping it.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_after_bound_is_end_inclusive(): void {
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$anchor   = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '-2 weeks' )->modify( '-1 hour' );
+
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 1,
+				'weekdays'  => array( (int) $anchor->format( 'w' ) ),
+				'end_type'  => 'count',
+				'count'     => 4,
+			),
+			$anchor,
+			$anchor->modify( '+2 hours' ),
+			'America/New_York'
+		);
+
+		$second_end_gmt = $anchor->modify( '+7 days' )->modify( '+2 hours' )
+			->setTimezone( new DateTimeZone( 'UTC' ) )
+			->format( 'Y-m-d H:i:s' );
+
+		$rows = Occurrences::get_instance()->select_for_series(
+			array( $post_id ),
+			array( 'after' => $second_end_gmt )
+		);
+
+		$this->assertSame(
+			array(
+				Occurrences::recurrence_id( $anchor->modify( '+7 days' ) ),
+				Occurrences::recurrence_id( $anchor->modify( '+14 days' ) ),
+				Occurrences::recurrence_id( $anchor->modify( '+21 days' ) ),
+			),
+			wp_list_pluck( $rows, 'recurrence_id' ),
+			'Failed to assert that the after bound excludes ended rows and keeps the row ending exactly on it.'
+		);
+	}
+
+	/**
+	 * Coverage for `select_for_series()`'s `limit` argument: a limit slices
+	 * the total order stably, so a narrower read is a strict prefix of a
+	 * wider one with no row repeated or dropped across the boundary.
+	 *
+	 * Two sibling posts share one rule and one anchor, so every start
+	 * instant and every `recurrence_id` is shared between them, the exact
+	 * tie only `series_post_id` can break. The expected tuples interleave
+	 * the two posts per start, lower post ID first.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_limit_slices_stably(): void {
+		$post_id_a = $this->create_and_project();
+		$post_id_b = $this->create_and_project();
+		$low       = min( $post_id_a, $post_id_b );
+		$high      = max( $post_id_a, $post_id_b );
+		$post_ids  = array( $post_id_a, $post_id_b );
+		$instance  = Occurrences::get_instance();
+
+		$tuples = static fn( array $rows ) => array_map(
+			static fn( array $row ) => array( (int) $row['series_post_id'], $row['recurrence_id'] ),
+			$rows
+		);
+
+		$expected = array(
+			array( $low, '20260903T180000' ),
+			array( $high, '20260903T180000' ),
+			array( $low, '20260915T180000' ),
+			array( $high, '20260915T180000' ),
+			array( $low, '20260917T180000' ),
+			array( $high, '20260917T180000' ),
+		);
+
+		$wider = $instance->select_for_series( $post_ids, array( 'limit' => 6 ) );
+
+		$this->assertSame(
+			$expected,
+			$tuples( $wider ),
+			'Failed to assert that tied sibling rows interleave deterministically, lower series post ID first.'
+		);
+
+		$narrower = $instance->select_for_series( $post_ids, array( 'limit' => 3 ) );
+
+		$this->assertSame(
+			array_slice( $expected, 0, 3 ),
+			$tuples( $narrower ),
+			'Failed to assert that a narrower limit is a strict prefix of a wider one.'
+		);
+	}
+
+	/**
+	 * A negative `limit` never reaches the SQL as `LIMIT -1`.
+	 *
+	 * Same clamp contract as the horizon readers: MySQL rejects a negative
+	 * `LIMIT` outright and `$wpdb` swallows the syntax error into an empty
+	 * result plus a poisoned `last_error`, so the clamp to zero is what makes
+	 * "selects nothing" a defined answer rather than a silent error.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_negative_limit_is_clamped(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ), array( 'limit' => -1 ) ),
+			'Failed to assert that a negative limit selects nothing.'
+		);
+		$this->assertSame(
+			'',
+			$wpdb->last_error,
+			'Failed to assert that a negative limit produced no SQL error.'
+		);
+	}
+
+	/**
 	 * Coverage for `set_status()` updating a matching row and returning true.
 	 *
 	 * @covers ::set_status
