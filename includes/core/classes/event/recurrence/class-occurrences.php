@@ -1273,19 +1273,25 @@ final class Occurrences {
 	 * and this method is the only thing that ever deletes the occurrence rows
 	 * mirrors used to imply.
 	 *
-	 * Completing that pass also consumes any queued reconciliation for the
-	 * same post, the way `maybe_project()` consumes it on the save path. The
-	 * queue's whole job is to decide, at shutdown, whether the rows still
-	 * match the blob, and this call has just decided it against the blob as it
-	 * stands. The cleanup signal survives the unqueue because it is
-	 * `$cleanup_when_not_recurring = true` here, which is the strongest value
-	 * the queue can carry: a post queued as `true` gets its cleanup, and one
-	 * queued as `false` gets more than it asked for rather than less. Without
-	 * this, `Recurrence\Meta::resolve_pending_revalidation()` calling
-	 * `project()` at `shutdown` priority 15 leaves the priority-20 pass to
-	 * project the same post a second time in one request. A blob write after
-	 * this point re-queues the post, exactly as it does after
-	 * `maybe_project()`.
+	 * A direct projection also consumes any reconciliation this request had
+	 * queued for the same post, the way `maybe_project()` consumes it on the
+	 * save path. The queue exists for writers that never project (see
+	 * `$pending_projection`); a caller that projects deliberately, the save path
+	 * and `Splitter::write_rule()` alike, has just consumed the blob as it
+	 * stands, so a `shutdown` re-projection would re-derive identical rows for
+	 * nothing. Without this,
+	 * `Recurrence\Meta::resolve_pending_revalidation()` calling `project()` at
+	 * `shutdown` priority 15 leaves the priority-20 pass to project the same
+	 * post a second time in one request.
+	 *
+	 * The cleanup signal survives the unqueue because this call passes
+	 * `$cleanup_when_not_recurring = true`, the strongest value the queue can
+	 * carry: a post queued as `true` gets its cleanup, and one queued as `false`
+	 * gets more than it asked for rather than less. The unqueue is therefore
+	 * unconditional, matching the save path's long-standing behavior on a failed
+	 * write: the projection sweep, not the request's shutdown, is what retries a
+	 * write the database refused. A blob write after this point re-queues the
+	 * post, exactly as it does after `maybe_project()`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1295,11 +1301,11 @@ final class Occurrences {
 	 *                      `WP_Error` when a database write failed.
 	 */
 	public function project( int $post_id ): int|WP_Error {
-		$result = $this->run_projection( $post_id, true );
+		$written = $this->run_projection( $post_id, true );
 
 		unset( $this->pending_projection[ $post_id ] );
 
-		return $result;
+		return $written;
 	}
 
 	/**
