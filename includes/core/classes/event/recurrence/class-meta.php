@@ -456,8 +456,9 @@ final class Meta {
 	 *
 	 * @return void
 	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter) `$meta_id` is required by WP's
-	 *                                                `added_post_meta`/`updated_post_meta`/`deleted_post_meta` signature.
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter) `$meta_id` is required by the
+	 *                                                shared `added_post_meta`, `updated_post_meta`
+	 *                                                and `deleted_post_meta` signature.
 	 */
 	public function maybe_revalidate_for_datetime( $meta_id, $post_id, $meta_key = '' ): void {
 		$post_id = (int) $post_id;
