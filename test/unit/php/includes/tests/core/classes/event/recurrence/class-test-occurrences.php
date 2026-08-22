@@ -1881,6 +1881,147 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * The anchor-only arm of `select_by_horizon()` — the statement every
+	 * site with no recurring events runs — keeps its boundary predicate in
+	 * `WHERE` on the real `datetime_end_gmt` column through an `INNER JOIN`,
+	 * never in `HAVING` on the projected alias. `HAVING` on the alias forces
+	 * a temporary table plus filesort, and the `LEFT JOIN` it filtered was
+	 * effectively inner already: a post with no events-table row yields
+	 * `NULL`, which fails the boundary comparison in either direction. The
+	 * result set is identical either way, so the pin here is the statement's
+	 * shape, in both directions.
+	 *
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_anchor_only_arm_filters_in_where_through_an_inner_join(): void {
+		global $wpdb;
+
+		$timezone = new DateTimeZone( 'UTC' );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $now->modify( '+2 days' )->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $now->modify( '+2 days +2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$events_table      = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$refs = Occurrences::get_instance()->select_upcoming( 10 );
+		$sql  = $wpdb->last_query;
+
+		$this->assertContains(
+			$post_id,
+			wp_list_pluck( $refs, 'post_id' ),
+			'Failed to assert that the anchor-only arm returns the upcoming event.'
+		);
+		$this->assertStringNotContainsString(
+			$occurrences_table,
+			$sql,
+			'Failed to assert that the anchor-only arm never names the occurrence table.'
+		);
+		$this->assertStringContainsString(
+			"INNER JOIN `{$events_table}`",
+			$sql,
+			'Failed to assert that the anchor-only arm joins the events table with INNER JOIN.'
+		);
+		$this->assertStringNotContainsString(
+			'LEFT JOIN',
+			$sql,
+			'Failed to assert that the anchor-only arm emits no LEFT JOIN.'
+		);
+		$this->assertStringNotContainsString(
+			'HAVING',
+			$sql,
+			'Failed to assert that the anchor-only arm emits no HAVING clause.'
+		);
+		$this->assertStringContainsString(
+			"AND `{$events_table}`.datetime_end_gmt >= ",
+			$sql,
+			'Failed to assert that the upcoming boundary filters in WHERE on the real column.'
+		);
+
+		Occurrences::get_instance()->select_past( 10 );
+
+		$this->assertStringContainsString(
+			"AND `{$events_table}`.datetime_end_gmt < ",
+			$wpdb->last_query,
+			'Failed to assert that the past boundary filters in WHERE on the real column.'
+		);
+		$this->assertStringNotContainsString(
+			'HAVING',
+			$wpdb->last_query,
+			'Failed to assert that the past direction emits no HAVING clause.'
+		);
+	}
+
+	/**
+	 * A published event post with no events-table row is absent from the
+	 * anchor-only arm in both directions — the same result the previous
+	 * `LEFT JOIN` + `HAVING` shape produced, since `NULL` fails the boundary
+	 * comparison either way. The `INNER JOIN` makes that elimination
+	 * structural instead of incidental.
+	 *
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_anchor_only_arm_omits_an_event_with_no_events_table_row(): void {
+		global $wpdb;
+
+		$timezone = new DateTimeZone( 'UTC' );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $now->modify( '+2 days' )->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $now->modify( '+2 days +2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		$events_table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Required to strip the events-table row from a published post.
+		$wpdb->delete( $events_table, array( 'post_id' => $post_id ) );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$instance = Occurrences::get_instance();
+
+		$this->assertNotContains(
+			$post_id,
+			wp_list_pluck( $instance->select_upcoming( 50 ), 'post_id' ),
+			'Failed to assert that a rowless event post is absent from select_upcoming().'
+		);
+		$this->assertNotContains(
+			$post_id,
+			wp_list_pluck( $instance->select_past( 50 ), 'post_id' ),
+			'Failed to assert that a rowless event post is absent from select_past().'
+		);
+	}
+
+	/**
 	 * Coverage for `select_past()` ordering descending and respecting the `status` argument.
 	 *
 	 * @covers ::select_past

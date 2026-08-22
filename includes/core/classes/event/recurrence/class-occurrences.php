@@ -553,13 +553,20 @@ final class Occurrences {
 		// instead demotes a running event into the past bucket the moment it
 		// begins, and only on sites where nothing happens to recur.
 		if ( ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
+			// The join is INNER and the boundary lives in WHERE on the real
+			// column, not in HAVING on its alias: the alias here *is* the
+			// column, and a post with no events-table row fails the boundary
+			// in either direction (`NULL` compares as unknown), so a LEFT
+			// JOIN filtered on the joined column returns the same rows while
+			// forcing a temporary table and blocking the events-table index
+			// from narrowing the scan.
 			$sql = 'SELECT %i.ID AS post_id, NULL AS recurrence_id,'
 				. ' %i.datetime_start_gmt AS effective_start_gmt,'
 				. ' %i.datetime_end_gmt AS effective_end_gmt'
 				. ' FROM %i'
-				. ' LEFT JOIN %i ON %i.ID = %i.post_id'
+				. ' INNER JOIN %i ON %i.ID = %i.post_id'
 				. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
-				. " HAVING effective_end_gmt {$comparison} %s"
+				. " AND %i.datetime_end_gmt {$comparison} %s"
 				. " ORDER BY effective_start_gmt {$order}, %i.ID {$order}"
 				. ' LIMIT %d';
 
@@ -578,6 +585,7 @@ final class Occurrences {
 				array(
 					$wpdb->posts,
 					'publish',
+					$events_table,
 					current_time( 'mysql', true ),
 					$wpdb->posts,
 					$limit,
