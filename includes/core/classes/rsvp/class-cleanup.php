@@ -180,19 +180,29 @@ final class Cleanup {
 		// queries. Deferring collapses them into one recount per taxonomy at the
 		// end, which is exactly what this deferral exists for in core's own bulk
 		// paths.
+		//
+		// The loop is wrapped so the deferral is closed on every exit. It runs
+		// arbitrary third-party code: `delete_comment`, `deleted_comment` and
+		// the comment-meta hooks all fire inside it, and any of those throwing
+		// used to skip the restore and leave term counting deferred for the
+		// rest of the request. Nothing recounts after that, so every term count
+		// written for the remainder of the request would be stale, and this is
+		// cron, where the throw is swallowed and nobody sees it.
 		wp_defer_term_counting( true );
 
-		foreach ( $rsvps as $rsvp ) {
-			$meta_keys = array_keys( get_comment_meta( $rsvp->comment_ID ) );
+		try {
+			foreach ( $rsvps as $rsvp ) {
+				$meta_keys = array_keys( get_comment_meta( $rsvp->comment_ID ) );
 
-			foreach ( $meta_keys as $meta_key ) {
-				delete_comment_meta( $rsvp->comment_ID, $meta_key );
+				foreach ( $meta_keys as $meta_key ) {
+					delete_comment_meta( $rsvp->comment_ID, $meta_key );
+				}
+
+				wp_delete_comment( $rsvp->comment_ID, true );
 			}
-
-			wp_delete_comment( $rsvp->comment_ID, true );
+		} finally {
+			wp_defer_term_counting( false );
 		}
-
-		wp_defer_term_counting( false );
 
 		// Schedule the next event.
 		wp_clear_scheduled_hook( 'gatherpress_rsvp_cleanup' );

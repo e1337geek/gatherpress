@@ -14,6 +14,7 @@ use GatherPress\Core\Rsvp\Query;
 use GatherPress\Core\Rsvp;
 use GatherPress\Core\Settings;
 use GatherPress\Tests\Base;
+use RuntimeException;
 
 /**
  * Class Test_Cleanup.
@@ -303,6 +304,70 @@ class Test_Cleanup extends Base {
 		$this->assertFalse(
 			wp_defer_term_counting(),
 			'Failed to assert the sweep restores term counting before it returns.'
+		);
+	}
+
+	/**
+	 * The deferral is closed even when a delete throws part way through the sweep.
+	 *
+	 * The loop runs arbitrary third-party code: `delete_comment`,
+	 * `deleted_comment` and the comment-meta hooks all fire inside it. With the
+	 * restore sitting after the loop as a plain statement, any of those throwing
+	 * skipped it and left term counting deferred for the rest of the request, so
+	 * nothing recounted again and every term count read afterwards was stale.
+	 * This is a cron callback, where the throw is swallowed and no one sees it.
+	 *
+	 * @covers ::rsvp_cleanup
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_cleanup_restores_term_counting_when_a_delete_throws(): void {
+		$instance = Cleanup::get_instance();
+		$post     = $this->mock->post(
+			array(
+				'post_type' => Event::POST_TYPE,
+			)
+		)->get();
+
+		$comment_id = $this->factory->comment->create(
+			array(
+				'comment_post_ID'  => $post->ID,
+				'comment_type'     => Rsvp::COMMENT_TYPE,
+				'comment_approved' => 0,
+			)
+		);
+
+		wp_update_comment(
+			array(
+				'comment_ID'       => $comment_id,
+				'comment_date'     => '2023-12-25 10:00:00',
+				'comment_date_gmt' => '2023-12-25 10:00:00',
+			)
+		);
+
+		$explode = static function (): void {
+			throw new RuntimeException( 'A delete_comment listener threw.' );
+		};
+
+		add_action( 'delete_comment', $explode, 1 );
+
+		$thrown = null;
+
+		try {
+			$instance->rsvp_cleanup();
+		} catch ( RuntimeException $exception ) {
+			$thrown = $exception;
+		} finally {
+			remove_action( 'delete_comment', $explode, 1 );
+		}
+
+		$this->assertNotNull(
+			$thrown,
+			'Failed to arrange a throwing delete for the sweep to unwind from.'
+		);
+		$this->assertFalse(
+			wp_defer_term_counting(),
+			'Failed to assert the sweep restores term counting when a delete throws.'
 		);
 	}
 }
