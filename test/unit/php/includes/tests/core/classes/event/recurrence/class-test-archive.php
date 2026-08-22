@@ -468,6 +468,165 @@ class Test_Archive extends Base {
 	}
 
 	/**
+	 * Build the widened-archive fixture: twelve upcoming events, one past
+	 * event and one ordinary post.
+	 *
+	 * The upcoming events are created earliest-first at distinct hour
+	 * offsets, so the required ascending-datetime order cannot coincide with
+	 * the `wp_posts.post_date DESC` order an unsubstituted query falls back
+	 * to. The past event and the ordinary post exist so that a query which
+	 * skipped the archive substitution counts fourteen rows where the
+	 * substituted upcoming archive counts twelve: the two answers must
+	 * differ, or a test could pass with the substitution entirely dead.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int[] The upcoming event post IDs, in ascending datetime order.
+	 */
+	protected function build_widened_archive_fixture(): array {
+		$now      = $this->now();
+		$upcoming = array();
+
+		for ( $offset = 12; $offset <= 23; $offset++ ) {
+			$start = $now->modify( sprintf( '+%d hours', $offset ) );
+
+			$upcoming[] = $this->create_event_at( $start, $start->modify( '+30 minutes' ) );
+		}
+
+		$this->create_event_at( $now->modify( '-4 hours' ), $now->modify( '-3 hours' ) );
+		$this->factory->post->create( array( 'post_status' => 'publish' ) );
+
+		return $upcoming;
+	}
+
+	/**
+	 * Widen the main query's `post_type` the way an integration plugin does.
+	 *
+	 * Registered on `pre_get_posts`, so it also reapplies itself to the
+	 * substituted archive query, exactly as a real plugin's callback would.
+	 * The caller owns removal.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return callable The registered callback, for later removal.
+	 */
+	protected function widen_archive_post_type(): callable {
+		$widen = static function ( WP_Query $query ): void {
+			if ( $query->is_main_query() && $query->is_post_type_archive ) {
+				$query->set( 'post_type', array( Event::POST_TYPE, 'post' ) );
+			}
+		};
+
+		add_action( 'pre_get_posts', $widen );
+
+		return $widen;
+	}
+
+	/**
+	 * Control for the widened pair below: without any widening, a request
+	 * past the last archive page is a 404.
+	 *
+	 * This is the review probe's control case. It passes with or without the
+	 * shared archive guard; its job is to pin the widened failure below on
+	 * the widening rather than on the fixture.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::defer_event_archive_404
+	 *
+	 * @return void
+	 */
+	public function test_control_out_of_range_page_404s(): void {
+		$this->build_widened_archive_fixture();
+
+		$query = $this->request_archive_page( 9 );
+
+		$this->assertTrue(
+			$query->is_404(),
+			'Failed to assert an out-of-range archive page 404s without any post_type widening.'
+		);
+	}
+
+	/**
+	 * An out-of-range archive page still 404s when a plugin widens the main
+	 * query's `post_type` to an array.
+	 *
+	 * `defer_event_archive_404()` takes core's 404 decision away for exactly
+	 * this query shape, so the redirect handler must give the decision back
+	 * for the same shape. Reading the post type through a `(string)` cast
+	 * produced the literal `Array`, bailed without substituting and without
+	 * 404ing, and the page answered `200` with an empty archive.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 * @covers ::defer_event_archive_404
+	 *
+	 * @return void
+	 */
+	public function test_widened_post_type_out_of_range_page_404s(): void {
+		$this->build_widened_archive_fixture();
+
+		$widen = $this->widen_archive_post_type();
+		$query = $this->request_archive_page( 9 );
+
+		remove_action( 'pre_get_posts', $widen );
+
+		$this->assertTrue(
+			$query->is_404(),
+			'Failed to assert an out-of-range archive page still 404s when the post_type is widened.'
+		);
+		$this->assertSame(
+			array(),
+			$query->posts,
+			'Failed to assert the widened out-of-range page renders nothing.'
+		);
+	}
+
+	/**
+	 * The other side of the widened boundary: an in-range page of a widened
+	 * archive still renders the substituted event archive.
+	 *
+	 * The counts are the proof the substitution ran: the upcoming archive
+	 * lists the twelve upcoming events, while a query that skipped the
+	 * substitution counts fourteen rows and orders them by authoring time.
+	 *
+	 * @covers ::handle_event_archive_redirect
+	 *
+	 * @return void
+	 */
+	public function test_widened_post_type_in_range_page_renders(): void {
+		$upcoming = $this->build_widened_archive_fixture();
+		$expected = array_map(
+			static function ( int $post_id ): string {
+				return $post_id . '|';
+			},
+			array_slice( $upcoming, 0, 10 )
+		);
+
+		$widen = $this->widen_archive_post_type();
+		$query = $this->request_archive_page( 1 );
+
+		remove_action( 'pre_get_posts', $widen );
+
+		$this->assertFalse(
+			$query->is_404(),
+			'Failed to assert an in-range page of a widened archive renders.'
+		);
+		$this->assertTrue(
+			$query->is_post_type_archive(),
+			'Failed to assert the widened in-range page is still an archive.'
+		);
+		$this->assertSame(
+			12,
+			$query->found_posts,
+			'Failed to assert the widened archive was substituted with the upcoming event archive.'
+		);
+		$this->assertSame(
+			$expected,
+			$this->entries( $query ),
+			'Failed to assert the widened first page lists the upcoming events in ascending datetime order.'
+		);
+	}
+
+	/**
 	 * Coverage for the other side of the boundary: an empty archive is not a 404.
 	 *
 	 * Core does not 404 an unpaged post type archive with no rows. It renders
