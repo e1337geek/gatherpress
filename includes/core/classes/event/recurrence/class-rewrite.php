@@ -311,13 +311,12 @@ final class Rewrite {
 	 * layer's to make. **A bare URL resolves within the fragment it names, never across
 	 * the logical series.**
 	 *
-	 * Concretely: `next_upcoming_recurrence_id()` widens through
-	 * `Series::resolve_post_ids()`, so the *query* already spans every post
-	 * of a multi-post series, and then narrows the result back to rows whose
-	 * `series_post_id` is the requested post. Today those two steps cancel out,
-	 * because `resolve_post_ids()` returns `array( $post_id )` and one post is
-	 * the whole series. They stop canceling the moment the forward split
-	 * makes a series span several posts, and the narrowing is what decides the
+	 * Concretely: `next_upcoming_recurrence_id()` scopes its read to the post
+	 * the request named, so the only rows it can answer with are that post's
+	 * own. Today that is indistinguishable from reading the whole series,
+	 * because `Series::resolve_post_ids()` returns `array( $post_id )` and one
+	 * post is the whole series. They separate the moment the forward split
+	 * makes a series span several posts, and the scoping is what decides the
 	 * behavior then:
 	 *
 	 * - **Fragment semantics (what this class implements).** `/{slug-of-piece-A}/`
@@ -349,7 +348,10 @@ final class Rewrite {
 	 * is a resolution or a `301` and what `rel="canonical"` then says; and
 	 * which post a logical series' "the series' URL" means for calendar
 	 * subscriptions and revisions once more than one post can answer to it. The
-	 * narrowing comparison below is the single line those decisions land on.
+	 * post IDs `next_upcoming_recurrence_id()` hands `select_for_series()` are
+	 * the single place those decisions land: `Series::resolve_post_ids()` is
+	 * what widens them, and a widened read cannot keep the row limit that
+	 * bounds the scoped one.
 	 *
 	 * The no-recurring-events guard wraps this method's call inside
 	 * `parse_request()`, so the `get_page_by_path()` lookup below is never
@@ -428,10 +430,32 @@ final class Rewrite {
 	/**
 	 * Resolve a series' next upcoming scheduled occurrence identifier.
 	 *
-	 * Reads across every post of the series and then answers only with a row
-	 * belonging to the requested post. That narrowing is the bare-URL contract
-	 * documented on `maybe_resolve_bare_series()` under fragment semantics, and
-	 * it is the line to revisit once a series can span more than one post.
+	 * One bounded statement: the requested post's scheduled rows whose end has
+	 * not passed, in the table's total order, limited to the single row the
+	 * answer needs. Every part of that is decided in SQL, so a series' whole
+	 * scheduled history is never hydrated to produce one identifier.
+	 *
+	 * Scoping the read to the requested post *is* the fragment-semantics
+	 * narrowing documented on `maybe_resolve_bare_series()`, not a departure
+	 * from it. Widening the query across the series and then discarding every
+	 * row that does not belong to the requested post returns exactly the rows
+	 * this scoped query returns, in the same order, because discarding rows
+	 * cannot reorder the ones that survive. What the widened shape cannot
+	 * survive is the row limit: a sibling's occurrence can sort ahead of the
+	 * requested post's own, so a widened read cut to one row answers with
+	 * another post's occurrence, which is the one thing the contract's second
+	 * invariant forbids. Scoping the query is what makes the bound safe.
+	 *
+	 * Upcoming is bounded inclusively on the occurrence's end, through
+	 * `select_for_series()`'s end-inclusive `after` argument, matching
+	 * `Event\Query::get_datetime_comparison_column()`'s "a running event is
+	 * still upcoming" rule, which the occurrence list preserves through its
+	 * `COALESCE()` rewrite. An occurrence that is in progress, or that ends at
+	 * this exact second, still resolves; bounding on the start instead skipped
+	 * a running occurrence and sent the visitor to the next one while the list
+	 * beside the page still showed the running one. The column is `NOT NULL`
+	 * and written by every projection, so there is no empty-end shape to fall
+	 * back from.
 	 *
 	 * @since 0.36.0
 	 *
@@ -440,49 +464,20 @@ final class Rewrite {
 	 * @return string|null The recurrence ID, or null when none is upcoming.
 	 */
 	protected function next_upcoming_recurrence_id( int $post_id ): ?string {
-		$post_ids = Series::get_instance()->resolve_post_ids( $post_id );
-		$rows     = Occurrences::get_instance()->select_for_series(
-			$post_ids,
-			array( 'status' => Occurrences::STATUS_SCHEDULED )
+		$rows = Occurrences::get_instance()->select_for_series(
+			array( $post_id ),
+			array(
+				'status' => Occurrences::STATUS_SCHEDULED,
+				'after'  => current_time( 'mysql', true ),
+				'limit'  => 1,
+			)
 		);
-		$now      = current_time( 'mysql', true );
 
-		foreach ( $rows as $row ) {
-			// The `series_post_id` comparison is the fragment-semantics
-			// narrowing; see this method's docblock.
-			if ( (int) $row['series_post_id'] === $post_id && $this->occurrence_is_upcoming( $row, $now ) ) {
-				return (string) $row['recurrence_id'];
-			}
+		if ( array() === $rows ) {
+			return null;
 		}
 
-		return null;
-	}
-
-	/**
-	 * Report whether an occurrence row is still upcoming at a moment.
-	 *
-	 * Upcoming is bounded inclusively on the occurrence's end, matching
-	 * `Event\Query::get_datetime_comparison_column()`'s "a running event is
-	 * still upcoming" rule, which the occurrence list preserves through its
-	 * `COALESCE()` rewrite. An occurrence that is in progress, or that ends
-	 * at this exact second, still resolves; bounding on the start instead
-	 * skipped a running occurrence and sent the visitor to the next one
-	 * while the list beside the page still showed the running one. Rows
-	 * arrive ordered by start, so the first upcoming row is still the
-	 * soonest-starting one.
-	 *
-	 * The column is `NOT NULL` and written by every projection, so there is
-	 * no empty-end shape to fall back from.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @param array  $row Occurrence row, carrying `datetime_end_gmt`.
-	 * @param string $now The current GMT datetime in MySQL format.
-	 *
-	 * @return bool True until the occurrence's end has passed.
-	 */
-	protected function occurrence_is_upcoming( array $row, string $now ): bool {
-		return $row['datetime_end_gmt'] >= $now;
+		return (string) $rows[0]['recurrence_id'];
 	}
 
 	/**
