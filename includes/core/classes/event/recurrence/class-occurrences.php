@@ -2147,6 +2147,14 @@ final class Occurrences {
 	public function select_bounded_occurrence( array $post_ids, bool $upcoming ): ?array {
 		global $wpdb;
 
+		// Same probe the other single-row reads carry. A blog whose flag is on
+		// but whose table was never installed would otherwise take a database
+		// error here, and this read is reachable from a front-end URL rather
+		// than only from an admin screen.
+		if ( array() === $post_ids || ! $this->table_exists() ) {
+			return null;
+		}
+
 		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 		$placeholders = implode( ', ', array_fill( 0, count( $post_ids ), '%d' ) );
 		$comparison   = $upcoming ? '>=' : '<';
