@@ -373,10 +373,14 @@ final class Context {
 		}
 
 		$occurrence = $this->resolve( $post_id );
-
-		return ( null === $occurrence )
-			? (string) $permalink
+		$url        = ( null === $occurrence )
+			? ''
 			: Rewrite::get_occurrence_url( $post_id, (string) $occurrence['recurrence_id'] );
+
+		// An occurrence URL is composed on top of the series permalink, so it is
+		// empty when the post has none. The permalink core already had is a
+		// better answer than an empty href.
+		return ( '' === $url ) ? (string) $permalink : $url;
 	}
 
 	/**
