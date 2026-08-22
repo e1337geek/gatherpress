@@ -128,6 +128,14 @@ const INVALID_STORED_MESSAGE =
 	'The stored repeat rule for this event is invalid, so the event does not repeat. Turn on Repeat to author a new rule.';
 
 /**
+ * The message shown while an authored count rule exceeds the expander budget.
+ *
+ * @type {string}
+ */
+const BUDGET_MESSAGE =
+	'That many repeats at this interval covers too long a span. Reduce the number of occurrences or the interval.';
+
+/**
  * Serialize a complete stored recurrence blob with the given overrides.
  *
  * @param {Object} overrides Field overrides.
@@ -823,6 +831,104 @@ describe( 'RecurrencePanel', () => {
 
 		expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
 		expect( screen.getByLabelText( 'Frequency' ) ).toHaveValue( 'weekly' );
+	} );
+
+	// Every test in this block pins the write side of the same agreement the
+	// stored-blob block below pins for the read side: the panel must never
+	// persist a blob `Rule::from_array()` rejects, because the rejection
+	// clears every mirror and the projection while surfacing nothing in the
+	// editor. The write-side predicate is the read-side one, so the two can
+	// never disagree again.
+	describe( 'write-side server-schema agreement', () => {
+		/**
+		 * Author a weekly rule through the controls up to its end condition.
+		 *
+		 * @param {string} interval Value typed into "Repeat every".
+		 *
+		 * @return {void}
+		 */
+		function authorWeeklyCountRule( interval ) {
+			fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+			fireEvent.change( screen.getByLabelText( 'Frequency' ), {
+				target: { value: 'weekly' },
+			} );
+			fireEvent.click( screen.getByLabelText( 'Monday' ) );
+			fireEvent.change( screen.getByLabelText( 'Repeat every' ), {
+				target: { value: interval },
+			} );
+			fireEvent.change( screen.getByLabelText( 'Ends' ), {
+				target: { value: 'count' },
+			} );
+			fireEvent.change( screen.getByLabelText( 'Number of occurrences' ), {
+				target: { value: '730' },
+			} );
+		}
+
+		test( 'withholds a within-control-range rule whose iteration budget the server refuses', () => {
+			render( <RecurrencePanel /> );
+
+			authorWeeklyCountRule( '52' );
+
+			// 730 x 7 x 52 + 366 = 266,086 iterations, above
+			// `Expander::MAX_ITERATIONS` (200,000), even though every control
+			// value is inside its own advertised min/max. Persisting the blob
+			// would silently disable the series server-side, so the write is
+			// withheld: the last known-good blob still carries the end
+			// condition authored before the count landed.
+			const blob = lastPersistedBlob();
+
+			expect( blob.end_type ).toBe( 'never' );
+			expect( blob.count ).toBe( 0 );
+			expect( screen.getByText( BUDGET_MESSAGE ) ).toBeInTheDocument();
+		} );
+
+		test( 'persists and clears the budget message once the interval shrinks', () => {
+			render( <RecurrencePanel /> );
+
+			authorWeeklyCountRule( '52' );
+
+			fireEvent.change( screen.getByLabelText( 'Repeat every' ), {
+				target: { value: '1' },
+			} );
+
+			// 730 x 7 x 1 + 366 = 5,476 iterations, inside the budget: the
+			// same count now persists and the message withdraws.
+			const blob = lastPersistedBlob();
+
+			expect( blob.count ).toBe( 730 );
+			expect( blob.interval ).toBe( 1 );
+			expect( blob.end_type ).toBe( 'count' );
+			expect(
+				screen.queryByText( BUDGET_MESSAGE ),
+			).not.toBeInTheDocument();
+		} );
+
+		test( 'withholds an end date the server cannot parse rather than persisting it', () => {
+			render( <RecurrencePanel /> );
+
+			fireEvent.click( screen.getByLabelText( 'Repeat' ) );
+			fireEvent.change( screen.getByLabelText( 'Ends' ), {
+				target: { value: 'until' },
+			} );
+			// Typing `20` into Chrome's year field yields `0020`, a valid HTML
+			// date value the control hands over as-is, and a truthy `until`.
+			// The server's reading disagrees: `Date.UTC` maps year 20 to 1920,
+			// so the round-trip check fails exactly as `Rule::from_array()`'s
+			// strict `!Y-m-d` parse does, and the blob would be rejected.
+			fireEvent.change( screen.getByLabelText( 'End date' ), {
+				target: { value: '0020-01-15' },
+			} );
+
+			const blob = lastPersistedBlob();
+
+			expect( blob.end_type ).toBe( 'never' );
+			expect( blob.until ).toBe( '' );
+			expect(
+				screen.getByText(
+					'Choose an end date to save this recurrence.',
+				),
+			).toBeInTheDocument();
+		} );
 	} );
 
 	// Every test in this block pins one arm of the client-side equivalent of
