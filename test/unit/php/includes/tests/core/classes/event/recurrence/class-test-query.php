@@ -390,15 +390,35 @@ class Test_Query extends Base {
 	 * @return array{0: array, 1: array} The clauses with, then without, the filter.
 	 */
 	protected function capture_clauses_both_ways( array $args ): array {
-		$with = $this->capture_clauses_for( $args );
+		// Both captures build their own `WHERE`, and the bucket predicate
+		// embeds `current_time()` down to the second. A second boundary
+		// crossing between the two therefore makes two genuinely identical
+		// statements differ by one digit, which reads as a REQ-16 violation
+		// and is nothing of the kind.
+		//
+		// The pair is retaken rather than having the timestamp normalized out
+		// of it, because byte identity is exactly what the caller asserts: a
+		// comparison that rewrote the strings first could no longer see a real
+		// divergence in the part it rewrote.
+		for ( $attempt = 0; $attempt < 5; $attempt++ ) {
+			$opened = time();
 
-		remove_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11 );
+			$with = $this->capture_clauses_for( $args );
 
-		$without = $this->capture_clauses_for( $args );
+			remove_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11 );
 
-		add_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11, 2 );
+			$without = $this->capture_clauses_for( $args );
 
-		return array( $with, $without );
+			add_filter( 'posts_clauses', array( Query::get_instance(), 'expand_event_clauses' ), 11, 2 );
+
+			if ( time() === $opened ) {
+				return array( $with, $without );
+			}
+		}
+
+		$this->fail(
+			'Failed to capture both clause sets inside one wall-clock second, so no byte comparison is meaningful.'
+		);
 	}
 
 	/**
