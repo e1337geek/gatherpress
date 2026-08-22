@@ -544,6 +544,119 @@ describe( 'OccurrencesPanel', () => {
 		);
 	} );
 
+	test( 'refetches the list after a successful save, so the panel appears in the authoring session', async () => {
+		// The list is otherwise fetched once per mount, before the rule the
+		// user is authoring exists: the panel would stay absent until an
+		// editor reload even though the save just projected occurrences.
+		let saving = false;
+		let succeeded = false;
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( ( storeName ) =>
+				'core/editor' === storeName
+					? {
+						getCurrentPostId: () => 42,
+						isSavingPost: () => saving,
+						isAutosavingPost: () => false,
+						didPostSaveRequestSucceed: () => succeeded,
+					}
+					: undefined,
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		const { rerender } = render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 1 ),
+		);
+
+		// The user authors a rule and saves; the save completes.
+		saving = true;
+		rerender( <OccurrencesPanel /> );
+
+		mockApiFetch.mockResolvedValueOnce( [ occurrence() ] );
+		saving = false;
+		succeeded = true;
+		rerender( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( screen.getByText( 'Cancel' ) ).toBeInTheDocument(),
+		);
+		expect( mockApiFetch ).toHaveBeenCalledTimes( 2 );
+	} );
+
+	test( 'does not refetch after a failed save', async () => {
+		let saving = false;
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( ( storeName ) =>
+				'core/editor' === storeName
+					? {
+						getCurrentPostId: () => 42,
+						isSavingPost: () => saving,
+						isAutosavingPost: () => false,
+						didPostSaveRequestSucceed: () => false,
+					}
+					: undefined,
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		const { rerender } = render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 1 ),
+		);
+
+		saving = true;
+		rerender( <OccurrencesPanel /> );
+		saving = false;
+		rerender( <OccurrencesPanel /> );
+
+		await act( async () => {} );
+
+		expect( mockApiFetch ).toHaveBeenCalledTimes( 1 );
+	} );
+
+	test( 'does not refetch after an autosave', async () => {
+		// An autosave never persists the recurrence meta, so its completion
+		// carries no new occurrences to fetch.
+		let saving = false;
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( ( storeName ) =>
+				'core/editor' === storeName
+					? {
+						getCurrentPostId: () => 42,
+						isSavingPost: () => saving,
+						isAutosavingPost: () => saving,
+						didPostSaveRequestSucceed: () => true,
+					}
+					: undefined,
+			),
+		);
+
+		mockApiFetch.mockResolvedValueOnce( [] );
+
+		const { rerender } = render( <OccurrencesPanel /> );
+
+		await waitFor( () =>
+			expect( mockApiFetch ).toHaveBeenCalledTimes( 1 ),
+		);
+
+		saving = true;
+		rerender( <OccurrencesPanel /> );
+		saving = false;
+		rerender( <OccurrencesPanel /> );
+
+		await act( async () => {} );
+
+		expect( mockApiFetch ).toHaveBeenCalledTimes( 1 );
+	} );
+
 	test( 'shows an error notice and leaves the row unchanged when the status update fails', async () => {
 		mockApiFetch.mockResolvedValueOnce( [ occurrence() ] );
 
