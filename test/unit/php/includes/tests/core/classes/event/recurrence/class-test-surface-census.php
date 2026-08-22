@@ -84,7 +84,7 @@ class Test_Surface_Census extends Base {
 	 * @since 0.36.0
 	 * @var int
 	 */
-	const CANCELLED_INDEX = 3;
+	const CANCELED_INDEX = 3;
 
 	/**
 	 * Index of the occurrence that carries the census's only RSVP.
@@ -409,7 +409,7 @@ class Test_Surface_Census extends Base {
 
 		Occurrences::get_instance()->set_status(
 			$series_id,
-			$this->occurrence_id( $series_anchor, self::CANCELLED_INDEX ),
+			$this->occurrence_id( $series_anchor, self::CANCELED_INDEX ),
 			Occurrences::STATUS_CANCELED
 		);
 
@@ -482,7 +482,7 @@ class Test_Surface_Census extends Base {
 		for ( $index = 0; $index < self::SERIES_COUNT; $index++ ) {
 			$start = $this->series_start( $fixture, $index );
 
-			if ( self::CANCELLED_INDEX === $index || $start <= $this->now() ) {
+			if ( self::CANCELED_INDEX === $index || $start <= $this->now() ) {
 				continue;
 			}
 
@@ -822,7 +822,7 @@ class Test_Surface_Census extends Base {
 		$requested = array();
 
 		for ( $index = 0; $index < self::SERIES_COUNT; $index++ ) {
-			if ( self::CANCELLED_INDEX === $index ) {
+			if ( self::CANCELED_INDEX === $index ) {
 				continue;
 			}
 
@@ -1073,7 +1073,7 @@ class Test_Surface_Census extends Base {
 	 */
 	public function test_canceled_occurrence_is_hidden_from_lists_but_still_resolves(): void {
 		$fixture       = $this->build_census_fixture();
-		$recurrence_id = $this->occurrence_id( $fixture['series_anchor'], self::CANCELLED_INDEX );
+		$recurrence_id = $this->occurrence_id( $fixture['series_anchor'], self::CANCELED_INDEX );
 		$entry         = $fixture['series'] . '|' . $recurrence_id;
 
 		$listed = array_merge(
@@ -1102,7 +1102,7 @@ class Test_Surface_Census extends Base {
 		$wp_query->the_post();
 
 		$this->assertSame(
-			$this->series_start( $fixture, self::CANCELLED_INDEX )->format( self::DATE_FORMAT ),
+			$this->series_start( $fixture, self::CANCELED_INDEX )->format( self::DATE_FORMAT ),
 			$this->rendered_row()['date'],
 			'Failed to assert the canceled occurrence\'s page renders its own date.'
 		);

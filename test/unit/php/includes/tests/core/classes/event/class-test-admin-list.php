@@ -1912,7 +1912,7 @@ class Test_Admin_List extends Base {
 	/**
 	 * A series with a rule but no scheduled rows keeps its marker.
 	 *
-	 * Cancelling every occurrence leaves the series with nothing to date the
+	 * Canceling every occurrence leaves the series with nothing to date the
 	 * row from, so the anchor is the only date available. It is still a
 	 * recurring event, and dropping the marker would tell the reader it is a
 	 * one-off.
