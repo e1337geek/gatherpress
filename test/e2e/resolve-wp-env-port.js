@@ -21,18 +21,31 @@ const ROOT_DIR = path.join( __dirname, '..', '..' );
  * When that happens Playwright still finds *a* WordPress on the stale port,
  * either another worktree's or a leftover container. It authenticates against
  * that one successfully, and then fails deep inside the specs with REST errors
- * that look like application bugs. Reading the same sources wp-env reads keeps
- * the two aligned for every input this function knows about. `WP_BASE_URL`
- * still wins in `playwright.config.js`, for pointing the suite at something
- * else entirely.
+ * that look like application bugs. Reading the same sources wp-env reads, in
+ * the same order wp-env applies them, keeps the two aligned for every input
+ * this function knows about: `WP_ENV_PORT` first (wp-env consults it ahead of
+ * every config file), then the local override file, then the tracked config,
+ * then wp-env's default. `WP_BASE_URL` still wins in `resolveBaseUrl()`, for
+ * pointing the suite at something else entirely.
  *
  * @param {Object} [options]           Resolution inputs, injectable for tests.
+ * @param {Object} [options.env]       Environment variables to consult.
  * @param {string} [options.configDir] Directory holding the wp-env config files.
  *
  * @return {number} The port to run the e2e suite against.
  */
-function resolveWpEnvPort( { configDir = ROOT_DIR } = {} ) {
-	// Override first: it is what wp-env applies last.
+function resolveWpEnvPort( { env = process.env, configDir = ROOT_DIR } = {} ) {
+	// wp-env honors WP_ENV_PORT over both config files, so a run started
+	// with it lives on that port. A value wp-env would not read as a real
+	// port falls through to the files rather than aiming Playwright at a
+	// port nothing listens on.
+	const envPort = Number( env.WP_ENV_PORT );
+
+	if ( Number.isInteger( envPort ) && 1 <= envPort && 65535 >= envPort ) {
+		return envPort;
+	}
+
+	// Then the override: it is what wp-env applies over the tracked file.
 	for ( const file of [
 		'.wp-env.test.override.json',
 		'.wp-env.test.json',
@@ -68,7 +81,8 @@ function resolveWpEnvPort( { configDir = ROOT_DIR } = {} ) {
  */
 function resolveBaseUrl( { env = process.env, configDir = ROOT_DIR } = {} ) {
 	return (
-		env.WP_BASE_URL || `http://localhost:${ resolveWpEnvPort( { configDir } ) }`
+		env.WP_BASE_URL ||
+		`http://localhost:${ resolveWpEnvPort( { env, configDir } ) }`
 	);
 }
 
