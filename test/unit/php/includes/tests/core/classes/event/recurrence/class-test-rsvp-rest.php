@@ -966,6 +966,79 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
+	 * An undeclared post_id cannot override the form route's declared post.
+	 *
+	 * The `rsvp-form` route declares `comment_post_ID` and does not declare
+	 * `post_id`, but `get_param()` reads undeclared parameters too. A non-zero
+	 * `post_id` posted alongside the form therefore resolved the occurrence
+	 * inside the other post's series while the viewability gate was spent on
+	 * the post the write never touched, and the route's declared parameter was
+	 * silently overridden. Resolution must run against the same post the
+	 * viewability gate authorized, so the smuggled occurrence fails to resolve
+	 * and receives the refusal a fabricated identifier receives.
+	 *
+	 * @covers ::request_post_id
+	 * @covers ::handle_rsvp_form_submission
+	 *
+	 * @return void
+	 */
+	public function test_an_undeclared_post_id_cannot_override_the_form_routes_declared_post(): void {
+		$owner_post_id = $this->create_and_project();
+		$named_post_id = $this->create_plain_event();
+
+		wp_set_current_user( 0 );
+
+		$reference = $this->dispatch(
+			'POST',
+			'rsvp-form',
+			array(
+				'comment_post_ID' => $named_post_id,
+				'author'          => 'Ada Lovelace',
+				'email'           => 'ada@example.test',
+				'recurrence_id'   => self::UNKNOWN_OCCURRENCE,
+			)
+		);
+
+		$this->assertSame(
+			404,
+			$reference->get_status(),
+			'Failed to arrange the fabricated-identifier reference refusal.'
+		);
+
+		$smuggled = $this->dispatch(
+			'POST',
+			'rsvp-form',
+			array(
+				'comment_post_ID' => $named_post_id,
+				'post_id'         => $owner_post_id,
+				'author'          => 'Ada Lovelace',
+				'email'           => 'ada@example.test',
+				'recurrence_id'   => $this->occurrence_a,
+			)
+		);
+
+		// The count is asserted first so a regression reports the actual harm:
+		// the write landed on the series the viewability gate never looked at.
+		$this->assertSame(
+			0,
+			(int) get_comments(
+				array(
+					'post_id' => $owner_post_id,
+					'type'    => Rsvp::COMMENT_TYPE,
+					'count'   => true,
+					'status'  => 'all',
+				)
+			),
+			'Failed to assert the smuggled post_id wrote nothing onto the other series.'
+		);
+		$this->assertSame(
+			array( $reference->get_status(), $reference->get_data() ),
+			array( $smuggled->get_status(), $smuggled->get_data() ),
+			'Failed to assert the smuggled submission receives the fabricated-identifier refusal.'
+		);
+	}
+
+	/**
 	 * `Form::process_rsvp()` stamps the occurrence when called in context.
 	 *
 	 * The REST tests above cover the wiring; this one pins the unit that does
@@ -2640,6 +2713,21 @@ class Test_Rsvp_Rest extends Base {
 			$post_id,
 			Utility::invoke_hidden_method( $instance, 'request_post_id', array( $named ) ),
 			'Failed to assert a post_id naming a post is read as given.'
+		);
+
+		// A route that declares comment_post_ID reads exactly that parameter,
+		// so a stray non-zero post_id cannot override it. The attributes are
+		// what the dispatcher sets from the matched route's own args.
+		$declared = new WP_REST_Request( 'POST', '/gatherpress/v1/event/rsvp-form' );
+
+		$declared->set_attributes( array( 'args' => array( 'comment_post_ID' => array() ) ) );
+		$declared->set_param( 'comment_post_ID', $post_id );
+		$declared->set_param( 'post_id', $post_id + 1 );
+
+		$this->assertSame(
+			$post_id,
+			Utility::invoke_hidden_method( $instance, 'request_post_id', array( $declared ) ),
+			'Failed to assert a route declaring comment_post_ID reads only its declared parameter.'
 		);
 
 		$refusal = Utility::invoke_hidden_method( $instance, 'occurrence_not_found', array() );
