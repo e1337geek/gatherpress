@@ -205,8 +205,13 @@ final class Series {
 
 		if ( is_array( $members ) && array() === $members ) {
 			wp_delete_term( $term_id, self::TAXONOMY );
-			$this->flush_memo();
 		}
+
+		// The deletion changed membership whether or not the term survived
+		// it: a fragment is gone either way, and a memo flushed only on the
+		// orphan branch kept naming deleted posts for the rest of a bulk
+		// delete's request while `Revision::advance()` wrote meta to them.
+		$this->flush_memo();
 	}
 
 	/**
