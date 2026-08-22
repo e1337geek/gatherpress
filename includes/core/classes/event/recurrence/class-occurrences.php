@@ -37,9 +37,11 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Exception;
 use GatherPress\Core\Event;
+use GatherPress\Core\Setup as Core_Setup;
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
 use InvalidArgumentException;
+use WP_Error;
 
 /**
  * Class Occurrences.
@@ -127,6 +129,23 @@ final class Occurrences {
 	const TOP_UP_BATCH_SIZE = 50;
 
 	/**
+	 * Maximum occurrence rows carried by one INSERT statement.
+	 *
+	 * Bounds the prepared statement size so a projection can never approach
+	 * `max_allowed_packet`, whose MySQL 5.7 default is 4 MB. The worst-case
+	 * prepared row is about 400 bytes: a 20-digit `series_post_id`, a
+	 * 15-character quoted `recurrence_id`, four 19-character quoted
+	 * datetimes, a `timezone` column of up to 255 characters, and the
+	 * punctuation between them. One thousand such rows is roughly 0.4 MB,
+	 * a tenth of that floor, while typical rows (30-character timezone
+	 * names) come to about 0.15 MB per statement.
+	 *
+	 * @since 0.36.0
+	 * @var int
+	 */
+	const UPSERT_CHUNK_SIZE = 1000;
+
+	/**
 	 * How long a lazy repair attempt is suppressed for one series.
 	 *
 	 * Bounds `maybe_repair_stale_series()` to at most one attempt per series
@@ -191,6 +210,18 @@ final class Occurrences {
 	 * @var array<int, bool>
 	 */
 	protected array $pending_projection = array();
+
+	/**
+	 * Whether the missing-table self-heal already ran this request.
+	 *
+	 * `maybe_install_missing_table()` installs at most once per request:
+	 * a second write failing after a successful install is a real failure to
+	 * surface, not a reason to run DDL in a loop.
+	 *
+	 * @since 0.36.0
+	 * @var bool
+	 */
+	protected bool $table_heal_attempted = false;
 
 	/**
 	 * Class constructor.
@@ -1039,7 +1070,9 @@ final class Occurrences {
 	 * @param int $limit Maximum series to top up, or 0 to use the
 	 *                    `gatherpress_recurrence_top_up_batch_size` filter default.
 	 *
-	 * @return int Number of series topped up.
+	 * @return int Number of series whose projection succeeded. A candidate
+	 *             whose write failed is not counted, so a sweep that wrote
+	 *             nothing reports zero.
 	 */
 	public function top_up( int $limit = 0 ): int {
 		if ( $limit <= 0 ) {
@@ -1059,12 +1092,15 @@ final class Occurrences {
 		}
 
 		$post_ids = $this->select_series_needing_top_up( $limit );
+		$topped   = 0;
 
 		foreach ( $post_ids as $post_id ) {
-			$this->project( $post_id );
+			if ( ! is_wp_error( $this->project( $post_id ) ) ) {
+				++$topped;
+			}
 		}
 
-		return count( $post_ids );
+		return $topped;
 	}
 
 	/**
@@ -1101,9 +1137,10 @@ final class Occurrences {
 	 *
 	 * @param int $post_id Series post ID.
 	 *
-	 * @return int Rows written, or 0 when the post is not recurring.
+	 * @return int|WP_Error Rows written, 0 when the post is not recurring, or
+	 *                      `WP_Error` when a database write failed.
 	 */
-	public function project( int $post_id ): int {
+	public function project( int $post_id ): int|WP_Error {
 		return $this->run_projection( $post_id, true );
 	}
 
@@ -1125,9 +1162,10 @@ final class Occurrences {
 	 * @param int  $post_id                    Series post ID.
 	 * @param bool $cleanup_when_not_recurring Whether to delete existing rows when no rule is found.
 	 *
-	 * @return int Rows written, or 0 when the post is not recurring.
+	 * @return int|WP_Error Rows written, 0 when the post is not recurring, or
+	 *                      `WP_Error` when a database write failed.
 	 */
-	protected function run_projection( int $post_id, bool $cleanup_when_not_recurring ): int {
+	protected function run_projection( int $post_id, bool $cleanup_when_not_recurring ): int|WP_Error {
 		$resolved = $this->resolve_projectable( $post_id, $cleanup_when_not_recurring );
 
 		if ( null === $resolved ) {
@@ -1398,25 +1436,127 @@ final class Occurrences {
 	/**
 	 * Upsert a series' occurrence rows and delete the ones the rule no longer produces.
 	 *
+	 * The insert is chunked to `UPSERT_CHUNK_SIZE` rows per statement and
+	 * every chunk's `$wpdb->query()` result is inspected, so a failed write
+	 * surfaces instead of being reported as rows written. The successful
+	 * return stays the row count rather than the summed affected-rows
+	 * figure, because `ON DUPLICATE KEY UPDATE` reports 0, 1, or 2 per row
+	 * depending on whether it inserted, updated, or matched identically:
+	 * an idempotent re-projection would otherwise truthfully write every row
+	 * and report zero. The per-chunk results gate the count instead.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int   $post_id Series post ID.
 	 * @param array $rows    Row values built by `build_occurrence_row()`.
 	 *
-	 * @return int Rows written.
+	 * @return int|WP_Error Rows written, or `WP_Error` when a statement failed.
 	 */
-	protected function upsert_occurrences( int $post_id, array $rows ): int {
+	protected function upsert_occurrences( int $post_id, array $rows ): int|WP_Error {
 		global $wpdb;
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
-		if ( array() !== $rows ) {
-			$this->insert_or_update_rows( $table, $post_id, $rows );
+		foreach ( array_chunk( $rows, self::UPSERT_CHUNK_SIZE ) as $chunk ) {
+			if ( false === $this->insert_or_update_rows( $table, $post_id, $chunk ) ) {
+				return $this->write_error( $post_id );
+			}
 		}
 
-		$this->delete_stale_rows( $table, $post_id, wp_list_pluck( $rows, 'recurrence_id' ) );
+		if ( false === $this->delete_stale_rows( $table, $post_id, wp_list_pluck( $rows, 'recurrence_id' ) ) ) {
+			return $this->write_error( $post_id );
+		}
 
 		return count( $rows );
+	}
+
+	/**
+	 * Build the error a failed occurrence write reports upward.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID whose write failed.
+	 *
+	 * @return WP_Error The error, carrying the post ID and `$wpdb->last_error`.
+	 */
+	protected function write_error( int $post_id ): WP_Error {
+		global $wpdb;
+
+		return new WP_Error(
+			'gatherpress_occurrence_write_failed',
+			__( 'Failed to write occurrence rows.', 'gatherpress' ),
+			array(
+				'post_id'    => $post_id,
+				'last_error' => $wpdb->last_error,
+			)
+		);
+	}
+
+	/**
+	 * Run one prepared occurrence write, self-healing a missing table once.
+	 *
+	 * When the statement fails and the occurrence table turns out not to
+	 * exist, the table is installed and the statement retried once. That is
+	 * the "installed without a version bump" state: `check_plugin_version()`
+	 * only runs on `admin_init`, so a site tracking the development branch
+	 * can execute this code before anything has created the table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $prepared_sql Fully prepared SQL statement.
+	 *
+	 * @return int|false Rows affected, or false when the statement failed.
+	 */
+	protected function execute_write( string $prepared_sql ): int|false {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- Prepared by the caller.
+		$result = $wpdb->query( $prepared_sql );
+
+		if ( false === $result && $this->maybe_install_missing_table() ) {
+			$result = $wpdb->query( $prepared_sql );
+		}
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		return false === $result ? false : (int) $result;
+	}
+
+	/**
+	 * Install the occurrence table when a failed write reveals it is missing.
+	 *
+	 * Runs at most one install per request: a failure after a successful
+	 * install is a genuine failure that must propagate, not retry DDL in a
+	 * loop. The presence check runs only on the failure path, so a healthy
+	 * site never pays it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when the table was just installed and a retry is worthwhile.
+	 */
+	protected function maybe_install_missing_table(): bool {
+		global $wpdb;
+
+		if ( $this->table_heal_attempted ) {
+			return false;
+		}
+
+		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		if ( $table === $exists ) {
+			return false;
+		}
+
+		$this->table_heal_attempted = true;
+
+		Core_Setup::get_instance()->install_tables();
+
+		return true;
 	}
 
 	/**
@@ -1432,9 +1572,9 @@ final class Occurrences {
 	 * @param int    $post_id Series post ID.
 	 * @param array  $rows    Row values built by `build_occurrence_row()`.
 	 *
-	 * @return void
+	 * @return int|false Rows affected, or false when the statement failed.
 	 */
-	protected function insert_or_update_rows( string $table, int $post_id, array $rows ): void {
+	protected function insert_or_update_rows( string $table, int $post_id, array $rows ): int|false {
 		global $wpdb;
 
 		$placeholders = array();
@@ -1467,10 +1607,8 @@ final class Occurrences {
 			. ' datetime_end_gmt = VALUES(datetime_end_gmt),'
 			. ' timezone = VALUES(timezone)';
 
-		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from %i/%s/%d placeholders only.
-		$wpdb->query( $wpdb->prepare( $sql, $values ) );
-		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return $this->execute_write( $wpdb->prepare( $sql, $values ) );
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 	}
 
@@ -1483,26 +1621,24 @@ final class Occurrences {
 	 * @param int      $post_id        Series post ID.
 	 * @param string[] $recurrence_ids Recurrence identifiers the rule currently produces.
 	 *
-	 * @return void
+	 * @return int|false Rows deleted, or false when the statement failed.
 	 */
-	protected function delete_stale_rows( string $table, int $post_id, array $recurrence_ids ): void {
+	protected function delete_stale_rows( string $table, int $post_id, array $recurrence_ids ): int|false {
 		global $wpdb;
 
 		if ( array() === $recurrence_ids ) {
-			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id ) );
-			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-
-			return;
+			return $this->execute_write(
+				$wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id )
+			);
 		}
 
 		$placeholders = implode( ', ', array_fill( 0, count( $recurrence_ids ), '%s' ) );
 		$sql          = "DELETE FROM %i WHERE series_post_id = %d AND recurrence_id NOT IN ( {$placeholders} )";
 
-		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
-		$wpdb->query( $wpdb->prepare( $sql, array_merge( array( $table, $post_id ), $recurrence_ids ) ) );
-		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return $this->execute_write(
+			$wpdb->prepare( $sql, array_merge( array( $table, $post_id ), $recurrence_ids ) )
+		);
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	}
 

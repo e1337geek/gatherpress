@@ -3902,6 +3902,98 @@ class Test_Occurrences extends Base {
 		// fixture post and the once-per-request heal guard survive rollback.
 		Utility::set_and_get_hidden_property( Occurrences::get_instance(), 'table_heal_attempted', false );
 		wp_delete_post( $post_id, true );
+
+		// Direct coverage for the install branch of the heal helper, while
+		// the temporary-table rewrites are still suspended: a second genuine
+		// drop, then the helper reports it installed and the table is back.
+		// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- Required to test the self-heal.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+		// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method( Occurrences::get_instance(), 'maybe_install_missing_table' ),
+			'Failed to assert the heal helper reports installing a genuinely missing table.'
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$this->assertSame(
+			$table,
+			$wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ),
+			'Failed to assert the direct heal invoke recreated the table.'
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		Utility::set_and_get_hidden_property( Occurrences::get_instance(), 'table_heal_attempted', false );
+	}
+
+	/**
+	 * Direct coverage for `execute_write()`'s success path: the statement's
+	 * affected-row count comes back as an integer.
+	 *
+	 * @covers ::execute_write
+	 *
+	 * @return void
+	 */
+	public function test_execute_write_returns_the_rows_affected(): void {
+		global $wpdb;
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'execute_write',
+			array( $wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, 0 ) )
+		);
+
+		$this->assertSame( 0, $result, 'Failed to assert execute_write returns the affected-row count.' );
+	}
+
+	/**
+	 * Direct coverage for `execute_write()` reporting a failure the heal
+	 * cannot fix: the table exists, so the failed statement returns false.
+	 *
+	 * @covers ::execute_write
+	 * @covers ::maybe_install_missing_table
+	 *
+	 * @return void
+	 */
+	public function test_execute_write_returns_false_when_the_table_is_not_the_problem(): void {
+		global $wpdb;
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'execute_write',
+			array( $wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table . '_gone', 0 ) )
+		);
+
+		$this->assertFalse( $result, 'Failed to assert execute_write surfaces a failure it cannot heal.' );
+		$this->assertFalse(
+			(bool) Utility::get_hidden_property( Occurrences::get_instance(), 'table_heal_attempted' ),
+			'Failed to assert the once-per-request guard is not consumed when the table exists.'
+		);
+	}
+
+	/**
+	 * Direct coverage for the heal helper's once-per-request guard: after a
+	 * prior attempt it declines without even checking the table.
+	 *
+	 * @covers ::maybe_install_missing_table
+	 *
+	 * @return void
+	 */
+	public function test_maybe_install_missing_table_declines_after_a_prior_attempt(): void {
+		$instance = Occurrences::get_instance();
+
+		Utility::set_and_get_hidden_property( $instance, 'table_heal_attempted', true );
+
+		$this->assertFalse(
+			Utility::invoke_hidden_method( $instance, 'maybe_install_missing_table' ),
+			'Failed to assert the heal runs at most once per request.'
+		);
+
+		Utility::set_and_get_hidden_property( $instance, 'table_heal_attempted', false );
 	}
 
 	/**

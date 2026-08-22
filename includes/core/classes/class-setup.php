@@ -481,15 +481,19 @@ final class Setup {
 	 *
 	 * The DDL half of `create_tables()`, split out so a caller that only needs
 	 * the tables can get them without also re-adding the online-event term or
-	 * scheduling a rewrite flush. The PHPUnit bootstrap is that caller, and it
-	 * has to issue the DDL once before any test transaction opens.
+	 * scheduling a rewrite flush. The PHPUnit bootstrap is one such caller,
+	 * and it has to issue the DDL once before any test transaction opens.
+	 * Public so `Recurrence\Occurrences` can self-heal a missing occurrence
+	 * table from its write path: a site that receives new code without a
+	 * version bump never runs `check_plugin_version()`'s own table pass, and
+	 * `dbDelta()` is idempotent, so re-running here is always safe.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @global wpdb $wpdb WordPress database abstraction object.
 	 * @return void
 	 */
-	protected function install_tables(): void {
+	public function install_tables(): void {
 		global $wpdb;
 
 		$sql             = array();
