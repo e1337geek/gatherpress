@@ -5425,4 +5425,53 @@ class Test_Occurrences extends Base {
 			'Failed to assert that a series with no rule wrote no occurrence rows.'
 		);
 	}
+	/**
+	 * Coverage for the bounded read's refusal arm.
+	 *
+	 * The read carries the same schema probe its sibling single-row reads do,
+	 * and it refuses on two inputs: an empty post ID list, and a blog whose
+	 * table is not there. The second is the one that matters, because a bare
+	 * series URL reaches this read on the front end, so an unprobed statement
+	 * would surface a database error to a visitor rather than an empty answer.
+	 *
+	 * The absent table is simulated by seeding the probe's own memo rather than
+	 * by dropping the table. Dropping it is DDL, which commits implicitly and
+	 * so escapes the test transaction: an earlier draft did exactly that and
+	 * left a later admin-list assertion querying a table that was gone.
+	 * Seeding the memo exercises the same branch and leaves nothing behind.
+	 *
+	 * @covers ::select_bounded_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_select_bounded_occurrence_refuses_without_a_table_or_post_ids(): void {
+		global $wpdb;
+
+		$instance = Occurrences::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$this->assertNull(
+			$instance->select_bounded_occurrence( array(), true ),
+			'Failed to assert the bounded read refuses an empty post ID list.'
+		);
+
+		$restore = Utility::get_hidden_property( $instance, 'table_exists' );
+
+		Utility::set_and_get_hidden_property( $instance, 'table_exists', array( $table => false ) );
+
+		$last_error = $wpdb->last_error;
+
+		$this->assertNull(
+			$instance->select_bounded_occurrence( array( 1 ), true ),
+			'Failed to assert the bounded read refuses a blog whose occurrence table is absent.'
+		);
+
+		$this->assertSame(
+			$last_error,
+			$wpdb->last_error,
+			'Failed to assert the refusal issued no statement and recorded no database error.'
+		);
+
+		Utility::set_and_get_hidden_property( $instance, 'table_exists', $restore );
+	}
 }
