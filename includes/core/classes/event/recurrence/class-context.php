@@ -518,11 +518,16 @@ final class Context {
 	 * An attendee holding the link deserves to be told the occurrence was
 	 * canceled. `Rewrite::parse_request()` already lets a canceled
 	 * occurrence's URL resolve instead of 404ing; this is what tells the
-	 * visitor once it does. Scoped to the post the occurrence
-	 * context belongs to via `get_the_ID()`, matching how `metadata()` scopes
-	 * its own substitution, so an unrelated loop rendering full content
-	 * elsewhere on the same response (a Query Loop, a widget) does not pick
-	 * up a notice meant for the one post the request is actually about.
+	 * visitor once it does. Resolution goes through `resolve()`, the same
+	 * row-stamp-over-request precedence `metadata()` and `permalink()` use,
+	 * so the occurrence whose status is inspected is the one the current
+	 * content actually belongs to. Comparing only the request's occurrence
+	 * against `get_the_ID()` was a measured defect: on a canceled
+	 * occurrence's own page, an occurrence-expanded Query Loop over the same
+	 * series shares the outer post ID on every row, and every scheduled row
+	 * rendered the outer request's notice. A loop row resolves to its own
+	 * stamped occurrence, which `loop_occurrence()` marks scheduled, so only
+	 * the canceled occurrence's own content carries the notice.
 	 *
 	 * @since 0.36.0
 	 *
@@ -532,11 +537,9 @@ final class Context {
 	 *                this is a canceled occurrence's own content.
 	 */
 	public function maybe_prepend_cancelled_notice( string $content ): string {
-		if (
-			null === $this->occurrence
-			|| Occurrences::STATUS_CANCELLED !== $this->occurrence['status']
-			|| get_the_ID() !== (int) $this->occurrence['series_post_id']
-		) {
+		$occurrence = $this->resolve( (int) get_the_ID() );
+
+		if ( null === $occurrence || Occurrences::STATUS_CANCELLED !== $occurrence['status'] ) {
 			return $content;
 		}
 
