@@ -61,6 +61,7 @@ final class Setup {
 	 * occurrence the request resolved to.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var string[]
 	 */
 	const ICS_SLUGS = array( self::ICAL_SLUG, 'outlook' );

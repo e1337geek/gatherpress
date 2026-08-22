@@ -51,6 +51,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * Named timezone every fixture in this file is authored in.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var string
 	 */
 	const TIMEZONE = 'America/New_York';
@@ -59,6 +60,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * Wall-clock start every fixture in this file uses.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var string
 	 */
 	const WALL_START = '18:00:00';
@@ -75,6 +77,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * in every aggregate feed.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var string
 	 */
 	protected string $anchor_offset = '-10 days';

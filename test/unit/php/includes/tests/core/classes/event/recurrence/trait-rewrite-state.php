@@ -42,6 +42,7 @@ trait Rewrite_State {
 	 * The rewrite state the consuming test found, restored on the way out.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var array<string, mixed>
 	 */
 	protected array $rewrite_state = array();

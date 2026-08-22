@@ -46,6 +46,7 @@ class Test_Rrule_Round_Trip extends Base {
 	 * round trip would still close.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var array<string, int>
 	 */
 	const WEEKDAY_INDEX = array(

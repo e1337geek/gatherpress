@@ -2356,13 +2356,12 @@ final class Occurrences {
 	 * Move occurrence rows from one post of a series to another.
 	 *
 	 * Recycles occurrence records across a split. The row is **moved**, never
-	 * deleted and regenerated: `recurrence_id` is untouched (identity is
-	 * `(series_post_id, recurrence_id)`, and only the first half changes), the
-	 * datetimes are untouched, and `status` is untouched, so a canceled
-	 * occurrence stays canceled across the split. Everything keyed to the row
-	 * survives, because nothing about the row's identity was recreated. That
-	 * covers its permalink segment and the RSVP comments carrying its
-	 * `_gatherpress_occurrence` term.
+	 * deleted and regenerated: it keeps its `recurrence_id`, its datetimes and
+	 * its `status`, so a canceled occurrence stays canceled across the split,
+	 * and its permalink segment still resolves under the new owner. Identity
+	 * is `(series_post_id, recurrence_id)` and the first half **changes**:
+	 * a consumer keyed by the full tuple no longer points at the moved row,
+	 * and must be migrated by the split coordinator.
 	 *
 	 * Scopes by both `series_post_id` and `recurrence_id`, never by
 	 * `recurrence_id` alone.
@@ -2450,7 +2449,7 @@ final class Occurrences {
 				$timezone,
 				$this->resolve_horizon( $anchor_start, $timezone )
 			);
-		} catch ( InvalidArgumentException $e ) {
+		} catch ( InvalidArgumentException ) {
 			return array();
 		}
 

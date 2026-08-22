@@ -201,9 +201,11 @@ final class Revision {
 		// the ceiling the write repeats the stored value, and a short-circuited
 		// metadata layer can leave no row at all. The floor is correct for
 		// both, and never a stale connection value.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$next = ( is_int( $updated ) && 0 < $updated )
 			? (int) $wpdb->get_var( 'SELECT LAST_INSERT_ID()' )
 			: $floor;
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
 		wp_cache_delete( $canonical, 'post_meta' );
 

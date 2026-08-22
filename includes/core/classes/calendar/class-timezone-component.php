@@ -70,6 +70,7 @@ final class Timezone_Component {
 	 * transition after it, which is what `TZOFFSETFROM` reports.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var int
 	 */
 	private const LOOKBEHIND_YEARS = 1;
@@ -83,6 +84,7 @@ final class Timezone_Component {
 	 * range itself, to `OPEN_ENDED_HORIZON_YEARS`.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var int
 	 */
 	private const LOOKAHEAD_YEARS = 3;
@@ -99,6 +101,7 @@ final class Timezone_Component {
 	 * two ruled sub-components however wide the window is.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var int
 	 */
 	private const OPEN_ENDED_HORIZON_YEARS = 75;
@@ -111,6 +114,7 @@ final class Timezone_Component {
 	 * the range is part of the key rather than assumed away.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var array<string, string>
 	 */
 	private array $rendered = array();
@@ -123,11 +127,11 @@ final class Timezone_Component {
 	 * code paths agreeing. That invariant is that every `TZID` referenced is
 	 * defined.
 	 *
-	 * @since 0.36.0
-	 *
 	 * The range each definition covers is derived from the same body, for the
 	 * same reason: the instants a definition has to be valid for are the ones
 	 * written into the components it accompanies.
+	 *
+	 * @since 0.36.0
 	 *
 	 * @param string $body One or more assembled `VEVENT` components.
 	 *

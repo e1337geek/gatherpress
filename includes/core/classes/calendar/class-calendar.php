@@ -65,6 +65,7 @@ final class Calendar {
 	 * RFC 5545 section 3.1. See `fold_content_line()`.
 	 *
 	 * @since 0.36.0
+	 *
 	 * @var int
 	 */
 	private const MAX_LINE_OCTETS = 75;
