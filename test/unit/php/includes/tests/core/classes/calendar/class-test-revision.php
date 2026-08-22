@@ -284,6 +284,131 @@ class Test_Revision extends Base {
 	}
 
 	/**
+	 * A writer pausing between allocation and publication cannot regress mirrors.
+	 *
+	 * Allocation is serialized on the canonical row, but publication is a
+	 * separate phase. Writer one allocates S plus one and pauses before its
+	 * mirror loop; writer two allocates S plus two and publishes it everywhere;
+	 * writer one resumes. If publication is unconditional, writer one's resumed
+	 * writes drag every mirror back to S plus one: a subscriber sees `SEQUENCE`
+	 * move backwards, which RFC 5545 entitles it to reject, and the allocation
+	 * row itself regresses, so the values in between are handed out again.
+	 *
+	 * What this proves, precisely: both writers run the production `advance()`
+	 * on the suite's single database connection, and the interleave is injected
+	 * in process through the `query` filter, which runs writer two's whole
+	 * advance between writer one's allocation read-back and writer one's first
+	 * publication statement. That is the exact ordering the failure needs, so
+	 * the monotonic-publication property is genuinely exercised. What it does
+	 * not prove is the row-lock serialization of the allocation itself; the
+	 * pinned-statement test below and the stale-read test above carry that
+	 * half, and the values asserted here presuppose it.
+	 *
+	 * @covers ::advance
+	 * @covers ::stored
+	 *
+	 * @return void
+	 */
+	public function test_a_paused_publisher_cannot_regress_a_newer_published_revision(): void {
+		global $wpdb;
+
+		$origin   = $this->make_event();
+		$sibling  = $this->make_event();
+		$instance = Revision::get_instance();
+		$seed     = ( time() - Revision::EPOCH ) + HOUR_IN_SECONDS;
+
+		add_filter(
+			'gatherpress_series_post_ids',
+			static function ( array $post_ids, int $resolved ) use ( $origin, $sibling ): array {
+				return in_array( $resolved, array( $origin, $sibling ), true )
+					? array( $origin, $sibling )
+					: $post_ids;
+			},
+			10,
+			2
+		);
+
+		// Seeded ahead of the clock, so every value below can only come from
+		// the stored row carrying the ordering, never from `time()`.
+		update_post_meta( $origin, Revision::META_KEY, (string) $seed );
+
+		$armed    = false;
+		$fired    = false;
+		$writer_2 = null;
+
+		// Writer one is the production `advance()` call below. Its allocation
+		// read-back is the `SELECT LAST_INSERT_ID()` statement; the first
+		// statement after that belongs to its publication phase, and that gap
+		// is the window a concurrent writer's whole advance fits into.
+		$interleave = static function ( string $sql ) use ( &$armed, &$fired, &$writer_2, $origin ): string {
+			if ( ! $fired ) {
+				if ( $armed ) {
+					// Flagged before the nested advance, so the statements
+					// writer two issues pass through here untouched.
+					$fired    = true;
+					$writer_2 = Revision::get_instance()->advance( $origin );
+				} elseif ( str_contains( $sql, 'SELECT LAST_INSERT_ID()' ) ) {
+					$armed = true;
+				}
+			}
+
+			return $sql;
+		};
+
+		add_filter( 'query', $interleave );
+
+		$writer_1 = $instance->advance( $origin );
+
+		remove_filter( 'query', $interleave );
+
+		// Fixture integrity: without the interleave firing, nothing below
+		// measures the race, so a green run would be vacuous.
+		$this->assertNotNull( $writer_2, 'The interleave must actually run writer two inside writer one.' );
+		$this->assertSame(
+			$seed + 1,
+			$writer_1,
+			'Writer one allocates one past the seed before pausing.'
+		);
+		$this->assertSame(
+			$seed + 2,
+			$writer_2,
+			'Writer two, allocating after writer one, must be handed the next value.'
+		);
+
+		// Read each mirror's first row back uncached, so the assertions
+		// measure storage, and the row `stored()` reads rather than any
+		// duplicate a racing seed insert may have left behind.
+		$read_first_row = static function ( int $post_id ) use ( $wpdb ): int {
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			return (int) $wpdb->get_var(
+				$wpdb->prepare(
+					'SELECT meta_value FROM %i WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1',
+					$wpdb->postmeta,
+					$post_id,
+					Revision::META_KEY
+				)
+			);
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		};
+
+		$this->assertGreaterThanOrEqual(
+			$writer_2,
+			$read_first_row( $origin ),
+			'The allocation row must never regress below the newest allocation, or its values are reused.'
+		);
+		$this->assertGreaterThanOrEqual(
+			$writer_2,
+			$read_first_row( $sibling ),
+			'A mirror already holding the newer revision must not be dragged back by the slower publisher.'
+		);
+		$this->assertSame(
+			$writer_2,
+			$instance->stored( $origin ),
+			'And the newest allocation is what the series reports afterwards.'
+		);
+	}
+
+	/**
 	 * The allocation is one in-place statement, and the only write that decides.
 	 *
 	 * A separate read is the window a concurrent writer interleaves through,
