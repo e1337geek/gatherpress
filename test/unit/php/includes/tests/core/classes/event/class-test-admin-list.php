@@ -1841,6 +1841,60 @@ class Test_Admin_List extends Base {
 	}
 
 	/**
+	 * Create and project a daily series anchored at the given instant.
+	 *
+	 * The same shape `create_daily_series_fixture()` builds, without clearing
+	 * the occurrence table, so a test can stand two series side by side.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeImmutable $anchor Anchor start, in UTC.
+	 * @param int               $count  Occurrences to project.
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_series_anchored_at( DateTimeImmutable $anchor, int $count ): int {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $anchor->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		add_post_meta(
+			$post_id,
+			Recurrence_Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => $count,
+				)
+			)
+		);
+
+		Recurrence_Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return (int) $post_id;
+	}
+
+	/**
 	 * Create a plain, non-recurring event with the given datetime bounds.
 	 *
 	 * @since 0.36.0
@@ -2326,5 +2380,226 @@ class Test_Admin_List extends Base {
 		);
 
 		$context->restore( null );
+	}
+
+	/**
+	 * Each row is dated from its own post, never from a sibling of the series.
+	 *
+	 * N2: the sort and the bucket predicate read a one-row-per-post relation,
+	 * because SQL cannot consult the `gatherpress_series_post_ids` PHP filter
+	 * that defines the sibling set. If the column resolved across the whole
+	 * series it would disagree with both, and every sibling row of a split
+	 * series would print the same date, so the list would stop distinguishing
+	 * them.
+	 *
+	 * Three dates are in play and all three differ, so no two mechanisms can
+	 * produce the same expected value: the sibling owns the earliest upcoming
+	 * occurrence in the series (two hours out), the row's own post owns the
+	 * next one after that (five hours out), and the row's post is anchored two
+	 * days back. A series-wide resolution picks the sibling's row, which
+	 * `Context::resolve()` refuses to serve to a post that does not own it, so
+	 * the column falls back to the anchor: a third value, and the one the
+	 * assertions below rule out.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_render_datetime_column_dates_each_row_from_its_own_post(): void {
+		gatherpress_reset_custom_tables();
+
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$anchor  = $now->modify( '-2 days +5 hours' );
+		$sibling = $this->create_series_anchored_at( $now->modify( '+2 hours' ), 3 );
+		$post_id = $this->create_series_anchored_at( $anchor, 10 );
+
+		$filter = static function ( array $post_ids, int $requested ) use ( $post_id, $sibling ): array {
+			return in_array( $requested, array( $post_id, $sibling ), true )
+				? array( $post_id, $sibling )
+				: $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $post_id );
+		$output = ob_get_clean();
+
+		remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $now->modify( '+5 hours' ) ),
+			$output,
+			'The row must show the earliest upcoming occurrence its own post owns.'
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $now->modify( '+2 hours' ) ),
+			$output,
+			"The row must not show a sibling post's occurrence, which the sort and the bucket cannot see."
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $anchor ),
+			$output,
+			'The row must not fall back to its anchor, which is what a refused sibling occurrence leaves behind.'
+		);
+	}
+
+	/**
+	 * Drive every SQL-emitting decision the admin events list makes.
+	 *
+	 * The real entry points, not the bodies behind them: the view links (which
+	 * is what calls `get_event_counts()`), both bucketed list queries, and the
+	 * date column render for every row each returns. A capture taken inside
+	 * one filter only observes the queries that already reach that filter,
+	 * which is how a "performs no extra queries" test passes over an unguarded
+	 * entry point.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function drive_admin_list_surface(): void {
+		$instance = Admin_List::get_instance();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		Utility::set_and_get_hidden_property( $instance, 'event_counts', array() );
+		$instance->views_edit( array( 'all' => '<a href="#">All</a>' ) );
+
+		foreach ( array( 'upcoming', 'past' ) as $bucket ) {
+			foreach ( $this->run_admin_view_query( $bucket ) as $post_id ) {
+				set_current_screen( 'edit-' . Event::POST_TYPE );
+
+				ob_start();
+				$instance->custom_columns( 'datetime', $post_id );
+				ob_end_clean();
+			}
+		}
+
+		set_current_screen( 'front' );
+	}
+
+	/**
+	 * Capture the statements one pass over the admin list surface emits.
+	 *
+	 * The surface is driven once before the capture starts, because the first
+	 * run of any request primes the object cache and the second therefore
+	 * issues fewer statements: comparing a cold capture against a warm one
+	 * measures the cache, not the code. The interpolated GMT timestamps are
+	 * normalized away, because two captures taken microseconds apart can
+	 * straddle a second boundary. Nothing else is touched, so an added join,
+	 * an added column or an extra statement still fails the comparison.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string[] The statements, in execution order.
+	 */
+	protected function capture_admin_list_queries(): array {
+		global $wpdb;
+
+		$this->drive_admin_list_surface();
+
+		$previous_queries   = $wpdb->queries;
+		$previous_save      = $wpdb->save_queries;
+		$wpdb->queries      = array();
+		$wpdb->save_queries = true;
+
+		$this->drive_admin_list_surface();
+
+		$captured = array_map(
+			static function ( array $entry ): string {
+				return (string) preg_replace(
+					'/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/',
+					'{datetime}',
+					(string) $entry[0]
+				);
+			},
+			$wpdb->queries
+		);
+
+		$wpdb->queries      = $previous_queries;
+		$wpdb->save_queries = $previous_save;
+
+		return $captured;
+	}
+
+	/**
+	 * REQ-16: the admin events list is untouched on a site with no recurring events.
+	 *
+	 * Three admin-list decisions now read the occurrence relation: the date
+	 * column, the date ordering, and the Upcoming/Past bucket predicate and
+	 * its counts. Each is a place a site that has never authored a recurring
+	 * event could start paying for a join it has no rows for, and the counts
+	 * are the newest of the three.
+	 *
+	 * Both halves of the requirement are asserted. Nothing in the capture may
+	 * name the occurrence table or the relation's alias, which is what covers
+	 * `get_event_counts()` and the column, neither of which is a hook and so
+	 * neither of which a detach can silence. And the whole capture must be
+	 * byte-identical with the recurrence clause filters detached, which is
+	 * what covers the filter that rewrites the list query itself.
+	 *
+	 * @covers ::get_event_counts
+	 * @covers ::views_edit
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_admin_list_runs_identical_sql_without_recurring_events(): void {
+		global $wpdb;
+
+		gatherpress_reset_custom_tables();
+
+		$this->create_plain_event( '+1 day', '+1 day +2 hours' );
+		$this->create_plain_event( '+3 days', '+3 days +2 hours' );
+		$this->create_plain_event( '-2 days', '-2 days +2 hours' );
+
+		$this->assertFalse(
+			Recurrence_Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$with = $this->capture_admin_list_queries();
+
+		$this->assertNotEmpty(
+			$with,
+			'Failed to assert the capture actually observed the admin list surface.'
+		);
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		foreach ( $with as $statement ) {
+			$this->assertStringNotContainsString(
+				$occurrences_table,
+				$statement,
+				'A site with no recurring events must never read the occurrence table from the admin list.'
+			);
+			$this->assertStringNotContainsString(
+				Recurrence_Query::ADMIN_SORT_ALIAS,
+				$statement,
+				'A site with no recurring events must never join the occurrence display relation.'
+			);
+		}
+
+		$recurrence = Recurrence_Query::get_instance();
+
+		remove_filter( 'posts_clauses', array( $recurrence, 'adjust_admin_occurrence_sorting' ), 11 );
+		remove_filter( 'posts_clauses', array( $recurrence, 'expand_event_clauses' ), 11 );
+		remove_filter( 'the_posts', array( $recurrence, 'attach_occurrences' ), 10 );
+
+		$without = $this->capture_admin_list_queries();
+
+		add_filter( 'posts_clauses', array( $recurrence, 'adjust_admin_occurrence_sorting' ), 11, 2 );
+		add_filter( 'posts_clauses', array( $recurrence, 'expand_event_clauses' ), 11, 2 );
+		add_filter( 'the_posts', array( $recurrence, 'attach_occurrences' ), 10, 2 );
+
+		$this->assertSame(
+			$without,
+			$with,
+			'Failed to assert a flag-off site runs byte-identical admin list SQL with and without the recurrence'
+				. ' clause filters attached.'
+		);
 	}
 }

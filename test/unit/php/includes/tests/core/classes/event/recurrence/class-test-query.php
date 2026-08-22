@@ -1634,10 +1634,11 @@ class Test_Query extends Base {
 	 *
 	 * @param array<string, int> $fixture Post IDs keyed by role.
 	 * @param string             $bucket  Either `upcoming` or `past`.
+	 * @param string             $orderby Value of the `orderby` query argument.
 	 *
 	 * @return int[] The result IDs, in query order.
 	 */
-	protected function run_admin_bucket_query( array $fixture, string $bucket ): array {
+	protected function run_admin_bucket_query( array $fixture, string $bucket, string $orderby = 'datetime' ): array {
 		set_current_screen( 'edit-' . Event::POST_TYPE );
 
 		$query = new WP_Query(
@@ -1646,7 +1647,7 @@ class Test_Query extends Base {
 				'post_status'                  => 'publish',
 				'post__in'                     => array_values( $fixture ),
 				Event_Query::EVENT_QUERY_PARAM => $bucket,
-				'orderby'                      => 'datetime',
+				'orderby'                      => $orderby,
 				'order'                        => 'upcoming' === $bucket ? 'ASC' : 'DESC',
 				'posts_per_page'               => -1,
 				'fields'                       => 'ids',
@@ -1689,7 +1690,8 @@ class Test_Query extends Base {
 		$this->assertSame(
 			array( $fixture['elapsed'], $fixture['way_past'] ),
 			$this->run_admin_bucket_query( $fixture, 'past' ),
-			'Failed to assert the Past view lists an elapsed series at its latest finished occurrence, and nothing else.'
+			'Failed to assert the Past view lists an elapsed series at its latest finished occurrence, and nothing'
+				. ' else.'
 		);
 	}
 
@@ -1871,6 +1873,92 @@ class Test_Query extends Base {
 			'Failed to assert that the per-series sort join stays off an expanded admin-ajax query.'
 		);
 	}
+
+	/**
+	 * The bucket predicate is rewritten even when nothing is sorted by date.
+	 *
+	 * The `orderby` and the `where` are two independent reasons to need the
+	 * occurrence relation, and only the `where` is present here: an Upcoming
+	 * view the reader has re-sorted by title carries no anchor ordering at
+	 * all, yet it is still a view asserting the events it lists have not
+	 * finished. Bucketing it on the anchor is the same defect under a
+	 * different sort, so membership rather than order is what this asserts.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 * @covers ::carries_anchor_datetime
+	 *
+	 * @return void
+	 */
+	public function test_admin_bucket_predicate_applies_to_a_title_sorted_view(): void {
+		$fixture = $this->build_admin_sort_fixture();
+
+		$upcoming = $this->run_admin_bucket_query( $fixture, 'upcoming', 'title' );
+
+		$this->assertContains(
+			$fixture['running'],
+			$upcoming,
+			'Failed to assert a running series is listed by a title-sorted Upcoming view.'
+		);
+		$this->assertNotContains(
+			$fixture['elapsed'],
+			$upcoming,
+			'Failed to assert a fully elapsed series stays out of the Upcoming view.'
+		);
+		$this->assertNotContains(
+			$fixture['running'],
+			$this->run_admin_bucket_query( $fixture, 'past', 'title' ),
+			'Failed to assert a running series stays out of a title-sorted Past view.'
+		);
+	}
+
+	/**
+	 * Applying the filter twice joins the relation once.
+	 *
+	 * The rewrite leaves the anchor column inside the `COALESCE()` it builds,
+	 * so a second pass recognizes its own output and would append the derived
+	 * table again under the same alias. MySQL answers that with
+	 * `ERROR 1066 Not unique table/alias`, which takes out the whole list
+	 * screen. Every other guard is satisfied here, so the re-entrancy check is
+	 * the only thing that can hold the second pass back.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_joins_the_relation_once(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query();
+		$query->set( 'post_type', Event::POST_TYPE );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'where'   => '',
+			'join'    => '',
+		);
+
+		$instance = Query::get_instance();
+		$once     = $instance->adjust_admin_occurrence_sorting( $pieces, $query );
+		$twice    = $instance->adjust_admin_occurrence_sorting( $once, $query );
+
+		set_current_screen( 'front' );
+
+		$this->assertSame(
+			1,
+			substr_count( $once['join'], Query::ADMIN_SORT_ALIAS . '` ON' ),
+			'Failed to assert the first pass joins the relation exactly once.'
+		);
+		$this->assertSame(
+			$once,
+			$twice,
+			'Failed to assert a second pass over already-rewritten clauses changes nothing.'
+		);
+	}
+
 	/**
 	 * The results filter stamps nothing yet, and it has to leave both result
 	 * shapes alone: the plugin's own read API asks for IDs, while a template
