@@ -1623,6 +1623,77 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * Run a bucketed, date-ordered admin event list over a fixed set of posts.
+	 *
+	 * The same production wiring as `run_admin_list_query()`, plus the
+	 * Upcoming/Past view parameter the admin view links carry, so the bucket
+	 * predicate `Event\Query::adjust_admin_event_sorting()` appends is part of
+	 * the exercised path.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array<string, int> $fixture Post IDs keyed by role.
+	 * @param string             $bucket  Either `upcoming` or `past`.
+	 *
+	 * @return int[] The result IDs, in query order.
+	 */
+	protected function run_admin_bucket_query( array $fixture, string $bucket ): array {
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query(
+			array(
+				'post_type'                    => Event::POST_TYPE,
+				'post_status'                  => 'publish',
+				'post__in'                     => array_values( $fixture ),
+				Event_Query::EVENT_QUERY_PARAM => $bucket,
+				'orderby'                      => 'datetime',
+				'order'                        => 'upcoming' === $bucket ? 'ASC' : 'DESC',
+				'posts_per_page'               => -1,
+				'fields'                       => 'ids',
+				'no_found_rows'                => true,
+			)
+		);
+
+		set_current_screen( 'front' );
+
+		return array_map( 'intval', $query->posts );
+	}
+
+	/**
+	 * The Upcoming and Past views classify a series by its shown occurrence.
+	 *
+	 * The date column and the sort already use the chosen occurrence, so a
+	 * bucket predicate still reading the series anchor files a running series
+	 * under Past while its row displays a date hours away: the row's displayed
+	 * date would contradict the filter that selected it. The `running` series'
+	 * anchor elapsed ten days ago while its next occurrence is five hours out,
+	 * so anchor bucketing and occurrence bucketing provably disagree on it,
+	 * and `elapsed` proves the finished fallback stays in Past.
+	 *
+	 * The full orderings are asserted rather than membership alone, so the
+	 * bucket predicate and the sort are proven to read the same chosen
+	 * occurrence.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_admin_buckets_classify_series_by_their_shown_occurrence(): void {
+		$fixture = $this->build_admin_sort_fixture();
+
+		$this->assertSame(
+			array( $fixture['before'], $fixture['running'], $fixture['after'] ),
+			$this->run_admin_bucket_query( $fixture, 'upcoming' ),
+			'Failed to assert the Upcoming view lists a running series at its next occurrence.'
+		);
+		$this->assertSame(
+			array( $fixture['elapsed'], $fixture['way_past'] ),
+			$this->run_admin_bucket_query( $fixture, 'past' ),
+			'Failed to assert the Past view lists an elapsed series at its latest finished occurrence, and nothing else.'
+		);
+	}
+
+	/**
 	 * Recurring and non-recurring rows interleave by the date the list shows.
 	 *
 	 * @covers ::adjust_admin_occurrence_sorting

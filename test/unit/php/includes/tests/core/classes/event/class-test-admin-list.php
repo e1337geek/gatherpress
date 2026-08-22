@@ -1841,6 +1841,185 @@ class Test_Admin_List extends Base {
 	}
 
 	/**
+	 * Create a plain, non-recurring event with the given datetime bounds.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $start Relative start, e.g. `+1 day`.
+	 * @param string $end   Relative end, e.g. `+1 day +2 hours`.
+	 *
+	 * @return int The created post ID.
+	 */
+	protected function create_plain_event( string $start, string $end ): int {
+		$post_id = $this->mock->post(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		)->get()->ID;
+
+		$event = new Event( $post_id );
+		$event->save_datetimes(
+			array(
+				'datetime_start' => gmdate( 'Y-m-d H:i:s', strtotime( $start ) ),
+				'datetime_end'   => gmdate( 'Y-m-d H:i:s', strtotime( $end ) ),
+				'timezone'       => 'UTC',
+			)
+		);
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * Run one admin Upcoming/Past view query through the production wiring.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $bucket Either `upcoming` or `past`.
+	 *
+	 * @return int[] The result IDs.
+	 */
+	protected function run_admin_view_query( string $bucket ): array {
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query(
+			array(
+				'post_type'               => Event::POST_TYPE,
+				'post_status'             => 'publish',
+				'gatherpress_event_query' => $bucket,
+				'orderby'                 => 'datetime',
+				'order'                   => 'upcoming' === $bucket ? 'ASC' : 'DESC',
+				'posts_per_page'          => -1,
+				'fields'                  => 'ids',
+				'no_found_rows'           => true,
+			)
+		);
+
+		set_current_screen( 'front' );
+
+		return array_map( 'intval', $query->posts );
+	}
+
+	/**
+	 * The view counts bucket a running series by its chosen occurrence.
+	 *
+	 * The date column and the sort read the occurrence the series is next
+	 * doing, so counts still reading the series anchor would advertise an
+	 * Upcoming view that omits an actively recurring series. The fixture's
+	 * series anchor elapsed forty days ago while its next occurrence is five
+	 * hours out, so anchor counting and occurrence counting provably disagree,
+	 * and the two bracketing one-off events prove the plain buckets are
+	 * untouched.
+	 *
+	 * @covers ::get_event_counts
+	 *
+	 * @return void
+	 */
+	public function test_get_event_counts_buckets_a_running_series_by_its_next_occurrence(): void {
+		$instance = Admin_List::get_instance();
+		$this->create_daily_series_fixture( 60 );
+
+		$this->create_plain_event( '+1 day', '+1 day +2 hours' );
+		$this->create_plain_event( '-2 days', '-2 days +2 hours' );
+
+		Utility::set_and_get_hidden_property( $instance, 'event_counts', array() );
+
+		$counts = Utility::invoke_hidden_method( $instance, 'get_event_counts' );
+
+		$this->assertSame(
+			2,
+			$counts['upcoming'],
+			'A running series must count toward Upcoming alongside the plain future event.'
+		);
+		$this->assertSame(
+			1,
+			$counts['past'],
+			'Only the plain past event may count toward Past.'
+		);
+	}
+
+	/**
+	 * The view counts match the rows the corresponding view query returns.
+	 *
+	 * The counts and the list are produced by two different pieces of SQL, and
+	 * a reader treats the count as a promise about the list. Both are driven
+	 * here for the same fixture, so a divergence between the shared derived
+	 * occurrence relation and either consumer fails this test by number.
+	 *
+	 * @covers ::get_event_counts
+	 *
+	 * @return void
+	 */
+	public function test_get_event_counts_match_the_rows_each_view_returns(): void {
+		$instance = Admin_List::get_instance();
+		$fixture  = $this->create_daily_series_fixture( 60 );
+
+		$this->create_plain_event( '+1 day', '+1 day +2 hours' );
+		$this->create_plain_event( '-2 days', '-2 days +2 hours' );
+
+		$upcoming_rows = $this->run_admin_view_query( 'upcoming' );
+		$past_rows     = $this->run_admin_view_query( 'past' );
+
+		Utility::set_and_get_hidden_property( $instance, 'event_counts', array() );
+
+		$counts = Utility::invoke_hidden_method( $instance, 'get_event_counts' );
+
+		$this->assertContains(
+			$fixture['post_id'],
+			$upcoming_rows,
+			'A running series belongs to the Upcoming view rows.'
+		);
+		$this->assertNotContains(
+			$fixture['post_id'],
+			$past_rows,
+			'A running series must not appear in the Past view rows.'
+		);
+		$this->assertSame(
+			count( $upcoming_rows ),
+			$counts['upcoming'],
+			'The Upcoming count must equal the number of rows the Upcoming view returns.'
+		);
+		$this->assertSame(
+			count( $past_rows ),
+			$counts['past'],
+			'The Past count must equal the number of rows the Past view returns.'
+		);
+	}
+
+	/**
+	 * The date a row displays agrees with the view that listed it.
+	 *
+	 * This is the coherence B3 was filed for: a row whose displayed date
+	 * contradicts the filter that selected it is not a shippable state. The
+	 * running series must be listed under Upcoming, and the very date its
+	 * column renders must be the upcoming occurrence that put it there.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_row_displayed_date_agrees_with_the_view_that_lists_it(): void {
+		$fixture = $this->create_daily_series_fixture( 60 );
+
+		$this->assertContains(
+			$fixture['post_id'],
+			$this->run_admin_view_query( 'upcoming' ),
+			'The running series must be listed by the Upcoming view.'
+		);
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['next'] ),
+			$output,
+			'The listed row must display the upcoming occurrence that placed it in the view.'
+		);
+	}
+
+	/**
 	 * A running series dates its row from its next occurrence, not its anchor.
 	 *
 	 * @covers ::custom_columns
