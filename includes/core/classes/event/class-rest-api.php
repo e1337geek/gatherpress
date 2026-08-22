@@ -74,9 +74,8 @@ final class Rest_Api {
 	 * nests. `rsvp_status_html()` renders arbitrary block content, any of which
 	 * may call `rest_do_request()` for a different occurrence of the same
 	 * series. With one slot the inner dispatch overwrote the outer request's
-	 * identity, and its teardown then cleared the context and unhooked the
-	 * global filter, so the outer route silently finished series-wide and never
-	 * tore down at all.
+	 * identity, and its teardown then cleared the context outright, so the outer
+	 * route silently finished series-wide and never tore down at all.
 	 *
 	 * @since 0.36.0
 	 * @var array<int, array{request: WP_REST_Request, previous: array|null}>
@@ -537,16 +536,18 @@ final class Rest_Api {
 	 * there, and every read returns the union of the series.
 	 *
 	 * Returning early on an absent parameter is what keeps the series behavior
-	 * byte-identical: nothing is resolved, no filter is registered, and no
-	 * occurrence machinery is touched.
+	 * byte-identical: nothing is resolved, no frame is pushed, and no occurrence
+	 * machinery is touched.
 	 *
 	 * A failure to resolve is returned rather than swallowed. Continuing would
 	 * serve the caller the **whole series** under a 200, which is precisely the
 	 * outcome the caller narrowing to one date asked not to have.
 	 *
-	 * Every call is a push. The frame records the context that was standing
-	 * when this dispatch entered, so a nested dispatch restores its caller's
-	 * occurrence on the way out instead of clearing the process.
+	 * Every call is a push, and every caller that gets a `null` back owes a
+	 * matching `unwind_occurrence_frame()` from a `finally`. The frame records
+	 * the context that was standing when this dispatch entered, so a nested
+	 * dispatch restores its caller's occurrence on the way out instead of
+	 * clearing the process.
 	 *
 	 * @since 0.36.0
 	 *
@@ -572,12 +573,6 @@ final class Rest_Api {
 			return $this->occurrence_not_found();
 		}
 
-		// The filter is global and installed once for the whole stack; the
-		// outermost frame's teardown is what removes it again.
-		if ( array() === $this->occurrence_frames ) {
-			add_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ), 10, 3 );
-		}
-
 		$this->occurrence_frames[] = array(
 			'request'  => $request,
 			'previous' => $previous,
@@ -587,54 +582,50 @@ final class Rest_Api {
 	}
 
 	/**
-	 * Leave the occurrence context once the route callback has returned.
+	 * Leave the occurrence context a route entered, on every way out of it.
 	 *
-	 * `rest_request_after_callbacks` is used rather than `rest_post_dispatch`
-	 * because the latter only fires from `WP_REST_Server::serve_request()`, so
-	 * an internal `rest_do_request()` call would leave the context set for
-	 * whatever ran next in the same process.
+	 * Called from the `finally` of each route that enters, which is the whole
+	 * point: teardown used to hang off `rest_request_after_callbacks`, and that
+	 * filter is applied only once the callback has **returned a value**. An
+	 * exception thrown anywhere in a route body never reaches it, and these
+	 * bodies run arbitrary third-party code: `rsvp_status_html()` renders
+	 * whatever blocks the site has, and every one of these routes queries
+	 * comments through filterable clauses. A throw there left the frame on the
+	 * stack and the process still scoped to that occurrence, so anything later
+	 * in the same request silently read and wrote one visitor's date. A
+	 * `finally` cannot be skipped that way, and it also runs strictly earlier,
+	 * at the end of the callback rather than after it.
 	 *
-	 * The filter is global and fires for **every** dispatch, including one a
-	 * route makes internally while holding context. `rsvp_status_html()`
-	 * renders arbitrary blocks, any of which may call `rest_do_request()` for
-	 * another occurrence of the same series. Two rules keep that safe, and both
-	 * are load-bearing:
+	 * REST dispatch nests: `rsvp_status_html()` renders arbitrary blocks, any of
+	 * which may call `rest_do_request()` for another occurrence of the same
+	 * series. Two rules keep that safe, and both are load-bearing:
 	 *
-	 * - Only the **innermost** frame may be torn down, so an unrelated
-	 *   dispatch finishing cannot unwind somebody else's frame.
+	 * - Only the **innermost** frame may be torn down. An inner dispatch that
+	 *   named no occurrence pushed no frame, and its own `finally` still calls
+	 *   this; keying on request identity is what stops it unwinding the outer
+	 *   route's frame instead of its own.
 	 * - Teardown **restores** the frame's previous occurrence rather than
 	 *   clearing. The context belongs to whatever is still running, not to the
 	 *   process, so clearing unconditionally left the outer route reading and
 	 *   writing series-wide for the remainder of its callback with no error
 	 *   anywhere.
 	 *
-	 * The filter is removed only once the stack is empty, so an inner teardown
-	 * cannot unhook the outer route's own.
-	 *
 	 * @since 0.36.0
 	 *
-	 * @param mixed           $response The response the callback produced.
-	 * @param array           $handler  The route handler that produced it.
-	 * @param WP_REST_Request $request  The request the response belongs to.
+	 * @param WP_REST_Request $request The request whose frame should be unwound.
 	 *
-	 * @return mixed The response, unchanged.
+	 * @return void
 	 */
-	public function leave_occurrence_context( $response, $handler, $request ) {
+	private function unwind_occurrence_frame( WP_REST_Request $request ): void {
 		$innermost = end( $this->occurrence_frames );
 
 		if ( false === $innermost || $request !== $innermost['request'] ) {
-			return $response;
+			return;
 		}
 
 		array_pop( $this->occurrence_frames );
 
 		Context::get_instance()->restore( $innermost['previous'] );
-
-		if ( array() === $this->occurrence_frames ) {
-			remove_filter( 'rest_request_after_callbacks', array( $this, 'leave_occurrence_context' ), 10 );
-		}
-
-		return $response;
 	}
 
 	/**
@@ -1170,100 +1161,107 @@ final class Rest_Api {
 			return $occurrence_error;
 		}
 
-		$params          = $request->get_params();
-		$success         = false;
-		$current_user_id = get_current_user_id();
-		$blog_id         = get_current_blog_id();
-		$user_id         = isset( $params['user_id'] ) ? intval( $params['user_id'] ) : $current_user_id;
-		$status          = sanitize_key( $params['status'] );
-		$guests          = intval( $params['guests'] ?? 0 );
-		$anonymous       = intval( $params['anonymous'] ?? 0 );
-		$unparsed_token  = (string) $this->request_token_string( $request );
+		try {
+			$params          = $request->get_params();
+			$success         = false;
+			$current_user_id = get_current_user_id();
+			$blog_id         = get_current_blog_id();
+			$user_id         = isset( $params['user_id'] ) ? intval( $params['user_id'] ) : $current_user_id;
+			$status          = sanitize_key( $params['status'] );
+			$guests          = intval( $params['guests'] ?? 0 );
+			$anonymous       = intval( $params['anonymous'] ?? 0 );
+			$unparsed_token  = (string) $this->request_token_string( $request );
 
-		// Step 3 of resolve-authorize-use: the mutation runs against the post
-		// that owns the authorized occurrence, not against whichever post the
-		// request named. The two are the same post until a forward split moves
-		// an occurrence onto a sibling, and after one they are not. Writing to
-		// the named post there would store the response under an owner no
-		// reader of that occurrence queries by.
-		$identity = $this->requested_occurrence( $request );
-		$post_id  = ( null === $identity ) ? intval( $params['post_id'] ) : $identity->owner_post_id;
-		$event    = new Event( $post_id );
+			// Step 3 of resolve-authorize-use: the mutation runs against the post
+			// that owns the authorized occurrence, not against whichever post the
+			// request named. The two are the same post until a forward split moves
+			// an occurrence onto a sibling, and after one they are not. Writing to
+			// the named post there would store the response under an owner no
+			// reader of that occurrence queries by.
+			$identity = $this->requested_occurrence( $request );
+			$post_id  = ( null === $identity ) ? intval( $params['post_id'] ) : $identity->owner_post_id;
+			$event    = new Event( $post_id );
 
-		// If managing user is adding someone to an event.
-		$is_managing_other = false;
-		if (
-			$current_user_id &&
-			$user_id &&
-			$current_user_id !== $user_id
-		) {
-			// Per-event check: only users who can edit *this* event may
-			// RSVP someone else into it. The previous flat `edit_posts`
-			// check would have let any Author manage attendees on any
-			// event, including ones they don't own.
-			if ( current_user_can( Event::EDIT_CAPABILITY, $post_id ) ) {
-				$is_managing_other = true;
+			// If managing user is adding someone to an event.
+			$is_managing_other = false;
+			if (
+				$current_user_id &&
+				$user_id &&
+				$current_user_id !== $user_id
+			) {
+				// Per-event check: only users who can edit *this* event may
+				// RSVP someone else into it. The previous flat `edit_posts`
+				// check would have let any Author manage attendees on any
+				// event, including ones they don't own.
+				if ( current_user_can( Event::EDIT_CAPABILITY, $post_id ) ) {
+					$is_managing_other = true;
+				} else {
+					$user_id = 0;
+				}
 			} else {
-				$user_id = 0;
-			}
-		} else {
-			$user_id = $current_user_id;
-		}
-
-		// Auto-join the current blog when the RSVP target is not yet a member.
-		// A user RSVPing *themselves* joins as a subscriber (the open-RSVP
-		// across-network flow). Enrolling *another* user is a higher-privilege
-		// action: `edit_post` lets an editor manage attendees, but adding users
-		// to a site is gated by `promote_users` in WordPress, so require that
-		// capability here and confirm the target is a real user before creating
-		// any membership.
-		if (
-			intval( $user_id )
-			&& ! is_user_member_of_blog( $user_id )
-			&& ( ! $is_managing_other || ( current_user_can( 'promote_users' ) && get_userdata( $user_id ) ) )
-		) {
-			add_user_to_blog( $blog_id, $user_id, 'subscriber' );
-		}
-
-		$user_identifier = $user_id;
-
-		if ( ! empty( $unparsed_token ) ) {
-			$rsvp_token = Token::from_token_string( $unparsed_token );
-
-			if ( $rsvp_token ) {
-				$user_identifier = $rsvp_token->get_email();
-			}
-		}
-
-		if (
-			$user_identifier &&
-			( is_user_member_of_blog( $user_identifier ) || is_email( $user_identifier ) ) &&
-			! $event->has_event_past()
-		) {
-			if ( 'attending' !== $status ) {
-				$guests = 0;
+				$user_id = $current_user_id;
 			}
 
-			$user_record = $event->rsvp->save( $user_identifier, $status, $anonymous, $guests );
-			$status      = $user_record['status'];
-			$guests      = $user_record['guests'];
-
-			if ( in_array( $status, Status::values(), true ) ) {
-				$success = true;
+			// Auto-join the current blog when the RSVP target is not yet a member.
+			// A user RSVPing *themselves* joins as a subscriber (the open-RSVP
+			// across-network flow). Enrolling *another* user is a higher-privilege
+			// action: `edit_post` lets an editor manage attendees, but adding users
+			// to a site is gated by `promote_users` in WordPress, so require that
+			// capability here and confirm the target is a real user before creating
+			// any membership.
+			if (
+				intval( $user_id )
+				&& ! is_user_member_of_blog( $user_id )
+				&& ( ! $is_managing_other || ( current_user_can( 'promote_users' ) && get_userdata( $user_id ) ) )
+			) {
+				add_user_to_blog( $blog_id, $user_id, 'subscriber' );
 			}
+
+			$user_identifier = $user_id;
+
+			if ( ! empty( $unparsed_token ) ) {
+				$rsvp_token = Token::from_token_string( $unparsed_token );
+
+				if ( $rsvp_token ) {
+					$user_identifier = $rsvp_token->get_email();
+				}
+			}
+
+			if (
+				$user_identifier &&
+				( is_user_member_of_blog( $user_identifier ) || is_email( $user_identifier ) ) &&
+				! $event->has_event_past()
+			) {
+				if ( 'attending' !== $status ) {
+					$guests = 0;
+				}
+
+				$user_record = $event->rsvp->save( $user_identifier, $status, $anonymous, $guests );
+				$status      = $user_record['status'];
+				$guests      = $user_record['guests'];
+
+				if ( in_array( $status, Status::values(), true ) ) {
+					$success = true;
+				}
+			}
+
+			$response = array(
+				'event_id'    => $post_id,
+				'success'     => $success,
+				'status'      => $status,
+				'guests'      => $guests,
+				'anonymous'   => $anonymous,
+				'responses'   => $event->rsvp->responses(),
+				'online_link' => $event->maybe_get_online_event_link(),
+			);
+
+			return new WP_REST_Response( $response );
+		} finally {
+			// Every exit from the body unwinds, a throw included. See
+			// `unwind_occurrence_frame()` for why a `finally` rather than a
+			// filter on the dispatch that follows the callback.
+			$this->unwind_occurrence_frame( $request );
 		}
-
-		$response = array(
-			'event_id'    => $post_id,
-			'success'     => $success,
-			'status'      => $status,
-			'guests'      => $guests,
-			'anonymous'   => $anonymous,
-			'responses'   => $event->rsvp->responses(),
-			'online_link' => $event->maybe_get_online_event_link(),
-		);
-
-		return new WP_REST_Response( $response );
 	}
 
 	/**
@@ -1302,42 +1300,49 @@ final class Rest_Api {
 			return $occurrence_error;
 		}
 
-		$rsvp_template = Rsvp_Template::get_instance();
-		$params        = $request->get_params();
-		$identity      = $this->requested_occurrence( $request );
-		// The roster is read from the post that owns the occurrence, which a
-		// forward split can make different from the post the request named.
-		// Reading the named post there would apply the owner's occurrence term
-		// to the wrong post and return an empty roster under a 200.
-		$post_id    = ( null === $identity ) ? intval( $params['post_id'] ) : $identity->owner_post_id;
-		$status     = $params['status'];
-		$block_data = $params['block_data'];
-		$block_data = json_decode( $block_data, true );
-		$rsvp       = new Rsvp( $post_id );
-		$responses  = $rsvp->responses();
-		$content    = '';
-		// @todo set this up...
-		$args = array(
-			'limit_enabled' => (bool) $params['limit_enabled'],
-			'limit'         => (int) $params['limit'],
-		);
+		try {
+			$rsvp_template = Rsvp_Template::get_instance();
+			$params        = $request->get_params();
+			$identity      = $this->requested_occurrence( $request );
+			// The roster is read from the post that owns the occurrence, which a
+			// forward split can make different from the post the request named.
+			// Reading the named post there would apply the owner's occurrence term
+			// to the wrong post and return an empty roster under a 200.
+			$post_id    = ( null === $identity ) ? intval( $params['post_id'] ) : $identity->owner_post_id;
+			$status     = $params['status'];
+			$block_data = $params['block_data'];
+			$block_data = json_decode( $block_data, true );
+			$rsvp       = new Rsvp( $post_id );
+			$responses  = $rsvp->responses();
+			$content    = '';
+			// @todo set this up...
+			$args = array(
+				'limit_enabled' => (bool) $params['limit_enabled'],
+				'limit'         => (int) $params['limit'],
+			);
 
-		if ( ! empty( $responses[ $status ] ) ) {
-			foreach ( $responses[ $status ]['records'] as $key => $record ) {
-				$args['index'] = $key;
-				$content      .= $rsvp_template->get_block_content( $block_data, $record['comment_id'], $args );
+			if ( ! empty( $responses[ $status ] ) ) {
+				foreach ( $responses[ $status ]['records'] as $key => $record ) {
+					$args['index'] = $key;
+					$content      .= $rsvp_template->get_block_content( $block_data, $record['comment_id'], $args );
+				}
 			}
+
+			$success = true;
+
+			$response = array(
+				'success'   => $success,
+				'content'   => $content,
+				'responses' => $responses,
+			);
+
+			return new WP_REST_Response( $response );
+		} finally {
+			// Every exit from the body unwinds, a throw included. See
+			// `unwind_occurrence_frame()` for why a `finally` rather than a
+			// filter on the dispatch that follows the callback.
+			$this->unwind_occurrence_frame( $request );
 		}
-
-		$success = true;
-
-		$response = array(
-			'success'   => $success,
-			'content'   => $content,
-			'responses' => $responses,
-		);
-
-		return new WP_REST_Response( $response );
 	}
 
 	/**
@@ -1406,92 +1411,99 @@ final class Rest_Api {
 			return $occurrence_error;
 		}
 
-		$params = $request->get_params();
+		try {
+			$params = $request->get_params();
 
-		// Step 3: the write itself runs against the authorized owner.
-		$post_id = ( null === $identity ) ? $post_id : $identity->owner_post_id;
+			// Step 3: the write itself runs against the authorized owner.
+			$post_id = ( null === $identity ) ? $post_id : $identity->owner_post_id;
 
-		// Prepare data for the RSVP processor.
-		$data = array(
-			'post_id'                          => $post_id,
-			'author'                           => $params['author'] ?? '',
-			'email'                            => $params['email'] ?? '',
-			'gatherpress_event_updates_opt_in' => $request->get_param( 'gatherpress_event_updates_opt_in' ),
-			'gatherpress_rsvp_guests'          => $request->get_param( 'gatherpress_rsvp_form_guests' ),
-			'gatherpress_rsvp_anonymous'       => $request->get_param( 'gatherpress_rsvp_form_anonymous' ),
-			'gatherpress_form_schema_id'       => $request->get_param( 'gatherpress_form_schema_id' ),
-		);
+			// Prepare data for the RSVP processor.
+			$data = array(
+				'post_id'                          => $post_id,
+				'author'                           => $params['author'] ?? '',
+				'email'                            => $params['email'] ?? '',
+				'gatherpress_event_updates_opt_in' => $request->get_param( 'gatherpress_event_updates_opt_in' ),
+				'gatherpress_rsvp_guests'          => $request->get_param( 'gatherpress_rsvp_form_guests' ),
+				'gatherpress_rsvp_anonymous'       => $request->get_param( 'gatherpress_rsvp_form_anonymous' ),
+				'gatherpress_form_schema_id'       => $request->get_param( 'gatherpress_form_schema_id' ),
+			);
 
-		// Add custom fields to data.
-		foreach ( $params as $key => $value ) {
-			if ( str_starts_with( $key, 'gatherpress_custom_' ) ) {
-				$data[ $key ] = $value;
+			// Add custom fields to data.
+			foreach ( $params as $key => $value ) {
+				if ( str_starts_with( $key, 'gatherpress_custom_' ) ) {
+					$data[ $key ] = $value;
+				}
 			}
-		}
 
-		// Also include custom fields defined in form schema.
-		$form_schema_id = $data['gatherpress_form_schema_id'] ?? '';
+			// Also include custom fields defined in form schema.
+			$form_schema_id = $data['gatherpress_form_schema_id'] ?? '';
 
-		if ( ! empty( $form_schema_id ) ) {
-			$schemas = get_post_meta( $post_id, 'gatherpress_rsvp_form_schemas', true );
+			if ( ! empty( $form_schema_id ) ) {
+				$schemas = get_post_meta( $post_id, 'gatherpress_rsvp_form_schemas', true );
 
-			if ( is_array( $schemas ) && isset( $schemas[ $form_schema_id ]['fields'] ) ) {
-				$fields = $schemas[ $form_schema_id ]['fields'];
-				foreach ( array_keys( $fields ) as $field_name ) {
-					if ( isset( $params[ $field_name ] ) ) {
-						$data[ $field_name ] = $params[ $field_name ];
+				if ( is_array( $schemas ) && isset( $schemas[ $form_schema_id ]['fields'] ) ) {
+					$fields = $schemas[ $form_schema_id ]['fields'];
+					foreach ( array_keys( $fields ) as $field_name ) {
+						if ( isset( $params[ $field_name ] ) ) {
+							$data[ $field_name ] = $params[ $field_name ];
+						}
 					}
 				}
 			}
-		}
 
-		// Pre-flight: bail with a structured error before processing if the
-		// event is not viewable, open RSVP is disabled or the event has already passed.
-		$event = new Event( $data['post_id'] );
-		$rsvp  = new Rsvp( $data['post_id'] );
-		$bail  = null;
+			// Pre-flight: bail with a structured error before processing if the
+			// event is not viewable, open RSVP is disabled or the event has already passed.
+			$event = new Event( $data['post_id'] );
+			$rsvp  = new Rsvp( $data['post_id'] );
+			$bail  = null;
 
-		if ( ! $rsvp->is_enabled() ) {
-			$bail = array( __( 'RSVP is disabled for this event.', 'gatherpress' ), 403 );
-		} elseif ( ! $rsvp->allows_open_rsvp() ) {
-			$bail = array( __( 'Open RSVP is disabled for this event.', 'gatherpress' ), 403 );
-		} elseif ( $event->has_event_past() ) {
-			$bail = array( __( 'Registration for this event is now closed.', 'gatherpress' ), 400 );
-		}
+			if ( ! $rsvp->is_enabled() ) {
+				$bail = array( __( 'RSVP is disabled for this event.', 'gatherpress' ), 403 );
+			} elseif ( ! $rsvp->allows_open_rsvp() ) {
+				$bail = array( __( 'Open RSVP is disabled for this event.', 'gatherpress' ), 403 );
+			} elseif ( $event->has_event_past() ) {
+				$bail = array( __( 'Registration for this event is now closed.', 'gatherpress' ), 400 );
+			}
 
-		if ( null !== $bail ) {
-			return new WP_REST_Response(
-				array(
+			if ( null !== $bail ) {
+				return new WP_REST_Response(
+					array(
+						'success' => false,
+						'message' => $bail[0],
+					),
+					$bail[1]
+				);
+			}
+
+			// Process the RSVP using the centralized processor.
+			$result = Form::get_instance()->process_rsvp( $data );
+
+			// One trailing return covers both the success and error shapes — the
+			// success body carries comment_id + responses, the error body just
+			// the message and the upstream error_code.
+			if ( $result['success'] ) {
+				$response = array(
+					'success'    => true,
+					'message'    => $result['message'],
+					'comment_id' => $result['comment_id'],
+					'responses'  => $this->rsvp_response_counts( $event->rsvp->responses() ),
+				);
+				$status   = 200;
+			} else {
+				$response = array(
 					'success' => false,
-					'message' => $bail[0],
-				),
-				$bail[1]
-			);
+					'message' => $result['message'],
+				);
+				$status   = $result['error_code'] ?? 500;
+			}
+
+			return new WP_REST_Response( $response, $status );
+		} finally {
+			// Every exit from the body unwinds, a throw included. See
+			// `unwind_occurrence_frame()` for why a `finally` rather than a
+			// filter on the dispatch that follows the callback.
+			$this->unwind_occurrence_frame( $request );
 		}
-
-		// Process the RSVP using the centralized processor.
-		$result = Form::get_instance()->process_rsvp( $data );
-
-		// One trailing return covers both the success and error shapes — the
-		// success body carries comment_id + responses, the error body just
-		// the message and the upstream error_code.
-		if ( $result['success'] ) {
-			$response = array(
-				'success'    => true,
-				'message'    => $result['message'],
-				'comment_id' => $result['comment_id'],
-				'responses'  => $this->rsvp_response_counts( $event->rsvp->responses() ),
-			);
-			$status   = 200;
-		} else {
-			$response = array(
-				'success' => false,
-				'message' => $result['message'],
-			);
-			$status   = $result['error_code'] ?? 500;
-		}
-
-		return new WP_REST_Response( $response, $status );
 	}
 
 	/**
@@ -1523,26 +1535,33 @@ final class Rest_Api {
 			return $occurrence_error;
 		}
 
-		$params   = $request->get_params();
-		$identity = $this->requested_occurrence( $request );
-		// Read from the occurrence's owning post, for the reason given on
-		// `rsvp_status_html()`.
-		$post_id   = ( null === $identity ) ? intval( $params['post_id'] ) : $identity->owner_post_id;
-		$success   = false;
-		$responses = array();
+		try {
+			$params   = $request->get_params();
+			$identity = $this->requested_occurrence( $request );
+			// Read from the occurrence's owning post, for the reason given on
+			// `rsvp_status_html()`.
+			$post_id   = ( null === $identity ) ? intval( $params['post_id'] ) : $identity->owner_post_id;
+			$success   = false;
+			$responses = array();
 
-		if ( Event::POST_TYPE === get_post_type( $post_id ) ) {
-			$success   = true;
-			$rsvp      = new Rsvp( $post_id );
-			$responses = $rsvp->responses();
+			if ( Event::POST_TYPE === get_post_type( $post_id ) ) {
+				$success   = true;
+				$rsvp      = new Rsvp( $post_id );
+				$responses = $rsvp->responses();
+			}
+
+			$response = array(
+				'success' => $success,
+				'data'    => $responses,
+			);
+
+			return new WP_REST_Response( $response );
+		} finally {
+			// Every exit from the body unwinds, a throw included. See
+			// `unwind_occurrence_frame()` for why a `finally` rather than a
+			// filter on the dispatch that follows the callback.
+			$this->unwind_occurrence_frame( $request );
 		}
-
-		$response = array(
-			'success' => $success,
-			'data'    => $responses,
-		);
-
-		return new WP_REST_Response( $response );
 	}
 
 

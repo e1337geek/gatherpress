@@ -38,6 +38,7 @@ use GatherPress\Core\Settings;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use ReflectionMethod;
+use RuntimeException;
 use WP_REST_Request;
 
 /**
@@ -404,7 +405,7 @@ class Test_Rsvp_Rest extends Base {
 	 * @covers ::update_rsvp
 	 * @covers ::rsvp_responses
 	 * @covers ::enter_occurrence_context
-	 * @covers ::leave_occurrence_context
+	 * @covers ::unwind_occurrence_frame
 	 *
 	 * @return void
 	 */
@@ -493,7 +494,7 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * Context does not survive the dispatch that entered it.
 	 *
-	 * @covers ::leave_occurrence_context
+	 * @covers ::unwind_occurrence_frame
 	 *
 	 * @return void
 	 */
@@ -1486,19 +1487,18 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * A nested dispatch does not tear down the outer request's context.
 	 *
-	 * `rest_request_after_callbacks` is global and fires for every dispatch,
-	 * including one a route makes internally while holding context.
-	 * `rsvp_status_html()` renders arbitrary blocks, any of which may call
-	 * `rest_do_request()`. A teardown that could not tell which request it was
-	 * leaving would clear the outer context mid-callback and unhook itself, so
-	 * the rest of the outer route would read and write series-wide, silently,
-	 * and never clear at all.
+	 * REST dispatch nests: `rsvp_status_html()` renders arbitrary blocks, any of
+	 * which may call `rest_do_request()` while the outer route holds a context.
+	 * A teardown that could not tell which request it was leaving would clear
+	 * the outer context mid-callback, so the rest of the outer route would read
+	 * and write series-wide, silently, and never clear at all.
 	 *
-	 * The inner dispatch here deliberately names **no** occurrence, so it
-	 * registers no teardown of its own. That is what makes the outer one the
-	 * only thing that could have cleared the context.
+	 * The inner dispatch here deliberately names **no** occurrence, so it pushes
+	 * no frame of its own while its `finally` still runs. That is exactly the
+	 * shape that makes the request-identity guard load-bearing rather than
+	 * defensive: without it the inner unwind would pop the outer route's frame.
 	 *
-	 * @covers ::leave_occurrence_context
+	 * @covers ::unwind_occurrence_frame
 	 *
 	 * @return void
 	 */
@@ -2438,19 +2438,25 @@ class Test_Rsvp_Rest extends Base {
 	 * An inner dispatch for another occurrence restores the outer one.
 	 *
 	 * The nested test above covers only an inner request naming *no*
-	 * occurrence, which registers no teardown of its own and therefore cannot
-	 * exercise the defect. With a single request slot, an inner request naming
-	 * occurrence B overwrote the outer request's identity, and the inner
-	 * teardown then recognized itself, cleared the context and removed the
-	 * global filter: the outer route finished series-wide and never tore down.
+	 * occurrence, which pushes no frame of its own and therefore cannot exercise
+	 * the defect. With a single request slot, an inner request naming occurrence
+	 * B overwrote the outer request's identity, and the inner teardown then
+	 * recognized itself and cleared the context: the outer route finished
+	 * series-wide and never tore down.
 	 *
 	 * Three moments are asserted, because the fix is a stack rather than a
 	 * comparison and any one of them can regress alone: B during the inner
 	 * callback, A after it returns, and nothing at all once the outer dispatch
 	 * completes.
 	 *
+	 * All three are observed from `comments_clauses`, which fires while a
+	 * callback is still running. That is the only vantage point that works:
+	 * a frame is unwound in its own route's `finally`, at the end of the
+	 * callback body, so by the time any filter on the surrounding dispatch runs
+	 * the inner context is already restored and there is nothing left to see.
+	 *
 	 * @covers ::enter_occurrence_context
-	 * @covers ::leave_occurrence_context
+	 * @covers ::unwind_occurrence_frame
 	 * @covers \GatherPress\Core\Event\Recurrence\Context::restore
 	 *
 	 * @return void
@@ -2468,21 +2474,17 @@ class Test_Rsvp_Rest extends Base {
 		$inner->set_param( 'post_id', $post_id );
 		$inner->set_param( 'recurrence_id', $this->occurrence_b );
 
-		// Priority 1 so this observes the inner request while its own teardown,
-		// registered at priority 10, has not yet run.
-		$observe = static function ( $response, $handler, $request ) use ( &$inner_scope, $inner ) {
-			if ( $request === $inner ) {
-				$inner_scope = Context::get_instance()->current();
-			}
-
-			return $response;
-		};
-
-		add_filter( 'rest_request_after_callbacks', $observe, 1, 3 );
-
 		$nested = false;
-		$nest   = static function ( $clauses ) use ( &$nested, &$after_inner, $inner ) {
+		$nest   = static function ( $clauses ) use ( &$nested, &$inner_scope, &$after_inner, $inner ) {
 			if ( $nested ) {
+				// The first re-entry is the inner dispatch reading its own
+				// roster, which is the one moment the inner callback is still
+				// running. Later re-entries are the outer route's remaining
+				// status queries, and must not overwrite the reading.
+				if ( null === $inner_scope ) {
+					$inner_scope = Context::get_instance()->current();
+				}
+
 				return $clauses;
 			}
 
@@ -2507,7 +2509,6 @@ class Test_Rsvp_Rest extends Base {
 		);
 
 		remove_filter( 'comments_clauses', $nest );
-		remove_filter( 'rest_request_after_callbacks', $observe, 1 );
 
 		$this->assertNotNull( $inner_scope, 'Failed to observe the inner dispatch holding a context at all.' );
 		$this->assertSame(
@@ -2531,6 +2532,72 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
+	 * A route callback that throws still leaves the occurrence stack empty.
+	 *
+	 * Teardown hung off `rest_request_after_callbacks`, which is applied only
+	 * once the callback has returned a value. An exception propagating out of a
+	 * route body never reaches it, so a throwing callback left its frame on the
+	 * stack and the process still scoped to that occurrence: every later read
+	 * and write in the same request would have been silently narrowed to
+	 * somebody else's date, with no error anywhere.
+	 *
+	 * The throw is arranged from `comments_clauses`, which is real: these routes
+	 * render arbitrary block content and query comments while holding context,
+	 * and either can be extended by code this plugin does not own. It is armed
+	 * only once a context is standing, so the test cannot pass by throwing
+	 * before the frame is ever pushed.
+	 *
+	 * @covers ::enter_occurrence_context
+	 * @covers ::unwind_occurrence_frame
+	 *
+	 * @return void
+	 */
+	public function test_a_throwing_route_callback_still_unwinds_its_occurrence_frame(): void {
+		$post_id = $this->create_and_project();
+
+		$explode = static function ( $clauses ) {
+			if ( null === Context::get_instance()->current() ) {
+				return $clauses;
+			}
+
+			throw new RuntimeException( 'A comments_clauses listener threw inside the route callback.' );
+		};
+
+		add_filter( 'comments_clauses', $explode );
+
+		$thrown = null;
+
+		try {
+			$this->dispatch(
+				'GET',
+				'rsvp-responses',
+				array(
+					'post_id'       => $post_id,
+					'recurrence_id' => $this->occurrence_a,
+				)
+			);
+		} catch ( RuntimeException $exception ) {
+			$thrown = $exception;
+		} finally {
+			remove_filter( 'comments_clauses', $explode );
+		}
+
+		$this->assertNotNull(
+			$thrown,
+			'Failed to arrange a route callback that throws while holding an occurrence.'
+		);
+		$this->assertSame(
+			array(),
+			Utility::get_hidden_property( Rest_Api::get_instance(), 'occurrence_frames' ),
+			'Failed to assert a throwing route callback leaves no frame on the occurrence stack.'
+		);
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert a throwing route callback restores the context it entered from.'
+		);
+	}
+
+	/**
 	 * An outer write still lands on its own occurrence after nesting.
 	 *
 	 * The context assertions above are necessary but not sufficient: restoring
@@ -2542,7 +2609,7 @@ class Test_Rsvp_Rest extends Base {
 	 * and the response was written series-wide while the responder believed they
 	 * had booked one date.
 	 *
-	 * @covers ::leave_occurrence_context
+	 * @covers ::unwind_occurrence_frame
 	 * @covers \GatherPress\Core\Rsvp\Storage::save
 	 *
 	 * @return void
