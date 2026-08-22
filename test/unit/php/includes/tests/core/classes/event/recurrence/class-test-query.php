@@ -1179,9 +1179,11 @@ class Test_Query extends Base {
 	 * Coverage for the measured query plan.
 	 *
 	 * The `COALESCE` ordering is not sargable, so a filesort is expected and
-	 * accepted. `Using temporary` is deliberately not asserted against, since a
-	 * `tax_query` produces one and collapsing that away would collapse
-	 * occurrences too. The discriminating assertion is the one below it: the
+	 * accepted, and the plan reports a temporary table with it. Both are
+	 * asserted because both are what the class docblocks quote as the cost:
+	 * the same list unexpanded reports the filesort alone, so the temporary
+	 * table is the part expansion adds and the part a claim of "will filesort"
+	 * was leaving out. The discriminating assertion is the last one: the
 	 * occurrence join must stay index-served, which a row-count budget does not
 	 * detect at fixture scale.
 	 *
@@ -1208,6 +1210,12 @@ class Test_Query extends Base {
 			'Using filesort',
 			$extra,
 			'Failed to assert the accepted filesort is present in the query plan.'
+		);
+		$this->assertStringContainsString(
+			'Using temporary',
+			$extra,
+			'Failed to assert the temporary table the expansion adds is present in the query plan, which is'
+				. ' what the documented cost quotes.'
 		);
 
 		// The filesort is the price of COALESCE ordering; the occurrence join

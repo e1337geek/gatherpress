@@ -11,7 +11,10 @@
  * `status = 'scheduled'` predicate lives in the join condition rather than the
  * `WHERE`, and ordering and range predicates use
  * `COALESCE( o.datetime_start_gmt, {events}.datetime_start_gmt )`, which is not
- * sargable and will filesort. That is the accepted trade.
+ * sargable. `EXPLAIN` reports `Using temporary; Using filesort` for the
+ * expanded statement, against `Using filesort` alone for the same list
+ * unexpanded, so the temporary table is what expansion costs on top of a sort
+ * the list was already paying. That is the accepted trade.
  *
  * Two scope limits are deliberate and worth knowing before extending this:
  *
@@ -324,8 +327,11 @@ final class Query {
 	 * where a semi-join cannot.
 	 *
 	 * Ordering and range predicates are rewritten to
-	 * `COALESCE( occurrence, anchor )`, which is not sargable and will
-	 * filesort. That is an accepted trade.
+	 * `COALESCE( occurrence, anchor )`, which is not sargable. The measured
+	 * plan is `Using temporary; Using filesort`, where the same list unexpanded
+	 * reports `Using filesort` alone, so the temporary table is what the
+	 * expansion adds. That is an accepted trade, pinned by
+	 * `test_explain_plan_filesorts_and_keeps_the_occurrence_join_indexed()`.
 	 *
 	 * @since 0.36.0
 	 *
