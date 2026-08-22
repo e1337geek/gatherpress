@@ -4031,6 +4031,39 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Direct coverage for both arms of the horizon-months clamp.
+	 *
+	 * @covers ::resolve_horizon_months
+	 *
+	 * @return void
+	 */
+	public function test_resolve_horizon_months_clamps_only_non_positive_values(): void {
+		$instance = Occurrences::get_instance();
+
+		$widen = static fn() => 5;
+		add_filter( 'gatherpress_recurrence_horizon_months', $widen );
+
+		$this->assertSame(
+			5,
+			Utility::invoke_hidden_method( $instance, 'resolve_horizon_months' ),
+			'Failed to assert a positive filtered horizon passes through unclamped.'
+		);
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $widen );
+
+		$negative = static fn() => -3;
+		add_filter( 'gatherpress_recurrence_horizon_months', $negative );
+
+		$this->assertSame(
+			1,
+			Utility::invoke_hidden_method( $instance, 'resolve_horizon_months' ),
+			'Failed to assert a non-positive filtered horizon clamps to one month.'
+		);
+
+		remove_filter( 'gatherpress_recurrence_horizon_months', $negative );
+	}
+
+	/**
 	 * Direct coverage for `execute_write()`'s success path: the statement's
 	 * affected-row count comes back as an integer.
 	 *

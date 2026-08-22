@@ -763,15 +763,19 @@ final class Occurrences {
 
 		$latest_gmt = null === $row ? null : $row['latest_gmt'];
 
+		// One conditional chain assigning a single result keeps this method
+		// at two returns (php:S1142): a rowless series is stale unless its
+		// until already expired, a reached until is complete, and everything
+		// else compares the latest projected start against the cutoff.
 		if ( null === $latest_gmt ) {
-			return ! $this->is_expired_until( $post_id, $end_type );
+			$stale = ! $this->is_expired_until( $post_id, $end_type );
+		} elseif ( $this->has_reached_until( $post_id, $end_type, (string) $row['latest_local'] ) ) {
+			$stale = false;
+		} else {
+			$stale = $latest_gmt < $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
 		}
 
-		if ( $this->has_reached_until( $post_id, $end_type, (string) $row['latest_local'] ) ) {
-			return false;
-		}
-
-		return $latest_gmt < $this->resolve_top_up_cutoff()->format( Event::DATETIME_FORMAT );
+		return $stale;
 	}
 
 	/**
@@ -886,8 +890,7 @@ final class Occurrences {
 	 * @return DateTimeImmutable The cutoff datetime, in UTC.
 	 */
 	protected function resolve_top_up_cutoff(): DateTimeImmutable {
-		/** This filter is documented in resolve_horizon(). */
-		$months = (int) apply_filters( 'gatherpress_recurrence_horizon_months', self::PROJECTION_HORIZON_MONTHS );
+		$months = $this->resolve_horizon_months();
 
 		/**
 		 * Filters how many days of margin before the horizon a series is topped up.
@@ -924,25 +927,30 @@ final class Occurrences {
 	 * needed repair could never be repaired. `MAX( o.datetime_start_gmt ) IS NULL`
 	 * is therefore treated as maximally stale rather than as "not a series".
 	 *
-	 * Excluded structurally, in SQL, so none of the following is ever a
-	 * candidate: a post whose status is in `Query::INACTIVE_POST_STATUSES`,
-	 * because WordPress keeps post meta on trash and a meta-only candidate
-	 * query would re-project a trashed series on every sweep for as long as
-	 * any other live recurrence keeps the sweep enabled; a post with no
-	 * recurrence rule at all, identified by an empty
-	 * `end_type` mirror and kept in parity with `is_series_stale()`'s own
-	 * empty-end-type branch, since the two predicates disagreeing would
-	 * silently make an unrecognized/blank end type a permanent hourly
-	 * candidate;
-	 * `COUNT`-bounded rules, via the `end_type` mirror; `UNTIL`-bounded
-	 * rules whose latest projected occurrence has already reached their
-	 * `until` mirror; and rowless `UNTIL`-bounded rules whose `until` is
-	 * already in the past, which can only ever expand to nothing and would
-	 * otherwise be re-projected, fruitlessly, by every sweep forever. The
-	 * `COUNT` and reached-`UNTIL` cases are complete by design and would
-	 * otherwise look permanently "stale" (their fixed, final occurrence only
-	 * ever falls further behind `resolve_top_up_cutoff()` as real time
-	 * passes) and get rewritten by every sweep forever.
+	 * Candidacy is a positive admission, in SQL: only the two end types a
+	 * projection can actually extend, `never` and `until`, are ever
+	 * candidates. A negative "not `count`, not blank" predicate admitted
+	 * anything else the mirror might hold, so a corrupted mirror carrying an
+	 * unrecognized value, which `Rule::is_valid()` rejects and which can
+	 * therefore never gain rows, became a permanent top-priority candidate
+	 * rewritten by every sweep forever. The positive form excludes, all at
+	 * once: an empty mirror (no rule at all, in parity with
+	 * `is_series_stale()`'s empty-end-type branch), `COUNT`-bounded rules
+	 * (complete by design; their fixed, final occurrence only ever falls
+	 * further behind `resolve_top_up_cutoff()` as real time passes), and any
+	 * unrecognized value. Also excluded: a post whose status is in
+	 * `Query::INACTIVE_POST_STATUSES`, because WordPress keeps post meta on
+	 * trash and a meta-only candidate query would re-project a trashed series
+	 * on every sweep for as long as any other live recurrence keeps the sweep
+	 * enabled; `UNTIL`-bounded rules whose latest projected occurrence has
+	 * already reached their `until` mirror; and rowless `UNTIL`-bounded rules
+	 * whose `until` is already in the past, which can only ever expand to
+	 * nothing.
+	 *
+	 * Cost, stated because it is structural: the aggregate joins every
+	 * occurrence row of every live candidate series through a temp table and
+	 * filesort to return at most `$limit` IDs, so one sweep scales as live
+	 * series times occurrences per series, not as the batch size.
 	 *
 	 * `ORDER BY MAX( o.datetime_start_gmt ) ASC` rotates the batch by
 	 * staleness rather than by `series_post_id`. Without it, `LIMIT` alone
@@ -1010,7 +1018,7 @@ final class Occurrences {
 			. ' ON until_meta.post_id = end_type_meta.post_id AND until_meta.meta_key = %s'
 			. ' LEFT JOIN %i o ON o.series_post_id = end_type_meta.post_id'
 			. ' WHERE end_type_meta.meta_key = %s'
-			. ' AND end_type_meta.meta_value != %s AND end_type_meta.meta_value != %s'
+			. ' AND end_type_meta.meta_value IN ( %s, %s )'
 			. ' GROUP BY end_type_meta.post_id, et_value, until_value'
 			. ' HAVING ( MAX( o.datetime_start_gmt ) IS NULL OR MAX( o.datetime_start_gmt ) < %s )'
 			. ' AND ('
@@ -1038,8 +1046,8 @@ final class Occurrences {
 						'gatherpress_recurrence_until',
 						$table,
 						'gatherpress_recurrence_end_type',
-						Rule::END_TYPE_COUNT,
-						'',
+						Rule::END_TYPE_NEVER,
+						Rule::END_TYPE_UNTIL,
 						$cutoff,
 						Rule::END_TYPE_UNTIL,
 						'',
@@ -1376,6 +1384,28 @@ final class Occurrences {
 	 * @return DateTimeImmutable The horizon datetime.
 	 */
 	protected function resolve_horizon( DateTimeImmutable $anchor_start, DateTimeZone $timezone ): DateTimeImmutable {
+		$months = $this->resolve_horizon_months();
+		$now    = new DateTimeImmutable( 'now', $timezone );
+		$from   = $anchor_start > $now ? $anchor_start : $now;
+
+		return $from->modify( sprintf( '+%d months', $months ) );
+	}
+
+	/**
+	 * Resolve the filtered projection horizon, clamped to at least one month.
+	 *
+	 * The single reader of the horizon filter, shared by `resolve_horizon()`
+	 * and `resolve_top_up_cutoff()` so the two can never diverge. The clamp
+	 * matches the nearby batch-size filters: an unclamped non-positive value
+	 * builds a horizon before `max( anchor, now )`, an open-ended rule then
+	 * expands to zero rows, and `upsert_occurrences()` deletes every existing
+	 * row as stale.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return int Number of months, at least 1.
+	 */
+	protected function resolve_horizon_months(): int {
 		/**
 		 * Filters how many months ahead of "now" an open-ended recurrence rule is projected.
 		 *
@@ -1386,10 +1416,8 @@ final class Occurrences {
 		 * @return int Number of months.
 		 */
 		$months = (int) apply_filters( 'gatherpress_recurrence_horizon_months', self::PROJECTION_HORIZON_MONTHS );
-		$now    = new DateTimeImmutable( 'now', $timezone );
-		$from   = $anchor_start > $now ? $anchor_start : $now;
 
-		return $from->modify( sprintf( '+%d months', $months ) );
+		return max( 1, $months );
 	}
 
 	/**
@@ -1717,7 +1745,10 @@ final class Occurrences {
 	 * Set the status of one occurrence.
 	 *
 	 * Scopes its update by both `series_post_id` and `recurrence_id`. Keying on
-	 * `recurrence_id` alone is an authorization hole.
+	 * `recurrence_id` alone is an authorization hole. Only the two `STATUS_*`
+	 * constants are accepted: `select_by_horizon()` matches
+	 * `status = 'scheduled'` exactly, so a row holding any other string would
+	 * vanish from every listing without having been canceled.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1725,10 +1756,15 @@ final class Occurrences {
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
 	 * @param string $status        One of the `STATUS_*` constants.
 	 *
-	 * @return bool True when a row was updated, false when the composite key matched nothing.
+	 * @return bool True when a row was updated, false when the composite key
+	 *              matched nothing or the status is not one of the constants.
 	 */
 	public function set_status( int $post_id, string $recurrence_id, string $status ): bool {
 		global $wpdb;
+
+		if ( ! in_array( $status, array( self::STATUS_SCHEDULED, self::STATUS_CANCELED ), true ) ) {
+			return false;
+		}
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
