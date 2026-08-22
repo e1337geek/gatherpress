@@ -1301,6 +1301,7 @@ describe( 'RecurrencePanel', () => {
 			expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
 			expect( lastPersistedBlob().frequency ).toBe( 'daily' );
 		} );
+	} );
 
 	test( 'renders no apply-scope chooser or impact notice while recurrence is off', () => {
 		render( <RecurrencePanel /> );
