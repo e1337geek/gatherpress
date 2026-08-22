@@ -994,6 +994,112 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * The bare-URL resolver answers from one bounded statement rather than
+	 * hydrating a series' scheduled history and filtering it in PHP.
+	 *
+	 * The fixture puts twelve elapsed occurrences ahead of the single upcoming
+	 * one, so the two shapes are distinguishable: an unbounded read hydrates
+	 * thirteen rows and finds its answer at the last of them, while a bounded
+	 * read asks the database for exactly the row it returns. The emitted
+	 * statement is what is pinned, because the identifier the method returns is
+	 * the same either way, which is the point: the read gets cheaper and the
+	 * answer does not move.
+	 *
+	 * @covers ::next_upcoming_recurrence_id
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_recurrence_id_bounds_its_read_in_sql(): void {
+		global $wpdb;
+
+		// Occurrences land every seven days from eighty days ago, so the
+		// thirteenth of them, four days out, is the only upcoming one.
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( -80, 7, 13 );
+		$expected                       = Occurrences::recurrence_id( $anchor_start->modify( '+84 days' ) );
+
+		$resolved = Utility::invoke_hidden_method(
+			Rewrite::get_instance(),
+			'next_upcoming_recurrence_id',
+			array( $post_id )
+		);
+
+		$this->assertSame(
+			$expected,
+			$resolved,
+			'Failed to assert the resolver answers with the series\' only upcoming occurrence.'
+		);
+		$this->assertStringContainsString(
+			'datetime_end_gmt >=',
+			$wpdb->last_query,
+			'Failed to assert the upcoming bound is a SQL predicate rather than a PHP pass over the whole history.'
+		);
+		$this->assertStringContainsString(
+			'LIMIT 1',
+			$wpdb->last_query,
+			'Failed to assert the read stops at the one row the answer needs.'
+		);
+	}
+
+	/**
+	 * The resolver's read names only the requested post, which is what makes
+	 * its `LIMIT 1` safe.
+	 *
+	 * A sibling resolved onto the series by the `gatherpress_series_post_ids`
+	 * filter owns an occurrence that sorts ahead of the requested post's own,
+	 * so a read widened across the series and bounded to one row answers with
+	 * the sibling's occurrence. Fragment semantics says a bare URL resolves
+	 * within the post it names, so the query is scoped to that post rather than
+	 * widened and filtered afterwards.
+	 *
+	 * @covers ::next_upcoming_recurrence_id
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_recurrence_id_scopes_its_read_to_the_requested_post(): void {
+		global $wpdb;
+
+		// The sibling's own occurrence is closer to "now" than this post's, so
+		// it would be the first row of a widened, bounded read.
+		list( $sibling_post_id, )       = $this->create_relative_daily_series( 3, 7, 1 );
+		list( $post_id, $anchor_start ) = $this->create_relative_daily_series( 10, 7, 1 );
+		$expected                       = Occurrences::recurrence_id( $anchor_start );
+
+		$make_siblings = static function (
+			array $post_ids,
+			int $resolved_post_id
+		) use (
+			$post_id,
+			$sibling_post_id
+): array {
+			if ( $resolved_post_id === $post_id ) {
+				return array( $post_id, $sibling_post_id );
+			}
+
+			return $post_ids;
+		};
+		add_filter( 'gatherpress_series_post_ids', $make_siblings, 10, 2 );
+
+		$resolved = Utility::invoke_hidden_method(
+			Rewrite::get_instance(),
+			'next_upcoming_recurrence_id',
+			array( $post_id )
+		);
+
+		remove_filter( 'gatherpress_series_post_ids', $make_siblings, 10 );
+
+		$this->assertSame(
+			$expected,
+			$resolved,
+			'Failed to assert the resolver answers with the requested post\'s own next occurrence.'
+		);
+		$this->assertStringContainsString(
+			sprintf( 'series_post_id IN ( %d )', $post_id ),
+			$wpdb->last_query,
+			'Failed to assert the read names the requested post alone, which is what makes the bound safe.'
+		);
+	}
+
+	/**
 	 * Coverage for `maybe_resolve_bare_series` when the series has no
 	 * upcoming occurrence left. The query var must stay unset so the post
 	 * renders exactly as a non-recurring event would.
