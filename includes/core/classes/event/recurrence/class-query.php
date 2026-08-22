@@ -711,8 +711,11 @@ final class Query {
 
 		$pieces['join'] .= $this->occurrence_join();
 
-		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table, self::OCCURRENCE_ALIAS )
-			. $this->occurrence_scope_predicate();
+		$pieces['where'] = $this->coalesce_event_columns(
+			(string) $pieces['where'],
+			$events_table,
+			self::OCCURRENCE_ALIAS
+		) . $this->occurrence_scope_predicate();
 
 		$pieces['orderby'] = $this->aggregate_orderby(
 			$this->coalesce_event_columns( (string) $pieces['orderby'], $events_table, self::OCCURRENCE_ALIAS )
