@@ -2193,6 +2193,16 @@ final class Occurrences {
 	 * local starts sharing one GMT instant across a DST fold, keeping the
 	 * relation at one row per post.
 	 *
+	 * One engine caveat, because it does not read off the SQL. Measured on
+	 * MariaDB 12 and MySQL 8 over a 10,000-row occurrence table across 200
+	 * series, the optimizer splits this derived table and drives it per post
+	 * through the primary key, so an `edit.php` load does not aggregate every
+	 * occurrence row; forcing `condition_pushdown_for_derived=off` did not
+	 * change that plan. MySQL 5.7 has neither lateral derived tables nor
+	 * derived condition pushdown and is expected to materialize the whole
+	 * grouped aggregate instead. That half is reasoned rather than measured,
+	 * and WordPress still lists 5.7 as supported.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param string $now_gmt GMT `Y-m-d H:i:s` instant separating unfinished from finished.

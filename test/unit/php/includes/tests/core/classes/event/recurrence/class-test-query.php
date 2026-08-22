@@ -2012,6 +2012,93 @@ class Test_Query extends Base {
 	}
 
 	/**
+	 * The filter is a no-op for a query that is not for an event post type.
+	 *
+	 * N9: the guard is one statement, so line coverage reports it as covered
+	 * with most of its arms never evaluated. Every other arm is deliberately
+	 * satisfied here, so the post-type check is the only thing that can return
+	 * these clauses unchanged: the screen is an event `edit.php` screen, the
+	 * fixture stores a projected series so the flag is on and the table
+	 * exists, the clause carries the anchor ordering, and nothing is joined.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_for_a_non_event_query(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query();
+		$query->set( 'post_type', 'post' );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'where'   => '',
+			'join'    => '',
+		);
+
+		$filtered = Query::get_instance()->adjust_admin_occurrence_sorting( $pieces, $query );
+
+		set_current_screen( 'front' );
+
+		$this->assertSame(
+			$pieces,
+			$filtered,
+			'Failed to assert a query for an unsupported post type is left alone.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op on a blog that does not carry the occurrence table.
+	 *
+	 * N9, and the multisite contract `expand_event_clauses()` states at
+	 * length: a blog joined to a network after the table was created has the
+	 * flag but not the table, and joining a relation over a table that does
+	 * not exist would empty the list. The memoized probe answer is forced, so
+	 * this arm is the only one that can act.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_without_the_occurrence_table(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query();
+		$query->set( 'post_type', Event::POST_TYPE );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'where'   => '',
+			'join'    => '',
+		);
+
+		$occurrences = Occurrences::get_instance();
+		$table       = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		Utility::set_and_get_hidden_property( $occurrences, 'table_exists', array( $table => false ) );
+
+		$filtered = Query::get_instance()->adjust_admin_occurrence_sorting( $pieces, $query );
+
+		$occurrences->forget_table_exists();
+		set_current_screen( 'front' );
+
+		$this->assertSame(
+			$pieces,
+			$filtered,
+			'Failed to assert a blog without the occurrence table joins no relation.'
+		);
+	}
+
+	/**
 	 * Coverage for both renderings one anchor column can appear under.
 	 *
 	 * `Event\Query` writes the ORDER BY column unquoted and the WHERE column
