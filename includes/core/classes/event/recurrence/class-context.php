@@ -524,10 +524,10 @@ final class Context {
 	 * row-stamp-over-request precedence `metadata()` and `permalink()` use,
 	 * so the occurrence whose status is inspected is the one the current
 	 * content actually belongs to. Comparing only the request's occurrence
-	 * against `get_the_ID()` was a measured defect: on a canceled
+	 * against `get_the_ID()` would misplace the notice: on a canceled
 	 * occurrence's own page, an occurrence-expanded Query Loop over the same
-	 * series shares the outer post ID on every row, and every scheduled row
-	 * rendered the outer request's notice. A loop row resolves to its own
+	 * series shares the outer post ID on every row, so every scheduled row
+	 * would render the outer request's notice. A loop row resolves to its own
 	 * stamped occurrence, which `loop_occurrence()` marks scheduled, so only
 	 * the canceled occurrence's own content carries the notice.
 	 *

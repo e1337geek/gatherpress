@@ -306,9 +306,9 @@ final class Rewrite {
 	 *
 	 * ## Bare-URL contract: fragment semantics, not logical-series semantics
 	 *
-	 * This is the contract the rest of this PR is built on, stated here because
-	 * it is about to matter and because completing it is not this layer's to
-	 * make. **A bare URL resolves within the fragment it names, never across
+	 * This is the contract the occurrence front end is built on, stated here
+	 * because it is about to matter and because completing it is not this
+	 * layer's to make. **A bare URL resolves within the fragment it names, never across
 	 * the logical series.**
 	 *
 	 * Concretely: `next_upcoming_recurrence_id()` widens through
@@ -320,7 +320,7 @@ final class Rewrite {
 	 * makes a series span several posts, and the narrowing is what decides the
 	 * behavior then:
 	 *
-	 * - **Fragment semantics (what this PR implements).** `/{slug-of-piece-A}/`
+	 * - **Fragment semantics (what this class implements).** `/{slug-of-piece-A}/`
 	 *   resolves to A's own next upcoming occurrence. Once A's occurrences are
 	 *   all in the past, A's bare URL resolves to nothing and renders the post
 	 *   at its anchor, even though the logical series continues in piece B.
@@ -329,12 +329,12 @@ final class Rewrite {
 	 *   it lives, and therefore emit a canonical URL under a different post's
 	 *   slug than the one requested.
 	 *
-	 * Fragment semantics is the correct choice for *this* PR and is not a
-	 * placeholder: nothing in this stack can produce a second fragment yet, so
+	 * Fragment semantics is the correct choice today and is not a
+	 * placeholder: nothing in the plugin can produce a second fragment yet, so
 	 * the two are indistinguishable at runtime, and the narrower rule is the
 	 * one that cannot silently redirect a request to a post the visitor did not
-	 * ask for. Two invariants this PR does guarantee, which later work on the
-	 * split must preserve:
+	 * ask for. Two invariants this class does guarantee, which any future
+	 * split implementation must preserve:
 	 *
 	 * 1. A pre-split occurrence URL keeps resolving to the same occurrence
 	 *    after the split, whichever fragment ends up owning that row.
@@ -342,8 +342,9 @@ final class Rewrite {
 	 *    so the canonical URL a bare request produces always sits under the
 	 *    requested post's slug.
 	 *
-	 * **Later work owns the completion**, since it depends on the split
-	 * orchestration. What it has to decide and cover is: whether a lapsed
+	 * **Completing the contract belongs to the split feature itself**, since
+	 * the answers depend on how a split is orchestrated. That work has to
+	 * decide and cover: whether a lapsed
 	 * fragment's bare URL forwards to the live fragment or stays put; if it forwards, whether that
 	 * is a resolution or a `301` and what `rel="canonical"` then says; and
 	 * which post a logical series' "the series' URL" means for calendar

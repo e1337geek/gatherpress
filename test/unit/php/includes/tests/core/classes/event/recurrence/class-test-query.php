@@ -1266,7 +1266,7 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for identity travelling on clones rather than on the objects WordPress built.
+	 * Coverage for identity traveling on clones rather than on the objects WordPress built.
 	 *
 	 * Mutating the objects core created would leave `$unfiltered_posts` holding
 	 * recurrence-stamped posts, which is what the "do not poison the post

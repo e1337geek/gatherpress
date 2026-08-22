@@ -25,7 +25,8 @@
  * - Only queries carrying an upcoming/past bucket are expanded, because only
  *   those have the events-table join `COALESCE()` falls back to. A plain Query
  *   Loop over an event post type therefore still renders one entry per series,
- *   at its anchor date. That is an MVP limitation of this task.
+ *   at its anchor date. That is a known limit of the initial recurrence
+ *   release.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -377,7 +378,8 @@ final class Query {
 		// `COALESCE()` to fall back to. A plain Query Loop over an event post
 		// type sets no upcoming/past bucket, so it gets no events join and is
 		// not expanded: it shows one entry per series, at the series anchor
-		// date. That is a known MVP limitation of this task, not an oversight.
+		// date. That is a known limit of the initial recurrence release, not
+		// an oversight.
 		//
 		// Arm 5 is the multisite contract, and it has to be a positive check
 		// rather than error handling downstream. `$wpdb` swallows a

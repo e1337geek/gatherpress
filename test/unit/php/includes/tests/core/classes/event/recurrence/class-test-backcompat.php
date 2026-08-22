@@ -348,19 +348,16 @@ class Test_Backcompat extends Base {
 	 * request carrying a well-formed occurrence segment for a plain,
 	 * non-recurring event.
 	 *
-	 * KNOWN DEFECT (flagged, not fixed, since this is a test-only task): unlike the
-	 * bare-URL branch above, `Rewrite::parse_request()`'s occurrence-segment
-	 * branch carries no `Query::site_has_recurring_events()` guard at all. It
-	 * unconditionally calls `Occurrences::get()`, which queries the occurrence
-	 * table directly, the moment `resolve_post_id_from_query_vars()` resolves a
-	 * post. It does resolve one for *any* post of a `gatherpress-event-date`
-	 * post type, recurring or not, because the occurrence rewrite rule itself
-	 * is registered unconditionally in `Rewrite::add_rewrite_rules()`. On a
-	 * site with zero recurring events, a single crafted or stale
-	 * `/{event}/{slug}/{Ymd\THis}/` request against any real event slug still
-	 * pays an occurrence-table query. This assertion is expected to FAIL
-	 * against the current tree; see this task's final report for full
-	 * reproduction and the exact query captured.
+	 * The occurrence rewrite rule is registered unconditionally in
+	 * `Rewrite::add_rewrite_rules()`, so
+	 * `resolve_post_id_from_query_vars()` resolves a post for *any*
+	 * `gatherpress-event-date` post type, recurring or not, and the
+	 * occurrence-segment branch would then call `Occurrences::get()`, which
+	 * queries the occurrence table directly. The method-level
+	 * `Query::site_has_recurring_events()` guard at the top of
+	 * `Rewrite::parse_request()` is what keeps a crafted or stale
+	 * `/{event}/{slug}/{Ymd\THis}/` request against a real event slug from
+	 * paying an occurrence-table query on a site with zero recurring events.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
 	 *
@@ -387,7 +384,7 @@ class Test_Backcompat extends Base {
 			array(),
 			$this->queries_touching( $sql, $this->occurrence_table() ),
 			'Failed to assert visiting a well-formed occurrence URL for a non-recurring event issues no query'
-				. ' against the occurrence table. This currently fails: see this task\'s final report.'
+				. ' against the occurrence table.'
 		);
 	}
 

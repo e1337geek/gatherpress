@@ -1711,7 +1711,7 @@ class Test_Context extends Base {
 	/**
 	 * The unmodified event-date block renders the occurrence's date.
 	 *
-	 * No block file is modified anywhere in this task. The block is rendered
+	 * The recurrence feature modifies no block files. The block is rendered
 	 * through `do_blocks()` on a real occurrence request, so what this asserts
 	 * is the production read path end to end.
 	 *
