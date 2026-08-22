@@ -409,7 +409,7 @@ class Test_Split_Subscription extends Base {
 		Occurrences::get_instance()->set_status(
 			$forward,
 			$this->identifiers[3],
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		$after_cancel = $this->body_for( $url );

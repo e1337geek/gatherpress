@@ -1561,7 +1561,7 @@ class Test_Split_Continuity extends Base {
 		Occurrences::get_instance()->set_status(
 			$origin_id,
 			$this->identifiers[3],
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		wp_set_current_user( 0 );

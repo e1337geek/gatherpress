@@ -358,7 +358,7 @@ class Test_Splitter extends Base {
 	public function test_split_recycles_occurrence_rows_rather_than_regenerating_them(): void {
 		$origin_id = $this->create_and_project();
 
-		Occurrences::get_instance()->set_status( $origin_id, '20260929T180000', Occurrences::STATUS_CANCELLED );
+		Occurrences::get_instance()->set_status( $origin_id, '20260929T180000', Occurrences::STATUS_CANCELED );
 
 		$comment_id = $this->rsvp_on( $origin_id, '20261001T180000' );
 		$before     = get_term_by(
@@ -375,7 +375,7 @@ class Test_Splitter extends Base {
 		$moved = Occurrences::get_instance()->get( $forward, '20260929T180000' );
 
 		$this->assertSame(
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			(string) $moved['status'],
 			'Failed to assert a canceled occurrence stayed canceled across the split.'
 		);
@@ -660,10 +660,10 @@ class Test_Splitter extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_a_cancelled_single_occurrence_keeps_its_rule(): void {
+	public function test_a_canceled_single_occurrence_keeps_its_rule(): void {
 		$origin_id = $this->create_and_project();
 
-		Occurrences::get_instance()->set_status( $origin_id, '20260903T180000', Occurrences::STATUS_CANCELLED );
+		Occurrences::get_instance()->set_status( $origin_id, '20260903T180000', Occurrences::STATUS_CANCELED );
 
 		$result = Splitter::get_instance()->split_forward( $origin_id, '20260915T180000' );
 
@@ -677,7 +677,7 @@ class Test_Splitter extends Base {
 			'Failed to assert the origin keeps a one-occurrence rule.'
 		);
 		$this->assertSame(
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			(string) Occurrences::get_instance()->get( $origin_id, '20260903T180000' )['status'],
 			'Failed to assert the cancellation survived. It is the reason the rule was kept.'
 		);
