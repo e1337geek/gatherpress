@@ -1729,6 +1729,136 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * The sibling read behind a bare-URL redirect is bounded, not the row set.
+	 *
+	 * The redirect decision needs exactly one row, the series' earliest
+	 * unfinished occurrence on a readable sibling, so the statement that
+	 * answers it must carry the end-inclusive bound and a `LIMIT 1` rather
+	 * than hydrating every row of the series into PHP. On a five-year daily
+	 * series split a few times, the difference is one row against several
+	 * hundred, paid by every public, unauthenticated hit on a lapsed
+	 * fragment's bare URL.
+	 *
+	 * The total order is asserted alongside the bound: a `LIMIT 1` over an
+	 * ambiguous order is a coin flip, so the statement has to break start
+	 * ties on the row's own composite key.
+	 *
+	 * @covers ::next_upcoming_in_series
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_in_series_reads_one_bounded_limit_one_statement(): void {
+		list( $post_id, $forward, $split_at ) = $this->split_into_a_lapsed_origin();
+
+		global $wpdb;
+
+		// The split memoized this identifier's resolution; the capture below
+		// must see the read a fresh request would pay, not a memo hit.
+		Context::flush_resolved();
+
+		$table      = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$statements = array();
+		$capture    = static function ( $query ) use ( &$statements, $table ) {
+			if ( str_starts_with( $query, 'SELECT' ) && str_contains( $query, $table ) ) {
+				$statements[] = $query;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $capture );
+
+		$identity = Utility::invoke_hidden_method(
+			Rewrite::get_instance(),
+			'next_upcoming_in_series',
+			array( $post_id )
+		);
+
+		remove_filter( 'query', $capture );
+
+		$this->assertNotNull( $identity, 'Fixture setup: the lapsed origin must have a sibling row to follow.' );
+		$this->assertSame(
+			$split_at,
+			$identity->recurrence_id,
+			'The bounded read must still choose the series\' earliest unfinished occurrence.'
+		);
+		$this->assertSame(
+			$forward,
+			$identity->owner_post_id,
+			'The bounded read must still resolve the row\'s owner through the identity seam.'
+		);
+
+		$bounded = array_values(
+			array_filter(
+				$statements,
+				static function ( string $statement ): bool {
+					return str_contains( $statement, 'datetime_end_gmt >=' );
+				}
+			)
+		);
+
+		$this->assertCount(
+			1,
+			$bounded,
+			'Exactly one statement must carry the end-inclusive bound.'
+		);
+		$this->assertStringContainsString(
+			'LIMIT 1',
+			$bounded[0],
+			'The bounded statement must read one row, not the series\' whole row set.'
+		);
+		$this->assertStringContainsString(
+			'ORDER BY datetime_start_gmt ASC, series_post_id ASC, recurrence_id ASC',
+			$bounded[0],
+			'The bounded statement must carry a total order, or its LIMIT 1 is a coin flip on start ties.'
+		);
+
+		foreach ( $statements as $statement ) {
+			$this->assertStringContainsString(
+				'LIMIT 1',
+				$statement,
+				'No occurrence read on this path may hydrate an unbounded row set: ' . $statement
+			);
+		}
+	}
+
+	/**
+	 * A split series with nothing left anywhere follows nowhere.
+	 *
+	 * The arm between "no readable sibling" and "a sibling row to follow":
+	 * the siblings are readable, the bounded read runs, and it matches
+	 * nothing because every row of every fragment has ended. The bare URL
+	 * must render the named post as a lapsed series rather than redirect.
+	 *
+	 * @covers ::next_upcoming_in_series
+	 *
+	 * @return void
+	 */
+	public function test_next_upcoming_in_series_is_null_when_every_sibling_row_has_passed(): void {
+		list( $post_id, $forward ) = $this->split_into_a_lapsed_origin();
+
+		$now = new DateTimeImmutable( current_time( 'mysql', true ), new DateTimeZone( 'UTC' ) );
+
+		foreach ( Occurrences::get_instance()->select_for_series( array( $forward ) ) as $row ) {
+			$this->reschedule_occurrence(
+				$forward,
+				(string) $row['recurrence_id'],
+				$now->modify( '-2 days' ),
+				$now->modify( '-1 day' )
+			);
+		}
+
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				Rewrite::get_instance(),
+				'next_upcoming_in_series',
+				array( $post_id )
+			),
+			'A series whose every row has ended has no occurrence to forward to.'
+		);
+	}
+
+	/**
 	 * A post that no longer exists is readable by nobody.
 	 *
 	 * The arm a live fixture cannot reach: an occurrence row whose owner has
