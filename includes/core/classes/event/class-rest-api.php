@@ -473,11 +473,16 @@ final class Rest_Api {
 	 *
 	 * The RSVP form route inherits `comment_post_ID` from the comment form it
 	 * replaced; every other RSVP route uses `post_id`. The two are mutually
-	 * exclusive per route, so the fallback fires whenever `post_id` is absent
-	 * or names no post rather than only when it is absent: `get_param()` reads
-	 * undeclared parameters too, and a stray `post_id` of zero posted alongside
-	 * the form (a theme's hidden field, a stale embed) must not suppress the
-	 * `comment_post_ID` the route actually declares.
+	 * exclusive per route, and `get_param()` reads undeclared parameters too,
+	 * so a route that declares `comment_post_ID` reads exactly that parameter:
+	 * a stray `post_id` posted alongside the form (a theme's hidden field, a
+	 * stale embed) must neither suppress the declared parameter when it is
+	 * zero nor override it when it is not. The override was the sharper half:
+	 * the form route's viewability gate authorizes the post that
+	 * `comment_post_ID` names, and a smuggled non-zero `post_id` resolved the
+	 * occurrence inside a series that gate never looked at. On every other
+	 * route `post_id` is read as given, with the `comment_post_ID` fallback
+	 * firing whenever `post_id` names no post.
 	 *
 	 * @since 0.36.0
 	 *
@@ -486,6 +491,12 @@ final class Rest_Api {
 	 * @return int The event post ID, or 0 when the request names none.
 	 */
 	private function request_post_id( WP_REST_Request $request ): int {
+		$declared = (array) ( $request->get_attributes()['args'] ?? array() );
+
+		if ( array_key_exists( 'comment_post_ID', $declared ) ) {
+			return (int) $request->get_param( 'comment_post_ID' );
+		}
+
 		$post_id = (int) $request->get_param( 'post_id' );
 
 		return ( 0 === $post_id ) ? (int) $request->get_param( 'comment_post_ID' ) : $post_id;
