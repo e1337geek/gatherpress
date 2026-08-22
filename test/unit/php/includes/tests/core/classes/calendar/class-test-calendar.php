@@ -797,5 +797,10 @@ class Test_Calendar extends Base {
 			$body,
 			'Failed to assert that a non-event request emits no VEVENT.'
 		);
+		$this->assertStringNotContainsString(
+			"\r\n\r\n",
+			$body,
+			'A blank content line violates RFC 5545 section 3.1, and a strict client rejects the whole body.'
+		);
 	}
 }
