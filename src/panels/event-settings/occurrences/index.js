@@ -107,14 +107,36 @@ const OccurrencesPanel = () => {
 			return;
 		}
 
+		// Gutenberg can change the current post without unmounting this
+		// panel. Once that happens, a response still in flight belongs to
+		// the previous post, and applying it would render rows whose Cancel
+		// buttons submit that post's occurrences. The cleanup below retires
+		// this effect run's flag, and both settle handlers check it before
+		// touching state.
+		let active = true;
+
+		// The previous post's rows come down immediately rather than
+		// waiting out the fetch: they must not stay actionable during the
+		// switch.
+		setOccurrences( [] );
+		setLoadError( null );
+
 		apiFetch( {
 			path: `${ EVENT_REST_API }/occurrences?post_id=${ postId }`,
 		} )
 			.then( ( result ) => {
+				if ( ! active ) {
+					return;
+				}
+
 				setOccurrences( normalizeOccurrences( result ) );
 				setLoadError( null );
 			} )
 			.catch( ( error ) => {
+				if ( ! active ) {
+					return;
+				}
+
 				setOccurrences( [] );
 				setLoadError(
 					error?.message ||
@@ -124,6 +146,10 @@ const OccurrencesPanel = () => {
 						),
 				);
 			} );
+
+		return () => {
+			active = false;
+		};
 	}, [ isEventDateSupported, postId, reloadCount ] );
 
 	/**
