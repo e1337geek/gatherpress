@@ -1903,8 +1903,11 @@ class Test_Context extends Base {
 			$calendar->get_ical_event_string(),
 			'Failed to assert that the iCal payload carries the occurrence datetime.'
 		);
+		// The bare datetime token, deliberately without a property name or a
+		// line ending around it: the anchor datetime must not appear anywhere
+		// in the occurrence's component, whatever property would carry it.
 		$this->assertStringNotContainsString(
-			'20260903T180000\r\n',
+			'20260903T180000',
 			$calendar->get_ical_event_string(),
 			'Failed to assert that the iCal payload stopped carrying the series anchor datetime.'
 		);
