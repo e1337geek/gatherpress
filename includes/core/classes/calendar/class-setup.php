@@ -699,7 +699,14 @@ final class Setup {
 			$args[] = $timezones;
 		}
 
-		$args[] = $calendar_data;
+		// Only when there is something to wrap: an empty element becomes a
+		// blank content line, which RFC 5545 section 3.1 does not allow, and
+		// the deliberately empty calendar a non-event request renders would
+		// then be rejected by exactly the strict clients it exists to serve.
+		if ( '' !== $calendar_data ) {
+			$args[] = $calendar_data;
+		}
+
 		$args[] = 'END:VCALENDAR';
 
 		return implode( "\r\n", $args );
