@@ -1054,12 +1054,15 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Coverage on the read path: no recurring events, no query.
+	 * Coverage on the read path: no recurring events, no context read.
 	 *
 	 * `Occurrences::get()` is a raw uncached `$wpdb->get_row()`, so without a
 	 * guard any crawler appending the occurrence query string to an ordinary
 	 * event permalink hits the occurrence table on a site that has never
-	 * authored a recurring event.
+	 * authored a recurring event. The single read this request is allowed is
+	 * `Rewrite::parse_request()`'s deliberately unguarded primary-key
+	 * resolution, which is what keeps a stale occurrence URL 404ing after
+	 * the flag flips off; this class's own guard must add nothing to it.
 	 *
 	 * @covers ::sync
 	 * @covers ::maybe_set_from_request
@@ -1095,9 +1098,9 @@ class Test_Context extends Base {
 		$this->go_to( Context::occurrence_url( $post_id, self::SECOND_ID ) );
 
 		$this->assertSame(
-			0,
+			1,
 			$seen,
-			'Failed to assert that a site with no recurring events never queries the occurrence table.'
+			'Failed to assert the request pays only the rewrite resolver\'s single primary-key read.'
 		);
 		$this->assertNull(
 			Context::get_instance()->current(),

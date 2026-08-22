@@ -352,18 +352,20 @@ class Test_Backcompat extends Base {
 	 * `Rewrite::add_rewrite_rules()`, so
 	 * `resolve_post_id_from_query_vars()` resolves a post for *any*
 	 * `gatherpress-event-date` post type, recurring or not, and the
-	 * occurrence-segment branch would then call `Occurrences::get()`, which
-	 * queries the occurrence table directly. The method-level
-	 * `Query::site_has_recurring_events()` guard at the top of
-	 * `Rewrite::parse_request()` is what keeps a crafted or stale
-	 * `/{event}/{slug}/{Ymd\THis}/` request against a real event slug from
-	 * paying an occurrence-table query on a site with zero recurring events.
+	 * occurrence-segment branch then calls `Occurrences::get()`, which
+	 * queries the occurrence table directly. That branch is deliberately
+	 * unguarded by `Query::site_has_recurring_events()`: it only runs for a
+	 * request already carrying an occurrence identifier, and its one
+	 * primary-key read is what keeps a crafted or stale
+	 * `/{event}/{slug}/{Ymd\THis}/` request 404ing instead of silently
+	 * rendering the event at its anchor date on a site with zero recurring
+	 * events.
 	 *
 	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
 	 *
 	 * @return void
 	 */
-	public function test_parse_request_occurrence_segment_branch_does_not_touch_occurrence_table(): void {
+	public function test_parse_request_occurrence_segment_branch_pays_one_read_and_404s(): void {
 		$post_id = $this->create_event(
 			'2026-09-03 18:00:00',
 			'2026-09-03 20:00:00',
@@ -380,11 +382,16 @@ class Test_Backcompat extends Base {
 			}
 		);
 
-		$this->assertSame(
-			array(),
+		$this->assertCount(
+			1,
 			$this->queries_touching( $sql, $this->occurrence_table() ),
-			'Failed to assert visiting a well-formed occurrence URL for a non-recurring event issues no query'
-				. ' against the occurrence table.'
+			'Failed to assert a well-formed occurrence URL for a non-recurring event pays exactly one'
+				. ' primary-key occurrence read.'
+		);
+		$this->assertTrue(
+			is_404(),
+			'Failed to assert a crafted occurrence URL for a non-recurring event 404s rather than rendering'
+				. ' the event at its anchor date.'
 		);
 	}
 
