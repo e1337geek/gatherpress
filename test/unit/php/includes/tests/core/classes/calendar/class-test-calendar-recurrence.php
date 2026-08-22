@@ -1089,11 +1089,18 @@ class Test_Calendar_Recurrence extends Base {
 	 * produced.
 	 *
 	 * The response cache is namespaced by `Last-Modified`, which has one-second
-	 * resolution. Render, change, render again in the same second and the second
-	 * lookup lands on the key the first render filled, so the change is
-	 * correctly absent from the stored body and correctly reported as fresh.
-	 * Cancelling two dates of a series is one operator action and lands well
-	 * inside a second, so this is the ordinary case rather than a race.
+	 * resolution. Render, change, render again in the same validator second and
+	 * a lookup keyed by the stamp alone lands on the key the first render
+	 * filled, so the change is correctly absent from the stored body and
+	 * correctly reported as fresh. Cancelling two dates of a series is one
+	 * operator action and lands well inside a second, so this is the ordinary
+	 * case rather than a race.
+	 *
+	 * The stored validator is seeded ahead of the wall clock, which is what a
+	 * burst of same-second changes leaves behind. Every stamp below then moves
+	 * on from the stored value rather than from the clock, so a wall-clock
+	 * tick between the renders cannot be what moves the key and the collision
+	 * the test names is arranged by construction rather than won by speed.
 	 *
 	 * @covers \GatherPress\Core\Calendar\Cache::get_versioned_key
 	 * @covers \GatherPress\Core\Calendar\Cache::get_change_count
@@ -1106,23 +1113,29 @@ class Test_Calendar_Recurrence extends Base {
 
 		$this->enable_pretty_permalinks();
 
+		update_option(
+			Calendar_Cache::LAST_MODIFIED_OPTION,
+			gmdate( 'Y-m-d H:i:s', time() + HOUR_IN_SECONDS ),
+			false
+		);
+
 		$url         = $this->series_ical_url( $post_id );
 		$occurrences = Occurrences::get_instance();
 
 		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
 
-		$opened = (int) gmdate( 'U' );
-		$first  = $this->body_for( $url );
+		$first     = $this->body_for( $url );
+		$first_key = Calendar_Cache::get_instance()->get_versioned_key( 'probe' );
 
 		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
 
-		$second = $this->body_for( $url );
-		$closed = (int) gmdate( 'U' );
+		$second     = $this->body_for( $url );
+		$second_key = Calendar_Cache::get_instance()->get_versioned_key( 'probe' );
 
-		$this->assertSame(
-			$opened,
-			$closed,
-			'Both renders and the change between them must land in one second, or the cache key moves anyway.'
+		$this->assertNotSame(
+			$first_key,
+			$second_key,
+			'The second cancellation must move the cache namespace, or the key the first render filled is served.'
 		);
 		$this->assertSame(
 			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 1 ) ) ),
@@ -1154,6 +1167,13 @@ class Test_Calendar_Recurrence extends Base {
 	 * two dates of a series is one loop and lands well inside a second, so this
 	 * is the ordinary case rather than a race.
 	 *
+	 * The stored revision is seeded an hour past the clock, so the `time()`
+	 * arm of the allocation floor stays out of reach for the whole test and a
+	 * wall-clock tick between the two writes cannot be what separates the
+	 * values. Any advance below can then only come from the stored value
+	 * carrying the ordering, which is the property under test, stated without
+	 * racing the suite's own speed against the clock.
+	 *
 	 * @covers \GatherPress\Core\Calendar\Revision::advance
 	 * @covers \GatherPress\Core\Calendar\Revision::current
 	 * @covers \GatherPress\Core\Calendar\Revision::stored
@@ -1168,9 +1188,14 @@ class Test_Calendar_Recurrence extends Base {
 
 		$occurrences = Occurrences::get_instance();
 		$revision    = Revision::get_instance();
-		$before      = $revision->current( $post_id );
 
-		$opened = (int) gmdate( 'U' );
+		update_post_meta(
+			$post_id,
+			Revision::META_KEY,
+			(string) ( ( time() - Revision::EPOCH ) + HOUR_IN_SECONDS )
+		);
+
+		$before = $revision->current( $post_id );
 
 		$occurrences->set_status( $post_id, $this->occurrence_id( 1 ), Occurrences::STATUS_CANCELLED );
 
@@ -1178,14 +1203,8 @@ class Test_Calendar_Recurrence extends Base {
 
 		$occurrences->set_status( $post_id, $this->occurrence_id( 2 ), Occurrences::STATUS_CANCELLED );
 
-		$after  = $revision->current( $post_id );
-		$closed = (int) gmdate( 'U' );
+		$after = $revision->current( $post_id );
 
-		$this->assertSame(
-			$opened,
-			$closed,
-			'Both writes must land in the same second, or this test proves nothing about resolution.'
-		);
 		$this->assertGreaterThan( $before, $middle, 'The first cancellation must advance the revision.' );
 		$this->assertGreaterThan( $middle, $after, 'The second must advance it again, in the same second.' );
 		$this->assertSame(

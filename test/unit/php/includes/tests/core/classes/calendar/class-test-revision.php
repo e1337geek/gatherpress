@@ -115,6 +115,13 @@ class Test_Revision extends Base {
 	 * `post_modified_gmt` is not written by any of the operations that need
 	 * separating, so the stored value has to carry the ordering itself.
 	 *
+	 * The stored revision is seeded an hour past the clock, so the `time()`
+	 * arm of the allocation floor stays out of reach for the whole test
+	 * however many wall-clock seconds the three advances happen to straddle.
+	 * Every increase below can then only come from the stored value carrying
+	 * the ordering, which is the property under test, stated without racing
+	 * the suite's own speed against the clock.
+	 *
 	 * @covers ::advance
 	 * @covers ::current
 	 * @covers ::stored
@@ -124,17 +131,18 @@ class Test_Revision extends Base {
 	public function test_advance_is_strictly_increasing_within_one_second(): void {
 		$post_id  = $this->make_event();
 		$instance = Revision::get_instance();
+		$seed     = ( time() - Revision::EPOCH ) + HOUR_IN_SECONDS;
 
-		$opened = (int) gmdate( 'U' );
+		update_post_meta( $post_id, Revision::META_KEY, (string) $seed );
+
 		$first  = $instance->advance( $post_id );
 		$second = $instance->advance( $post_id );
 		$third  = $instance->advance( $post_id );
-		$closed = (int) gmdate( 'U' );
 
-		$this->assertSame(
-			$opened,
-			$closed,
-			'The three advances must land in one second, or this test proves nothing about resolution.'
+		$this->assertGreaterThan(
+			$seed,
+			$first,
+			'The first advance must move past the seeded value the clock cannot reach.'
 		);
 		$this->assertGreaterThan( $first, $second, 'A second advance in the same second must still be greater.' );
 		$this->assertGreaterThan( $second, $third, 'And a third, for the same reason.' );
