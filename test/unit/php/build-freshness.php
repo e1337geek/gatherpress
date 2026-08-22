@@ -23,8 +23,6 @@
  * @since 0.36.0
  */
 
-// phpcs:disable Squiz.Commenting.FileComment.Missing
-
 /**
  * Find the most recently modified path under a directory.
  *

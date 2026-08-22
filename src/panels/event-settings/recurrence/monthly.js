@@ -13,9 +13,10 @@ import {
  *
  * Switches between the two `Rule::MONTHLY_MODE_*` shapes: a fixed day of the
  * month (e.g. the 15th), or an ordinal weekday (e.g. the last Wednesday).
- * Only the fields for the active mode are rendered, but the caller always
- * receives all four `monthly_*` values through `onChange` partials so the
- * blob it builds carries sane defaults for the inactive mode's fields.
+ * Only the fields for the active mode are rendered, and each `onChange` call
+ * carries exactly one field. The inactive mode's fields keep their defaults
+ * because the panel merges every single-field partial onto a rule that
+ * already holds all four `monthly_*` values.
  *
  * The day-of-month value is handed to `onChange` exactly as the control
  * produced it, without a `Number()` cast: a native number input accepts typed

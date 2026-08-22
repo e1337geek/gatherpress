@@ -518,9 +518,11 @@ test.describe( 'Recurring events', () => {
 				'a well-formed recurrence ID with no matching occurrence row 404s'
 			).toBe( 404 );
 
-			// Beat 4, part three: following the series' own (bare) link, which is
-			// the one every row in the list actually points to, lands on the
-			// next-upcoming occurrence via `Rewrite::maybe_resolve_bare_series()`,
+			// Beat 4, part three: follow the series resource's bare permalink,
+			// separately from the occurrence-specific links the list rows emit
+			// (the rows' own hrefs were asserted above). The bare link lands on
+			// the next-upcoming occurrence via
+			// `Rewrite::maybe_resolve_bare_series()`,
 			// rather than the series' stale anchor date. The anchor
 			// is a Monday and the rule is Tuesday/Thursday, so "the first
 			// occurrence" and "the anchor" are never the same date.
