@@ -607,6 +607,13 @@ final class Query {
 	 *
 	 * @since 0.36.0
 	 *
+	 * PHPMD reads this as an unused private method. It is called once, as
+	 * `array_map( array( $this, 'stamp_occurrence' ), $posts )` in
+	 * `attach_occurrences()`, and PHPMD does not resolve a method named inside
+	 * a callable array.
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
+	 *
 	 * @param WP_Post $post One result row.
 	 *
 	 * @return WP_Post A clone carrying `RESULT_PROPERTY` and `RESULT_DATETIME_PROPERTY`.

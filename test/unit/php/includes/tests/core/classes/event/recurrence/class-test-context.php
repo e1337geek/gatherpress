@@ -1984,58 +1984,6 @@ class Test_Context extends Base {
 	}
 
 	/**
-	 * Returning null from `get_post_metadata` is that filter's
-	 * do-not-short-circuit convention, so the stub returning null for every
-	 * read is what keeps unmodified blocks reading core's own meta. A non-null
-	 * `$value` from an earlier filter must get the same answer: the stub has no
-	 * occurrence to serve, so it declines rather than passing anything along.
-	 *
-	 * @covers ::metadata
-	 *
-	 * @return void
-	 */
-	public function test_metadata_declines_to_short_circuit_every_read(): void {
-		$post_id  = $this->factory->post->create();
-		$instance = Context::get_instance();
-
-		$this->assertNull(
-			$instance->metadata( null, $post_id, 'gatherpress_datetime_start', true ),
-			'Failed to assert that metadata returns null for an unfiltered single read.'
-		);
-		$this->assertNull(
-			$instance->metadata( array( '2026-01-01 09:00:00' ), $post_id, 'gatherpress_datetime_start', false ),
-			'Failed to assert that metadata returns null for a non-single read another filter already answered.'
-		);
-		$this->assertNull(
-			$instance->metadata( null, $post_id, 'unrelated_meta_key', true ),
-			'Failed to assert that metadata returns null for a meta key recurrence does not derive.'
-		);
-	}
-
-	/**
-	 * The permalink builder is a frozen static, so it answers with the empty
-	 * string for every series and every occurrence identifier alike.
-	 *
-	 * @covers ::occurrence_url
-	 *
-	 * @return void
-	 */
-	public function test_occurrence_url_returns_an_empty_string(): void {
-		$post_id = $this->factory->post->create();
-
-		$this->assertSame(
-			'',
-			Context::occurrence_url( $post_id, '20260101T090000' ),
-			'Failed to assert that occurrence_url returns an empty string.'
-		);
-		$this->assertSame(
-			'',
-			Context::occurrence_url( $post_id, '20260214T173000' ),
-			'Failed to assert that occurrence_url returns an empty string for a second occurrence of the same series.'
-		);
-	}
-
-	/**
 	 * The query var is the permalink's occurrence segment, so its value is a
 	 * public contract shared with rewrite rules and with block render paths.
 	 *

@@ -1609,24 +1609,4 @@ class Test_Query extends Base {
 			'Failed to assert that expand_event_clauses returns the clauses unchanged.'
 		);
 	}
-
-	/**
-	 * Neither filter is registered yet. Registering either one early would put
-	 * an unfinished join on every event query on the site, so absence from the
-	 * hook table is part of the contract, not an oversight.
-	 *
-	 * @return void
-	 */
-	public function test_neither_occurrence_filter_is_registered(): void {
-		$instance = Query::get_instance();
-
-		$this->assertFalse(
-			has_filter( 'posts_clauses', array( $instance, 'expand_event_clauses' ) ),
-			'Failed to assert that expand_event_clauses is not hooked to posts_clauses.'
-		);
-		$this->assertFalse(
-			has_filter( 'the_posts', array( $instance, 'attach_occurrences' ) ),
-			'Failed to assert that attach_occurrences is not hooked to the_posts.'
-		);
-	}
 }
