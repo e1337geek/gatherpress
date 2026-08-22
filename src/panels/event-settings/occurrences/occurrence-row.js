@@ -1,7 +1,7 @@
 /**
  * WordPress dependencies
  */
-import { __ } from '@wordpress/i18n';
+import { __, sprintf } from '@wordpress/i18n';
 import { Button } from '@wordpress/components';
 import { dateI18n, getSettings } from '@wordpress/date';
 
@@ -23,6 +23,15 @@ import { dateI18n, getSettings } from '@wordpress/date';
  * render it on; the column is nullable, and an empty value falls back to
  * `dateI18n()`'s own default, the site timezone.
  *
+ * That same formatted date is also the button's accessible name. A series
+ * renders one row per occurrence, so a button named only "Cancel" gives every
+ * destructive action in the list an identical name: a screen reader user
+ * pulling up the button list, or reaching one by voice, has nothing to tell
+ * the September 3rd meetup from the September 17th one. The visible label
+ * stays the first word of the accessible name, which is what keeps a voice
+ * command of "Cancel" a prefix match rather than a mismatch (WCAG 2.5.3,
+ * Label in Name).
+ *
  * @since 0.36.0
  *
  * @param {Object}   props            Component props.
@@ -35,15 +44,30 @@ import { dateI18n, getSettings } from '@wordpress/date';
 const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
 	const isCanceled = 'canceled' === occurrence.status;
 	const startUtc = `${ occurrence.datetime_start_gmt.replace( ' ', 'T' ) }Z`;
+	const formattedDate = dateI18n(
+		getSettings().formats.datetime,
+		startUtc,
+		occurrence.timezone || undefined,
+	);
+	const actionLabel = isCanceled
+		? __( 'Restore', 'gatherpress' )
+		: __( 'Cancel', 'gatherpress' );
+	const actionName = isCanceled
+		? sprintf(
+			/* translators: %s: the occurrence date and time. */
+			__( 'Restore %s', 'gatherpress' ),
+			formattedDate,
+		)
+		: sprintf(
+			/* translators: %s: the occurrence date and time. */
+			__( 'Cancel %s', 'gatherpress' ),
+			formattedDate,
+		);
 
 	return (
 		<div className="gatherpress-occurrence-row">
 			<span className="gatherpress-occurrence-row__date">
-				{ dateI18n(
-					getSettings().formats.datetime,
-					startUtc,
-					occurrence.timezone || undefined,
-				) }
+				{ formattedDate }
 			</span>
 			<span className="gatherpress-occurrence-row__status">
 				{ isCanceled
@@ -55,11 +79,10 @@ const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
 				size="small"
 				isBusy={ isUpdating }
 				disabled={ isUpdating }
+				aria-label={ actionName }
 				onClick={ () => onToggle( occurrence ) }
 			>
-				{ isCanceled
-					? __( 'Restore', 'gatherpress' )
-					: __( 'Cancel', 'gatherpress' ) }
+				{ actionLabel }
 			</Button>
 		</div>
 	);

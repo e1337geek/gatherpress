@@ -10,6 +10,8 @@ import '@testing-library/jest-dom';
  */
 jest.mock( '@wordpress/i18n', () => ( {
 	__: ( str ) => str,
+	sprintf: ( format, ...args ) =>
+		args.reduce( ( carry, arg ) => carry.replace( '%s', arg ), format ),
 } ) );
 
 const mockApiFetch = jest.fn();
@@ -26,12 +28,19 @@ jest.mock( '@wordpress/data', () => ( {
 
 jest.mock( '@wordpress/components', () => ( {
 	PanelRow: ( { children } ) => <div>{ children }</div>,
-	Button: ( { children, onClick, disabled, isBusy } ) => (
+	Button: ( {
+		children,
+		onClick,
+		disabled,
+		isBusy,
+		'aria-label': ariaLabel,
+	} ) => (
 		<button
 			type="button"
 			onClick={ onClick }
 			disabled={ disabled }
 			data-busy={ !! isBusy }
+			aria-label={ ariaLabel }
 		>
 			{ children }
 		</button>

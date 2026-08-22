@@ -1,7 +1,7 @@
 /**
  * External dependencies
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import {
 	afterEach,
 	beforeEach,
@@ -17,15 +17,24 @@ import '@testing-library/jest-dom';
  */
 jest.mock( '@wordpress/i18n', () => ( {
 	__: ( str ) => str,
+	sprintf: ( format, ...args ) =>
+		args.reduce( ( carry, arg ) => carry.replace( '%s', arg ), format ),
 } ) );
 
 jest.mock( '@wordpress/components', () => ( {
-	Button: ( { children, onClick, disabled, isBusy } ) => (
+	Button: ( {
+		children,
+		onClick,
+		disabled,
+		isBusy,
+		'aria-label': ariaLabel,
+	} ) => (
 		<button
 			type="button"
 			onClick={ onClick }
 			disabled={ disabled }
 			data-busy={ !! isBusy }
+			aria-label={ ariaLabel }
 		>
 			{ children }
 		</button>
@@ -166,5 +175,102 @@ describe( 'OccurrenceRow date rendering', () => {
 		expect(
 			screen.getByText( 'August 22, 2026 12:00 pm' ),
 		).toBeInTheDocument();
+	} );
+} );
+
+describe( 'OccurrenceRow action button naming', () => {
+	test( 'names the Cancel button after the occurrence it cancels', () => {
+		render(
+			<OccurrenceRow
+				occurrence={ occurrence() }
+				onToggle={ () => {} }
+				isUpdating={ false }
+			/>,
+		);
+
+		const button = screen.getByRole( 'button' );
+
+		// The accessible name carries the date, and it opens with the
+		// visible label so a spoken "Cancel" still matches the control
+		// (WCAG 2.5.3, Label in Name).
+		expect( button ).toHaveAccessibleName(
+			'Cancel August 21, 2026 6:00 pm',
+		);
+		expect( button ).toHaveTextContent( 'Cancel' );
+	} );
+
+	test( 'names the Restore button after the occurrence it restores', () => {
+		render(
+			<OccurrenceRow
+				occurrence={ occurrence( { status: 'canceled' } ) }
+				onToggle={ () => {} }
+				isUpdating={ false }
+			/>,
+		);
+
+		const button = screen.getByRole( 'button' );
+
+		expect( button ).toHaveAccessibleName(
+			'Restore August 21, 2026 6:00 pm',
+		);
+		expect( button ).toHaveTextContent( 'Restore' );
+	} );
+
+	test( 'gives every row in a series a distinct destructive action name', () => {
+		// The defect this covers only shows up in a list. A series renders
+		// one row per occurrence, and a button named "Cancel" in all of them
+		// leaves a screen reader's button list unable to say which meetup a
+		// given control would cancel.
+		render(
+			<>
+				<OccurrenceRow
+					occurrence={ occurrence() }
+					onToggle={ () => {} }
+					isUpdating={ false }
+				/>
+				<OccurrenceRow
+					occurrence={ occurrence( {
+						recurrence_id: '20260828T180000',
+						datetime_start: '2026-08-28 18:00:00',
+						datetime_start_gmt: '2026-08-28 22:00:00',
+						datetime_end: '2026-08-28 20:00:00',
+						datetime_end_gmt: '2026-08-29 00:00:00',
+					} ) }
+					onToggle={ () => {} }
+					isUpdating={ false }
+				/>
+			</>,
+		);
+
+		const names = screen
+			.getAllByRole( 'button' )
+			.map( ( button ) => button.getAttribute( 'aria-label' ) );
+
+		expect( names ).toEqual( [
+			'Cancel August 21, 2026 6:00 pm',
+			'Cancel August 28, 2026 6:00 pm',
+		] );
+		expect( new Set( names ).size ).toBe( names.length );
+	} );
+
+	test( 'presses the row it names', () => {
+		const onToggle = jest.fn();
+		const row = occurrence();
+
+		render(
+			<OccurrenceRow
+				occurrence={ row }
+				onToggle={ onToggle }
+				isUpdating={ false }
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole( 'button', {
+				name: 'Cancel August 21, 2026 6:00 pm',
+			} ),
+		);
+
+		expect( onToggle ).toHaveBeenCalledWith( row );
 	} );
 } );
