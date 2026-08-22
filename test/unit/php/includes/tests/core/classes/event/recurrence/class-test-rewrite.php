@@ -1070,8 +1070,9 @@ class Test_Rewrite extends Base {
 	 * that has no occurrence segment (i.e. every ordinary event permalink on
 	 * the entire site).
 	 *
-	 * The guard lives on `parse_request()` itself rather than on this branch,
-	 * so its sibling test below covers the occurrence-segment branch.
+	 * The guard wraps the bare-series call inside `parse_request()` and this
+	 * branch alone; its sibling test below pins the occurrence-segment
+	 * branch's deliberate single primary-key read.
 	 *
 	 * @covers ::parse_request
 	 * @covers ::maybe_resolve_bare_series

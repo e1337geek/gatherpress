@@ -247,14 +247,16 @@ final class Rewrite {
 	 * `status` itself.
 	 *
 	 * The "a site with no recurring events pays nothing" guarantee is enforced
-	 * here, at the single entry point, rather than inside each branch. Both
-	 * branches reach the occurrence table: the bare-series
-	 * one through `next_upcoming_recurrence_id()`, the occurrence-segment one
-	 * through `Occurrences::get()`. `Occurrences::get()` is a raw,
-	 * uncached `$wpdb->get_row()`. A guard placed per branch is one a later
-	 * branch can be added without, leaving that branch to query the table on a
-	 * site with no recurring events. Guarding the method instead of the path
-	 * means a new branch inherits it.
+	 * on the bare-series branch alone, because that branch is the one every
+	 * ordinary request falls through to. The occurrence-segment branch is
+	 * deliberately unguarded: it only runs for a request already carrying an
+	 * occurrence identifier, and its one primary-key `Occurrences::get()`
+	 * read is the price of the miss invariant above surviving the site-wide
+	 * flag. A guard at the method entry was tried first and broke that
+	 * invariant the moment `refresh_has_recurring_events()` wrote `'0'`: the
+	 * rewrite rule still matched, the guard returned before the miss could
+	 * 404, and every previously shared occurrence URL rendered the series at
+	 * its anchor date with a `200`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -263,12 +265,10 @@ final class Rewrite {
 	 * @return void
 	 */
 	public function parse_request( WP $wp ): void {
-		if ( ! Query::site_has_recurring_events() ) {
-			return;
-		}
-
 		if ( ! isset( $wp->query_vars[ Context::QUERY_VAR ] ) || '' === $wp->query_vars[ Context::QUERY_VAR ] ) {
-			$this->maybe_resolve_bare_series( $wp );
+			if ( Query::site_has_recurring_events() ) {
+				$this->maybe_resolve_bare_series( $wp );
+			}
 
 			return;
 		}
@@ -351,12 +351,11 @@ final class Rewrite {
 	 * subscriptions and revisions once more than one post can answer to it. The
 	 * narrowing comparison below is the single line those decisions land on.
 	 *
-	 * The no-recurring-events guard is handled by `parse_request()` before this
-	 * method is reached, so the `get_page_by_path()` lookup below is never paid
-	 * on a site with no recurring events. The guard deliberately does not live here: this is the
-	 * branch every non-occurrence request falls through to, and guarding a
-	 * branch rather than the entry point leaves every sibling branch to
-	 * remember the guard for itself.
+	 * The no-recurring-events guard wraps this method's call inside
+	 * `parse_request()`, so the `get_page_by_path()` lookup below is never
+	 * paid on a site with no recurring events. It guards this branch alone:
+	 * the occurrence-segment branch runs unguarded on purpose, so a stale
+	 * link keeps 404ing after the flag flips off.
 	 *
 	 * @since 0.36.0
 	 *
