@@ -261,6 +261,31 @@ final class Form {
 		$identity = $this->posted_occurrence( $post_id );
 
 		if ( null !== $identity ) {
+			// Step 2 of resolve-authorize-use, mirroring the REST twin in
+			// `Rest_Api::handle_rsvp_form_submission()`: the response is written
+			// against the post that owns the occurrence, so that owner must pass
+			// the same viewability gate `wp-comments-post.php` already ran
+			// against the named post. Deliberately viewability only, keeping the
+			// two paths on one contract. `comments_open()` is not re-run against
+			// the owner because this path force-opens comments for RSVP
+			// submissions and the real write gates, `Rsvp::is_enabled()` and
+			// `allows_open_rsvp()`, run against the owner below.
+			// `post_password_required()` is not re-run either: a password gates
+			// reading content, the REST twin accepts the same submission without
+			// it, and core keeps checking it against the named post. The refusal
+			// is the exact refusal a fabricated identifier gets, so it discloses
+			// nothing about the unviewable owner's schedule.
+			if (
+				$identity->owner_post_id !== $post_id
+				&& ! Event::is_viewable( $identity->owner_post_id )
+			) {
+				wp_die(
+					esc_html__( 'The requested occurrence no longer exists.', 'gatherpress' ),
+					esc_html__( 'Invalid Occurrence', 'gatherpress' ),
+					400
+				);
+			}
+
 			// The response is stored on the post that owns the occurrence.
 			// Identical to the posted post on every unsplit series, and
 			// deliberately not identical once a forward split has moved the
