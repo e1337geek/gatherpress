@@ -44,6 +44,19 @@ final class Rsvp_Occurrence {
 	 */
 	const TAXONOMY = '_gatherpress_occurrence';
 
+	/**
+	 * Class constructor.
+	 *
+	 * Protected, so the singleton contract is structural rather than
+	 * conventional: the class is reached through `get_instance()` and
+	 * external construction fails instead of quietly minting a second
+	 * instance.
+	 *
+	 * @since 0.36.0
+	 */
+	protected function __construct() {
+	}
+
 	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Build the term slug for one occurrence.

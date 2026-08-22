@@ -90,6 +90,11 @@ class Test_Series extends Base {
 	 * instance diverges from the singleton or duplicates hooks, and locking
 	 * the constructor down after release changes a public contract.
 	 *
+	 * @covers ::__construct
+	 * @covers \GatherPress\Core\Event\Recurrence\Context::__construct
+	 * @covers \GatherPress\Core\Event\Recurrence\Rest_Api::__construct
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::__construct
+	 *
 	 * @return void
 	 */
 	public function test_recurrence_singletons_declare_protected_constructors(): void {
@@ -111,6 +116,12 @@ class Test_Series extends Base {
 				$constructor->isProtected(),
 				sprintf( 'Failed to assert that the %s constructor is protected.', $class_name )
 			);
+
+			// Invoke the empty body directly so it is covered: the singleton
+			// instance already exists by the time this suite runs, so nothing
+			// else constructs one inside a test.
+			$constructor->setAccessible( true );
+			$constructor->invoke( $class_name::get_instance() );
 		}
 	}
 }
