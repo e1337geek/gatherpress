@@ -2157,7 +2157,6 @@ class Test_Query extends Base {
 			'Failed to assert a clause ordering on another posts-table column is not mistaken for one.'
 		);
 	}
-
 	/**
 	 * The results filter stamps nothing yet, and it has to leave both result
 	 * shapes alone: the plugin's own read API asks for IDs, while a template
