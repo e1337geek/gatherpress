@@ -107,6 +107,22 @@ final class Timezone_Component {
 	private const OPEN_ENDED_HORIZON_YEARS = 75;
 
 	/**
+	 * The properties whose values may carry a date-time.
+	 *
+	 * `DTSTART`, `DTEND`, `EXDATE`, `RDATE` and `RECURRENCE-ID` carry the
+	 * instants a client resolves against an observance; `RRULE` carries at
+	 * most an `UNTIL` bound. Everything else in a body is either structural
+	 * or author-supplied text, and author text must never be an input to the
+	 * definition window: a date-time-shaped token in a post title otherwise
+	 * inflates every public feed the event appears in.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @var string
+	 */
+	private const DATE_BEARING_PROPERTIES = 'DTSTART|DTEND|EXDATE|RDATE|RECURRENCE-ID|RRULE';
+
+	/**
 	 * Rendered definitions, keyed by identifier and the range they were built for.
 	 *
 	 * A feed commonly carries many events in one zone, and the transition list
@@ -158,18 +174,24 @@ final class Timezone_Component {
 	/**
 	 * The span of instants an assembled body refers to.
 	 *
-	 * Every date-time value in the body counts, whatever property carries it:
-	 * a `DTSTART`, the `RECURRENCE-ID` of a single-occurrence download, an
+	 * Every date-time value a date-bearing property carries counts: a
+	 * `DTSTART`, the `RECURRENCE-ID` of a single-occurrence download, an
 	 * `EXDATE` exclusion, and the `UNTIL` bound of a rule are all moments a
 	 * client has to resolve against an observance. They are read as UTC
 	 * regardless of the `TZID` qualifying them, which is wrong by at most a
 	 * day's offset and irrelevant at the scale the window is measured in.
+	 * Values are read only off content lines of those properties, anchored to
+	 * the line start, so `SUMMARY`, `LOCATION`, `URL` and `DESCRIPTION` text
+	 * is never an input to the window.
 	 *
-	 * Two floors are applied. The span always contains the present, so a feed
-	 * of purely historical events still defines the zone a client is reading it
-	 * in; and a rule with neither `UNTIL` nor `COUNT` has no last instant, so it
-	 * extends the span to the open-ended horizon rather than ending at whatever
-	 * concrete date happened to be written next to it.
+	 * Two floors and a ceiling are applied. The span always contains the
+	 * present, so a feed of purely historical events still defines the zone a
+	 * client is reading it in; a rule with neither `UNTIL` nor `COUNT` has no
+	 * last instant, so it extends the span to the open-ended horizon rather
+	 * than ending at whatever concrete date happened to be written next to
+	 * it; and no value, however far ahead, pushes the span past that same
+	 * horizon, because past it the tz database only extrapolates the terminal
+	 * policy the rule detection already collapses.
 	 *
 	 * @since 0.36.0
 	 *
@@ -180,23 +202,37 @@ final class Timezone_Component {
 	private function range_of( string $body ): array {
 		$now = time();
 
-		preg_match_all( '/(\d{8})T(\d{6})/', $body, $moments, PREG_SET_ORDER );
+		// Unfold first, so a value continued across folded lines reads as one
+		// content line for the anchored scan below.
+		$unfolded = str_replace( array( "\r\n ", "\r\n\t" ), '', $body );
+
+		preg_match_all(
+			'/^(?:' . self::DATE_BEARING_PROPERTIES . ')[^:\r\n]*:([^\r\n]*)/m',
+			$unfolded,
+			$lines
+		);
 
 		$instants = array( $now );
 
-		foreach ( $moments as $moment ) {
-			$instant = strtotime( $moment[1] . 'T' . $moment[2] . 'Z' );
+		foreach ( $lines[1] as $value ) {
+			preg_match_all( '/(\d{8})T(\d{6})/', $value, $moments, PREG_SET_ORDER );
 
-			if ( false !== $instant ) {
-				$instants[] = $instant;
+			foreach ( $moments as $moment ) {
+				$instant = strtotime( $moment[1] . 'T' . $moment[2] . 'Z' );
+
+				if ( false !== $instant ) {
+					$instants[] = $instant;
+				}
 			}
 		}
 
-		if ( $this->has_open_ended_rule( $body ) ) {
-			$instants[] = $now + ( self::OPEN_ENDED_HORIZON_YEARS * YEAR_IN_SECONDS );
+		$horizon = $now + ( self::OPEN_ENDED_HORIZON_YEARS * YEAR_IN_SECONDS );
+
+		if ( $this->has_open_ended_rule( $unfolded ) ) {
+			$instants[] = $horizon;
 		}
 
-		return array( min( $instants ), max( $instants ) );
+		return array( min( $instants ), min( max( $instants ), $horizon ) );
 	}
 
 	/**
