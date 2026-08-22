@@ -795,18 +795,18 @@ class Test_Context extends Base {
 
 	/**
 	 * A canceled occurrence's rendered content carries a notice, not
-	 * just a resolving URL. `Test_Rewrite::test_cancelled_occurrence_url_resolves_rather_than_404()`
+	 * just a resolving URL. `Test_Rewrite::test_canceled_occurrence_url_resolves_rather_than_404()`
 	 * already pins the "resolves, not 404" half; this pins the "and says so" half.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrence_content_carries_a_notice(): void {
+	public function test_canceled_occurrence_content_carries_a_notice(): void {
 		$post_id = $this->create_and_project();
 
 		$this->assertTrue(
-			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
+			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELED ),
 			'Fixture setup: set_status() should find the freshly projected row.'
 		);
 
@@ -828,7 +828,7 @@ class Test_Context extends Base {
 	/**
 	 * A scheduled (non-canceled) occurrence's content carries no notice.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 *
 	 * @return void
 	 */
@@ -851,7 +851,7 @@ class Test_Context extends Base {
 	/**
 	 * Outside occurrence context entirely, content is untouched.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 *
 	 * @return void
 	 */
@@ -873,7 +873,7 @@ class Test_Context extends Base {
 	 * inherit that notice, matching how `metadata()` scopes substitution to
 	 * the post the context belongs to, not to whatever post a loop reaches.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 *
 	 * @return void
 	 */
@@ -882,7 +882,7 @@ class Test_Context extends Base {
 		$sibling = $this->create_and_project();
 
 		$this->assertTrue(
-			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELLED ),
+			Occurrences::get_instance()->set_status( $post_id, self::SECOND_ID, Occurrences::STATUS_CANCELED ),
 			'Fixture setup: set_status() should find the freshly projected row.'
 		);
 

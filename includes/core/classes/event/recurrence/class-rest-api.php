@@ -167,7 +167,7 @@ final class Rest_Api {
 					'status'        => array(
 						'required' => true,
 						'type'     => 'string',
-						'enum'     => array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELLED ),
+						'enum'     => array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELED ),
 					),
 				),
 			),

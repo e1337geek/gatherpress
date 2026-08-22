@@ -845,10 +845,10 @@ test.describe( 'Recurring events', () => {
 
 			// Half two: its own URL still resolves. Somebody holding a link to
 			// the canceled date has to be *told*, not 404ed and left guessing.
-			const cancelledUrl =
+			const canceledUrl =
 				`${ seriesLink.replace( /\/$/, '' ) }/` +
 				`${ toRecurrenceId( expected[ cancelIndex ], '180000' ) }/`;
-			const response = await page.goto( cancelledUrl );
+			const response = await page.goto( canceledUrl );
 			await page.waitForLoadState( 'load' );
 
 			expect(
@@ -858,7 +858,7 @@ test.describe( 'Recurring events', () => {
 
 			// Half three: the page says so, on the occurrence's own date.
 			await expect(
-				page.locator( '.gatherpress-occurrence-cancelled-notice' ),
+				page.locator( '.gatherpress-occurrence-canceled-notice' ),
 				'the canceled occurrence says it was canceled'
 			).toHaveText( 'This occurrence has been canceled.' );
 
@@ -877,7 +877,7 @@ test.describe( 'Recurring events', () => {
 			await page.waitForLoadState( 'load' );
 
 			await expect(
-				page.locator( '.gatherpress-occurrence-cancelled-notice' ),
+				page.locator( '.gatherpress-occurrence-canceled-notice' ),
 				'a scheduled sibling occurrence carries no cancellation notice'
 			).toHaveCount( 0 );
 		} finally {

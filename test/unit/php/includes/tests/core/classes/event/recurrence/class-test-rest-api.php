@@ -289,7 +289,7 @@ class Test_Rest_Api extends Base {
 			$routes[1]['args']['permission_callback']
 		);
 		$this->assertSame(
-			array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELLED ),
+			array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELED ),
 			$routes[1]['args']['args']['status']['enum']
 		);
 	}
@@ -361,7 +361,7 @@ class Test_Rest_Api extends Base {
 		$editor = $this->factory->user->create( array( 'role' => 'editor' ) );
 		wp_set_current_user( $editor );
 
-		$request = $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED );
+		$request = $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED );
 		$this->assertTrue(
 			$instance->has_edit_permission( $request ),
 			'An editor may edit any post, including this one.'
@@ -388,7 +388,7 @@ class Test_Rest_Api extends Base {
 		$subscriber = $this->factory->user->create( array( 'role' => 'subscriber' ) );
 		wp_set_current_user( $subscriber );
 
-		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 
 		$this->assertSame( 403, $response->get_status() );
 
@@ -425,7 +425,7 @@ class Test_Rest_Api extends Base {
 		$wp_rest_auth_cookie        = true;
 		$_SERVER['HTTP_X_WP_NONCE'] = 'not-a-real-nonce';
 
-		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 
 		$this->assertSame( 403, $response->get_status() );
 		$this->assertSame( 'rest_cookie_invalid_nonce', $response->get_data()['code'] );
@@ -459,7 +459,7 @@ class Test_Rest_Api extends Base {
 		wp_set_current_user( $admin );
 
 		// Post A's ID, but Post B's recurrence ID.
-		$response = $this->dispatch( $this->build_request( $post_a, $recurrence_b, Occurrences::STATUS_CANCELLED ) );
+		$response = $this->dispatch( $this->build_request( $post_a, $recurrence_b, Occurrences::STATUS_CANCELED ) );
 
 		$this->assertSame(
 			404,
@@ -498,7 +498,7 @@ class Test_Rest_Api extends Base {
 		wp_set_current_user( $admin );
 
 		$response = $this->dispatch(
-			$this->build_request( $post_id, '20990101T000000', Occurrences::STATUS_CANCELLED )
+			$this->build_request( $post_id, '20990101T000000', Occurrences::STATUS_CANCELED )
 		);
 
 		$this->assertSame( 404, $response->get_status() );
@@ -521,10 +521,10 @@ class Test_Rest_Api extends Base {
 		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
 		wp_set_current_user( $admin );
 
-		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 
 		$this->assertSame( 200, $response->get_status() );
-		$this->assertSame( Occurrences::STATUS_CANCELLED, $response->get_data()['status'] );
+		$this->assertSame( Occurrences::STATUS_CANCELED, $response->get_data()['status'] );
 
 		$entries = $this->run_upcoming_query_entries();
 
@@ -548,7 +548,7 @@ class Test_Rest_Api extends Base {
 		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
 		wp_set_current_user( $admin );
 
-		$this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 		$this->assertNotContains( $post_id . '|' . $recurrence_id, $this->run_upcoming_query_entries() );
 
 		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_SCHEDULED ) );
@@ -579,7 +579,7 @@ class Test_Rest_Api extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrence_retains_its_rsvps(): void {
+	public function test_canceled_occurrence_retains_its_rsvps(): void {
 		list( $post_id, $recurrence_id ) = $this->create_event_with_occurrence();
 
 		$event = new Event( $post_id );
@@ -597,7 +597,7 @@ class Test_Rest_Api extends Base {
 		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
 		wp_set_current_user( $admin );
 
-		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 
 		$this->assertSame( 200, $response->get_status(), 'Fixture assumption: the cancellation itself must succeed.' );
 
@@ -628,7 +628,7 @@ class Test_Rest_Api extends Base {
 		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
 		wp_set_current_user( $admin );
 
-		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$response = $this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 		$this->assertSame( 200, $response->get_status() );
 
 		// Re-save the rule so it still produces this exact date.
@@ -637,7 +637,7 @@ class Test_Rest_Api extends Base {
 		$row = Occurrences::get_instance()->get( $post_id, $recurrence_id );
 
 		$this->assertSame(
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			$row['status'],
 			'Re-projecting the rule must not clear a cancellation.'
 		);
@@ -673,13 +673,13 @@ class Test_Rest_Api extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_occurrences_route_lists_upcoming_rows_including_cancelled(): void {
+	public function test_occurrences_route_lists_upcoming_rows_including_canceled(): void {
 		list( $post_id, $recurrence_id ) = $this->create_event_with_occurrence();
 
 		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
 		wp_set_current_user( $admin );
 
-		$this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED ) );
+		$this->dispatch( $this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED ) );
 
 		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
 		$request->set_param( 'post_id', $post_id );
@@ -694,7 +694,7 @@ class Test_Rest_Api extends Base {
 		$this->assertContains( $recurrence_id, $recurrence_ids );
 
 		$index = array_search( $recurrence_id, $recurrence_ids, true );
-		$this->assertSame( Occurrences::STATUS_CANCELLED, $data[ $index ]['status'] );
+		$this->assertSame( Occurrences::STATUS_CANCELED, $data[ $index ]['status'] );
 	}
 
 	/**
@@ -745,7 +745,7 @@ class Test_Rest_Api extends Base {
 		add_filter( 'query', $racer );
 
 		$response = $this->dispatch(
-			$this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELLED )
+			$this->build_request( $post_id, $recurrence_id, Occurrences::STATUS_CANCELED )
 		);
 
 		remove_filter( 'query', $racer );
@@ -1091,7 +1091,7 @@ class Test_Rest_Api extends Base {
 		wp_set_current_user( $author );
 
 		$response = $this->dispatch(
-			$this->build_request( $sibling_id, $sibling_recurrence_id, Occurrences::STATUS_CANCELLED )
+			$this->build_request( $sibling_id, $sibling_recurrence_id, Occurrences::STATUS_CANCELED )
 		);
 
 		$this->assertSame( 403, $response->get_status() );

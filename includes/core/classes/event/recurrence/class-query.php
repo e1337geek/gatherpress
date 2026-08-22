@@ -551,7 +551,7 @@ final class Query {
 	 * invisible key.
 	 *
 	 * Both aggregates are taken over the same `status = scheduled` set, so a
-	 * cancelled occurrence never becomes the date a series sorts on.
+	 * canceled occurrence never becomes the date a series sorts on.
 	 *
 	 * The guards, in the order they are cheapest: this is admin-only, because
 	 * front-end lists get real expansion instead; a site with no recurring

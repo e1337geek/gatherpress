@@ -797,7 +797,7 @@ final class Occurrences {
 	 *
 	 * Public because the admin events list marks a row as recurring off the
 	 * rule rather than off the occurrence rows. A series whose rows are all
-	 * cancelled, or whose projection has not run yet, still repeats, and a list
+	 * canceled, or whose projection has not run yet, still repeats, and a list
 	 * that dropped the marker in either case would be telling the reader the
 	 * event is a one-off.
 	 *

@@ -177,7 +177,7 @@ describe( 'OccurrencesPanel', () => {
 			occurrence( { recurrence_id: '20260903T180000' } ),
 			occurrence( {
 				recurrence_id: '20260910T180000',
-				status: 'cancelled',
+				status: 'canceled',
 			} ),
 		] );
 
@@ -208,7 +208,7 @@ describe( 'OccurrencesPanel', () => {
 		mockApiFetch.mockResolvedValueOnce(
 			occurrence( {
 				recurrence_id: '20260903T180000',
-				status: 'cancelled',
+				status: 'canceled',
 			} ),
 		);
 
@@ -224,7 +224,7 @@ describe( 'OccurrencesPanel', () => {
 			data: {
 				post_id: 42,
 				recurrence_id: '20260903T180000',
-				status: 'cancelled',
+				status: 'canceled',
 			},
 		} );
 		expect( screen.getByText( 'Canceled' ) ).toBeInTheDocument();
@@ -235,7 +235,7 @@ describe( 'OccurrencesPanel', () => {
 
 	test( 'calls the restore endpoint when the occurrence is already canceled', async () => {
 		mockApiFetch.mockResolvedValueOnce( [
-			occurrence( { status: 'cancelled' } ),
+			occurrence( { status: 'canceled' } ),
 		] );
 
 		render( <OccurrencesPanel /> );
@@ -279,7 +279,7 @@ describe( 'OccurrencesPanel', () => {
 		);
 
 		mockApiFetch.mockResolvedValueOnce(
-			occurrence( { series_post_id: 84, status: 'cancelled' } ),
+			occurrence( { series_post_id: 84, status: 'canceled' } ),
 		);
 
 		fireEvent.click( screen.getByText( 'Cancel' ) );
@@ -294,7 +294,7 @@ describe( 'OccurrencesPanel', () => {
 			data: {
 				post_id: 84,
 				recurrence_id: '20260903T180000',
-				status: 'cancelled',
+				status: 'canceled',
 			},
 		} );
 	} );
@@ -311,7 +311,7 @@ describe( 'OccurrencesPanel', () => {
 		);
 
 		mockApiFetch.mockResolvedValueOnce(
-			occurrence( { series_post_id: 84, status: 'cancelled' } ),
+			occurrence( { series_post_id: 84, status: 'canceled' } ),
 		);
 
 		fireEvent.click( screen.getByText( 'Cancel' ) );
@@ -370,7 +370,7 @@ describe( 'OccurrencesPanel', () => {
 		);
 
 		resolveUpdate(
-			occurrence( { series_post_id: 84, status: 'cancelled' } ),
+			occurrence( { series_post_id: 84, status: 'canceled' } ),
 		);
 
 		await waitFor( () =>
@@ -383,7 +383,7 @@ describe( 'OccurrencesPanel', () => {
 			data: {
 				post_id: 84,
 				recurrence_id: '20260903T180000',
-				status: 'cancelled',
+				status: 'canceled',
 			},
 		} );
 

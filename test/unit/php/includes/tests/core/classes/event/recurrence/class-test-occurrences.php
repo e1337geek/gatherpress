@@ -1417,7 +1417,7 @@ class Test_Occurrences extends Base {
 
 		add_filter( 'query', $racer );
 
-		$result = $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED );
+		$result = $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED );
 
 		remove_filter( 'query', $racer );
 
@@ -1445,13 +1445,13 @@ class Test_Occurrences extends Base {
 		$post_id  = $this->create_and_project();
 		$instance = Occurrences::get_instance();
 
-		$this->assertTrue( $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ) );
+		$this->assertTrue( $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ) );
 		$this->assertTrue(
-			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELLED ),
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
 			'Re-writing the status a row already holds must still report success.'
 		);
 		$this->assertSame(
-			Occurrences::STATUS_CANCELLED,
+			Occurrences::STATUS_CANCELED,
 			$instance->get( $post_id, '20260903T180000' )['status']
 		);
 	}

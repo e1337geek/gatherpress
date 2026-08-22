@@ -1930,7 +1930,7 @@ class Test_Admin_List extends Base {
 			$occurrences->set_status(
 				$fixture['post_id'],
 				(string) $occurrence['recurrence_id'],
-				Occurrences::STATUS_CANCELLED
+				Occurrences::STATUS_CANCELED
 			);
 		}
 
@@ -1941,12 +1941,12 @@ class Test_Admin_List extends Base {
 		$this->assertStringContainsString(
 			$this->format_column_datetime( $fixture['anchor'] ),
 			$output,
-			'Failed to assert that a fully cancelled series falls back to its anchor.'
+			'Failed to assert that a fully canceled series falls back to its anchor.'
 		);
 		$this->assertStringContainsString(
 			'gatherpress-recurring-badge',
 			$output,
-			'Failed to assert that a fully cancelled series is still marked as recurring.'
+			'Failed to assert that a fully canceled series is still marked as recurring.'
 		);
 	}
 

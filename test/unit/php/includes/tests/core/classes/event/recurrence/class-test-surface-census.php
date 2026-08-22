@@ -410,7 +410,7 @@ class Test_Surface_Census extends Base {
 		Occurrences::get_instance()->set_status(
 			$series_id,
 			$this->occurrence_id( $series_anchor, self::CANCELLED_INDEX ),
-			Occurrences::STATUS_CANCELLED
+			Occurrences::STATUS_CANCELED
 		);
 
 		$user_id = $this->factory->user->create();
@@ -1065,13 +1065,13 @@ class Test_Surface_Census extends Base {
 	 * URL still resolves rather than 404ing, and what it renders says it was
 	 * canceled while still carrying its own date.
 	 *
-	 * @covers ::maybe_prepend_cancelled_notice
+	 * @covers ::maybe_prepend_canceled_notice
 	 * @covers \GatherPress\Core\Event\Recurrence\Rewrite::parse_request
 	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
 	 *
 	 * @return void
 	 */
-	public function test_cancelled_occurrence_is_hidden_from_lists_but_still_resolves(): void {
+	public function test_canceled_occurrence_is_hidden_from_lists_but_still_resolves(): void {
 		$fixture       = $this->build_census_fixture();
 		$recurrence_id = $this->occurrence_id( $fixture['series_anchor'], self::CANCELLED_INDEX );
 		$entry         = $fixture['series'] . '|' . $recurrence_id;
@@ -1189,7 +1189,7 @@ class Test_Surface_Census extends Base {
 		remove_filter( 'the_posts', array( $query, 'attach_occurrences' ), 10 );
 		remove_filter( 'get_post_metadata', array( $context, 'metadata' ), 10 );
 		remove_action( 'wp', array( $context, 'sync' ), 10 );
-		remove_filter( 'the_content', array( $context, 'maybe_prepend_cancelled_notice' ), 10 );
+		remove_filter( 'the_content', array( $context, 'maybe_prepend_canceled_notice' ), 10 );
 		remove_filter( 'post_type_link', array( $context, 'permalink' ), 10 );
 		remove_filter( 'post_link', array( $context, 'permalink' ), 10 );
 		remove_action( 'parse_request', array( $rewrite, 'parse_request' ), 10 );
@@ -1211,7 +1211,7 @@ class Test_Surface_Census extends Base {
 		add_filter( 'the_posts', array( $query, 'attach_occurrences' ), 10, 2 );
 		add_filter( 'get_post_metadata', array( $context, 'metadata' ), 10, 4 );
 		add_action( 'wp', array( $context, 'sync' ) );
-		add_filter( 'the_content', array( $context, 'maybe_prepend_cancelled_notice' ) );
+		add_filter( 'the_content', array( $context, 'maybe_prepend_canceled_notice' ) );
 		add_filter( 'post_type_link', array( $context, 'permalink' ), 10, 2 );
 		add_filter( 'post_link', array( $context, 'permalink' ), 10, 2 );
 		add_action( 'parse_request', array( $rewrite, 'parse_request' ) );

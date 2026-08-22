@@ -33,7 +33,7 @@ import { dateI18n, getSettings } from '@wordpress/date';
  * @return {JSX.Element} The occurrence row.
  */
 const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
-	const isCancelled = 'cancelled' === occurrence.status;
+	const isCanceled = 'canceled' === occurrence.status;
 	const startUtc = `${ occurrence.datetime_start_gmt.replace( ' ', 'T' ) }Z`;
 
 	return (
@@ -46,7 +46,7 @@ const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
 				) }
 			</span>
 			<span className="gatherpress-occurrence-row__status">
-				{ isCancelled
+				{ isCanceled
 					? __( 'Canceled', 'gatherpress' )
 					: __( 'Scheduled', 'gatherpress' ) }
 			</span>
@@ -57,7 +57,7 @@ const OccurrenceRow = ( { occurrence, onToggle, isUpdating } ) => {
 				disabled={ isUpdating }
 				onClick={ () => onToggle( occurrence ) }
 			>
-				{ isCancelled
+				{ isCanceled
 					? __( 'Restore', 'gatherpress' )
 					: __( 'Cancel', 'gatherpress' ) }
 			</Button>

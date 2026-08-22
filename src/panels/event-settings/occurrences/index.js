@@ -186,7 +186,7 @@ const OccurrencesPanel = () => {
 	 */
 	const handleToggle = ( occurrence ) => {
 		const nextStatus =
-			'cancelled' === occurrence.status ? 'scheduled' : 'cancelled';
+			'canceled' === occurrence.status ? 'scheduled' : 'canceled';
 
 		setUpdatingKey( occurrenceKey( occurrence ) );
 
