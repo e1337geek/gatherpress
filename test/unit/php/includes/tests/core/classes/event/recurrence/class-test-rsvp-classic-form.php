@@ -293,8 +293,8 @@ class Test_Rsvp_Classic_Form extends Base {
 	/**
 	 * Read one occurrence's roster through the production API.
 	 *
-	 * Rule 3a #3: `Rsvp::responses()` is what every consumer reads. Asserting on
-	 * the occurrence taxonomy instead passes on a stored row that no roster can
+	 * `Rsvp::responses()` is what every consumer reads. Asserting on the
+	 * occurrence taxonomy instead passes on a stored row that no roster can
 	 * actually see.
 	 *
 	 * @since 0.36.0
@@ -398,12 +398,12 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * B2: a JavaScript-disabled submission lands on the occurrence it names.
+	 * A JavaScript-disabled submission lands on the occurrence it names.
 	 *
-	 * The measured defect. Only the REST path stamped the occurrence term, so a
-	 * response made from an occurrence page with JavaScript unavailable was
-	 * stored series-wide: it appeared on every date, and duplicate detection then
-	 * refused the same responder on all the others.
+	 * Only the REST path stamped the occurrence term, so a response made from
+	 * an occurrence page with JavaScript unavailable was stored series-wide:
+	 * it appeared on every date, and duplicate detection then refused the same
+	 * responder on all the others.
 	 *
 	 * @covers ::preprocess_rsvp_comment
 	 * @covers ::handle_rsvp_comment_post
@@ -438,7 +438,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * B2: one responder can book two dates through the classic form.
+	 * One responder can book two dates through the classic form.
 	 *
 	 * The consequence a term assertion cannot see. Duplicate detection is
 	 * series-wide without an occurrence, so before the fix the second date was
@@ -488,7 +488,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * B2: the same date still refuses a second response from the same responder.
+	 * The same date still refuses a second response from the same responder.
 	 *
 	 * The other half of the verdict. Scoping the duplicate check to the
 	 * occurrence must not disable it, or one responder could fill a date.
@@ -509,7 +509,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * B2: a fabricated occurrence is refused rather than silently widened.
+	 * A fabricated occurrence is refused rather than silently widened.
 	 *
 	 * The hidden field is user-controllable, so it is validated against the
 	 * event's own series exactly as the REST argument is. Silently treating an
@@ -556,7 +556,7 @@ class Test_Rsvp_Classic_Form extends Base {
 	}
 
 	/**
-	 * B2: a classic submission invalidates the counts it just changed.
+	 * A classic submission invalidates the counts it just changed.
 	 *
 	 * The third consequence, and the least obvious one. This path never
 	 * reaches `Rsvp\Storage::save()` or the REST route's

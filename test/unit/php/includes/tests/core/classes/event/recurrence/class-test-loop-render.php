@@ -1339,7 +1339,7 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for the `timezone` column travelling on the result object.
+	 * Coverage for the `timezone` column traveling on the result object.
 	 *
 	 * `timezone` is one of the five occurrence columns a result object carries,
 	 * and the subsystem's standing rule is that an occurrence's time of day

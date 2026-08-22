@@ -2000,12 +2000,11 @@ class Test_Context extends Base {
 	 * Resolving the same occurrence twice costs one query, not two.
 	 *
 	 * A REST dispatch resolves the same `(post_id, recurrence_id)` pair twice:
-	 * once in the validate callback and once on entry. The two stay separate
-	 * deliberately: WordPress runs validate callbacks inside
-	 * `has_valid_params()`, before `permission_callback`, so resolving as a side
-	 * effect of validation would enter context on requests that then 403 with no
-	 * teardown filter registered. The memo removes the duplicated query without
-	 * collapsing that separation.
+	 * once in the permission callback and once on entry. The two stay separate
+	 * deliberately: the permission callback resolves only to authorize the
+	 * occurrence's owner, and entering context there would leave it standing
+	 * on a request that then 403s with no teardown filter registered. The memo
+	 * removes the duplicated query without collapsing that separation.
 	 *
 	 * A miss is memoized too, so a fabricated identifier also costs one query
 	 * per request rather than one per lookup. That is asserted, because

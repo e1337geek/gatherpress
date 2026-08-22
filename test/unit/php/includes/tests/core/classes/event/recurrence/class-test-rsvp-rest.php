@@ -1097,7 +1097,7 @@ class Test_Rsvp_Rest extends Base {
 	 * A fabricated `recurrence_id` costs a plain site nothing either.
 	 *
 	 * A crawler appending the argument to an ordinary event's RSVP request
-	 * must not reach the occurrence table. The validation short-circuits on
+	 * must not reach the occurrence table. Resolution short-circuits on
 	 * the autoloaded option before any lookup.
 	 *
 	 * @covers ::validate_recurrence_id
@@ -1279,7 +1279,7 @@ class Test_Rsvp_Rest extends Base {
 			'Failed to assert an RSVP on a sibling post is stamped with the occurrence it names.'
 		);
 
-		// Rule 3a #3: the roster consumers actually read, not the taxonomy.
+		// Assert through the roster consumers actually read, not the taxonomy.
 		Context::get_instance()->set_for_series( $owner_post_id, $occurrence_id );
 
 		$responses = ( new Rsvp( $owner_post_id ) )->responses();
@@ -1294,13 +1294,14 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * F-2: a resolution that fails after validation is refused, not widened.
+	 * A resolution that fails after validation is refused, not widened.
 	 *
-	 * `enter_occurrence_context()` runs a second lookup of an identifier the
-	 * validate callback already resolved. Discarding its result meant that if
-	 * the row disappeared between the two queries the request continued
-	 * **series-wide under a 200**. That is the exact outcome the validate
-	 * callback exists to prevent, arrived at by a different door.
+	 * `validate_recurrence_id()` is deliberately syntax-only, so storage is
+	 * first consulted by the permission callback and again by
+	 * `enter_occurrence_context()` inside the route callback. Discarding the
+	 * second lookup's failure would mean that if the row disappeared between
+	 * the two queries the request continued **series-wide under a 200**, the
+	 * exact widening the refusal exists to prevent.
 	 *
 	 * The race is simulated deterministically: the row is deleted from a filter
 	 * that fires after validation and before the callback.
@@ -1410,7 +1411,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * F-1: a nested dispatch does not tear down the outer request's context.
+	 * A nested dispatch does not tear down the outer request's context.
 	 *
 	 * `rest_request_after_callbacks` is global and fires for every dispatch,
 	 * including one a route makes internally while holding context.
@@ -1487,7 +1488,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * F-3: an open-form submission invalidates the counts it just changed.
+	 * An open-form submission invalidates the counts it just changed.
 	 *
 	 * The form route inserts its comment directly rather than through
 	 * `Rsvp\Storage::save()`, which is where every other write does its
@@ -1641,9 +1642,9 @@ class Test_Rsvp_Rest extends Base {
 	/**
 	 * Count the responses stored against one occurrence, through the production roster.
 	 *
-	 * Rule 3a #3: read through `Rsvp::responses()`, the API every consumer
-	 * reaches, rather than through the taxonomy. A term-level count passes on
-	 * exactly the split-owner state the ownership invariant exists to forbid.
+	 * Reads through `Rsvp::responses()`, the API every consumer reaches,
+	 * rather than through the taxonomy. A term-level count passes on exactly
+	 * the split-owner state the ownership invariant exists to forbid.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1673,11 +1674,11 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B1: a magic-link token for occurrence A cannot write occurrence B.
+	 * A magic-link token for occurrence A cannot write occurrence B.
 	 *
-	 * The measured defect. The permission callback compared the token's *event
-	 * post* against the request's, which every occurrence of a series satisfies,
-	 * and the callback then entered whichever occurrence the request named. So
+	 * The permission callback compared the token's *event post* against the
+	 * request's, which every occurrence of a series satisfies, and the
+	 * callback then entered whichever occurrence the request named. So
 	 * the holder of a confirmation link for one date could write the token
 	 * holder's identity into any other date of the same series, and the route
 	 * answered `success: true`.
@@ -1737,7 +1738,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B1: the same token on its own occurrence still works.
+	 * The same token on its own occurrence still works.
 	 *
 	 * The other half of the verdict. A refusal that also broke the legitimate
 	 * case would satisfy the test above and break every confirmation link.
@@ -1782,7 +1783,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B1: authority is symmetric, so neither side of an absent occurrence leaks.
+	 * Token authority is symmetric, so neither side of an absent occurrence leaks.
 	 *
 	 * An occurrence token acting series-wide would write a response readable on
 	 * every date; a series-wide token acting on one occurrence would scope a
@@ -1847,7 +1848,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B1: a request naming the token under two parameters is refused.
+	 * A request naming the token under two parameters is refused.
 	 *
 	 * The token used to arrive under two names, with authorization reading one
 	 * and identification reading the other, so a caller could satisfy the check
@@ -1895,9 +1896,9 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B4: an unauthorized caller cannot tell a real occurrence from a fabricated one.
+	 * An unauthorized caller cannot tell a real occurrence from a fabricated one.
 	 *
-	 * The measured defect was an ordering one. Argument validation runs before
+	 * The defect was an ordering one. Argument validation runs before
 	 * the permission callback, and the validator resolved the identifier against
 	 * storage, so a real occurrence of a private event reached permission
 	 * handling and returned 401 while an unknown one was rejected as an invalid
@@ -1981,7 +1982,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B4: the public form route discloses nothing either.
+	 * The public form route discloses nothing either.
 	 *
 	 * `rsvp-form` is the one RSVP route whose `permission_callback` is
 	 * `__return_true`, so it is where an unauthenticated caller could otherwise
@@ -2361,9 +2362,9 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B3: an inner dispatch for another occurrence restores the outer one.
+	 * An inner dispatch for another occurrence restores the outer one.
 	 *
-	 * The committed nested test covered only an inner request naming *no*
+	 * The nested test above covers only an inner request naming *no*
 	 * occurrence, which registers no teardown of its own and therefore cannot
 	 * exercise the defect. With a single request slot, an inner request naming
 	 * occurrence B overwrote the outer request's identity, and the inner
@@ -2457,7 +2458,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B3: an outer write still lands on its own occurrence after nesting.
+	 * An outer write still lands on its own occurrence after nesting.
 	 *
 	 * The context assertions above are necessary but not sufficient: restoring
 	 * the row and then storing against the wrong one would satisfy them. This
@@ -2535,7 +2536,7 @@ class Test_Rsvp_Rest extends Base {
 	}
 
 	/**
-	 * B2/B5: the RSVP cache is keyed on the occurrence owner, not the named post.
+	 * The RSVP cache is keyed on the occurrence owner, not the named post.
 	 *
 	 * Storage, authorization and routing all follow the post that owns the
 	 * occurrence row. A cache that kept following the post a caller named would

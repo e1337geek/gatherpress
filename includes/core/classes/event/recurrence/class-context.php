@@ -250,9 +250,9 @@ final class Context {
 	/**
 	 * Resolve an occurrence across every post of a series, without entering it.
 	 *
-	 * Shared by `set_for_series()` and by the REST layer's validation, which
-	 * has to reject an unknown or malformed identifier before any callback
-	 * runs rather than silently falling back to the series.
+	 * Shared by `set_for_series()` and by `Occurrence_Identity::resolve()`,
+	 * which the REST permission callbacks and the classic form use to refuse
+	 * an unknown identifier rather than silently falling back to the series.
 	 *
 	 * The recurring-events guard comes first: on a site with no recurring events this
 	 * returns without touching the occurrence table, so a request carrying a
@@ -261,12 +261,11 @@ final class Context {
 	 * The result is memoized per `(blog_id, post_id, recurrence_id)` for the
 	 * life of the request, blog first because the other two halves are
 	 * blog-local. A REST dispatch resolves the same pair twice, once in the
-	 * validate callback and once on entry. The two stay separate
-	 * deliberately: WordPress runs validate callbacks inside
-	 * `has_valid_params()`, which is *before* `permission_callback`, so
-	 * resolving as a side effect of validation would enter context on requests
-	 * that then 403 with no teardown filter registered. The memo removes the
-	 * duplicated query without collapsing that separation.
+	 * permission callback and once on entry. The two stay separate
+	 * deliberately: the permission callback resolves only to authorize the
+	 * occurrence's owner, and entering context there would leave it standing
+	 * on a request that then 403s with no teardown filter registered. The
+	 * memo removes the duplicated query without collapsing that separation.
 	 *
 	 * Memoizing is safe within a request because the occurrence table is only
 	 * written by projection, which is not something a read request performs;
