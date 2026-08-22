@@ -581,10 +581,6 @@ final class Rule {
 	 *              rule, honestly expandable within `Expander::MAX_ITERATIONS`.
 	 */
 	private function is_valid_end_shape(): bool {
-		if ( self::END_TYPE_UNTIL === $this->end_type ) {
-			return null !== $this->until && 0 === $this->count;
-		}
-
 		if ( self::END_TYPE_COUNT === $this->end_type ) {
 			if ( $this->count < 1 || $this->count > self::MAX_COUNT || null !== $this->until ) {
 				return false;
@@ -602,8 +598,13 @@ final class Rule {
 			return $budget <= Expander::MAX_ITERATIONS;
 		}
 
-		// END_TYPE_NEVER: neither an end date nor a count may be set.
-		return null === $this->until && 0 === $this->count;
+		// The two remaining shapes differ only in whether an end date is
+		// required: END_TYPE_UNTIL must carry one, END_TYPE_NEVER must not, and
+		// neither may carry a count. Folded into one return to stay inside the
+		// three-return limit (php:S1142).
+		$requires_until = self::END_TYPE_UNTIL === $this->end_type;
+
+		return 0 === $this->count && ( null !== $this->until ) === $requires_until;
 	}
 
 	/**
