@@ -698,6 +698,93 @@ class Test_Rest_Api extends Base {
 	}
 
 	/**
+	 * An occurrence that has started but not finished is still listed.
+	 *
+	 * "Upcoming" is defined inclusively across the subsystem
+	 * (`select_bounded_occurrence()` bounds on `datetime_end_gmt`, matching
+	 * `Event\Query::get_datetime_comparison_column()`), and the in-progress
+	 * occurrence is the one most urgently needing a cancel action: dropping
+	 * it from this route leaves the organizer of a flooding venue with no
+	 * button to press.
+	 *
+	 * @covers ::get_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_includes_an_in_progress_occurrence(): void {
+		// The first occurrence started an hour ago and runs another hour.
+		$start = $this->now()->modify( '-1 hour' );
+
+		$post_id = $this->create_relative_recurring_event(
+			self::DAILY_RULE,
+			$start,
+			$start->modify( '+2 hours' )
+		);
+
+		$rows     = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$first_id = $rows[0]['recurrence_id'];
+
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$response = $this->dispatch( $request );
+		$data     = $response->get_data();
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertContains(
+			$first_id,
+			array_column( $data, 'recurrence_id' ),
+			'The in-progress occurrence must be listed so it can still be canceled.'
+		);
+		$this->assertCount( 5, $data, 'All five occurrences are unfinished, so all five must be listed.' );
+	}
+
+	/**
+	 * A just-ended occurrence is not listed.
+	 *
+	 * The inclusive bound is the occurrence's end, not its start: once an
+	 * occurrence has finished there is nothing left to cancel, and listing
+	 * it would only pad the panel with dead rows.
+	 *
+	 * @covers ::get_occurrences
+	 *
+	 * @return void
+	 */
+	public function test_occurrences_route_drops_a_just_ended_occurrence(): void {
+		// The first occurrence ran from three hours ago to two hours ago.
+		$start = $this->now()->modify( '-3 hours' );
+
+		$post_id = $this->create_relative_recurring_event(
+			self::DAILY_RULE,
+			$start,
+			$start->modify( '+1 hour' )
+		);
+
+		$rows     = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$first_id = $rows[0]['recurrence_id'];
+
+		$admin = $this->factory->user->create( array( 'role' => 'administrator' ) );
+		wp_set_current_user( $admin );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/occurrences' );
+		$request->set_param( 'post_id', $post_id );
+
+		$response = $this->dispatch( $request );
+		$data     = $response->get_data();
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertNotContains(
+			$first_id,
+			array_column( $data, 'recurrence_id' ),
+			'A finished occurrence has nothing left to cancel and must not be listed.'
+		);
+		$this->assertCount( 4, $data, 'Only the four unfinished occurrences remain listable.' );
+	}
+
+	/**
 	 * A site that has never authored a recurring event pays no
 	 * occurrence-table query when the sidebar's occurrences route is hit.
 	 * Unlike the write route, this one runs from every ordinary event's
