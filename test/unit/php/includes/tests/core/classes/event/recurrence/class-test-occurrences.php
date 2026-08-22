@@ -2792,6 +2792,44 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * Coverage for `maybe_lazy_repair()`'s empty-refs arm: a read that
+	 * returns nothing never calls `update_meta_cache()` at all.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_lazy_repair_skips_the_meta_cache_priming_with_no_refs(): void {
+		global $wpdb;
+
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
+		$query_count_before = count( $wpdb->queries );
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_upcoming( 10 ),
+			'Failed to assert that the fixture site has no upcoming entries.'
+		);
+
+		$postmeta_selects = array_values(
+			array_filter(
+				array_slice( $wpdb->queries, $query_count_before ),
+				static function ( $query ) use ( $wpdb ) {
+					return str_contains( $query[0], $wpdb->postmeta )
+						&& (bool) preg_match( '/^\s*SELECT/i', $query[0] );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$postmeta_selects,
+			'Failed to assert that an empty read issues no wp_postmeta SELECT at all.'
+		);
+	}
+
+	/**
 	 * Coverage for `maybe_lazy_repair()`'s site-wide short-circuit: no
 	 * repair is attempted when the site has no recurring events.
 	 *

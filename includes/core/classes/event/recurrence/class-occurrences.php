@@ -490,8 +490,11 @@ final class Occurrences {
 	 * either an ordinary non-recurring event, which has nothing to repair, or
 	 * a series whose rows are *gone*, which `select_by_horizon()` renders
 	 * through its rowless fallback and which is exactly the case repair
-	 * exists for. The `end_type` mirror separates the two, and reads from the
-	 * post's already-primed meta cache rather than issuing a query per ref.
+	 * exists for. The `end_type` mirror separates the two. Nothing on this
+	 * path primes the meta cache on its own, since `select_by_horizon()`
+	 * reads through raw `$wpdb`, so the refs' post meta is primed here in
+	 * one batched `update_meta_cache()` call rather than the per-ref query
+	 * each cold `get_post_meta()` would otherwise issue.
 	 *
 	 * The per-read cap is applied *after* filtering out series already
 	 * suppressed by their debounce transient, not before: refs arrive in
@@ -515,6 +518,12 @@ final class Occurrences {
 	protected function maybe_lazy_repair( array $refs ): void {
 		if ( ! Query::site_has_recurring_events() ) {
 			return;
+		}
+
+		$ref_post_ids = array_values( array_unique( wp_list_pluck( $refs, 'post_id' ) ) );
+
+		if ( array() !== $ref_post_ids ) {
+			update_meta_cache( 'post', $ref_post_ids );
 		}
 
 		$post_ids = array();
@@ -559,7 +568,8 @@ final class Occurrences {
 	 * Reads the `end_type` mirror, the same key `is_series_stale()` and
 	 * `select_series_needing_top_up()` treat as the presence test for a rule,
 	 * so all three agree on what counts as a series. `get_post_meta()` is
-	 * served from the post meta cache a read has already primed.
+	 * served from the post meta cache `maybe_lazy_repair()` primes in one
+	 * batch for the whole read.
 	 *
 	 * @since 0.36.0
 	 *
