@@ -347,12 +347,14 @@ final class Timezone_Component {
 				'STANDARD',
 				array(
 					array(
-						'from'  => (int) $head['offset'],
-						'to'    => (int) $head['offset'],
-						'abbr'  => (string) $head['abbr'],
-						'local' => '19700101T000000',
-						'month' => 1,
-						'byday' => '',
+						'from'          => (int) $head['offset'],
+						'to'            => (int) $head['offset'],
+						'abbr'          => (string) $head['abbr'],
+						'local'         => '19700101T000000',
+						'day'           => 1,
+						'days_in_month' => 31,
+						'month'         => 1,
+						'byday'         => '',
 					),
 				)
 			);
@@ -401,13 +403,19 @@ final class Timezone_Component {
 		// counts forward from the first.
 		$ordinal = ( ( $last - $day ) < 7 ) ? -1 : ( intdiv( $day - 1, 7 ) + 1 );
 
+		// The day and the month length ride along as numbers because `local`
+		// is not fixed-width: past year 9999 the year takes five digits, and a
+		// positional read of the formatted string goes quietly wrong at
+		// exactly the point the window is widest.
 		return array(
-			'from'  => $previous,
-			'to'    => (int) $change['offset'],
-			'abbr'  => (string) $change['abbr'],
-			'local' => gmdate( 'Ymd\THis', $local ),
-			'month' => (int) gmdate( 'n', $local ),
-			'byday' => sprintf( '%d%s', $ordinal, strtoupper( substr( gmdate( 'D', $local ), 0, 2 ) ) ),
+			'from'          => $previous,
+			'to'            => (int) $change['offset'],
+			'abbr'          => (string) $change['abbr'],
+			'local'         => gmdate( 'Ymd\THis', $local ),
+			'day'           => $day,
+			'days_in_month' => $last,
+			'month'         => (int) gmdate( 'n', $local ),
+			'byday'         => sprintf( '%d%s', $ordinal, strtoupper( substr( gmdate( 'D', $local ), 0, 2 ) ) ),
 		);
 	}
 
@@ -581,6 +589,9 @@ final class Timezone_Component {
 	/**
 	 * The day of the month a transition's local onset falls on.
 	 *
+	 * Read from the number `describe_transition()` carried rather than from a
+	 * fixed offset into the formatted onset, whose year is not fixed-width.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param array $transition One transition as `describe_transition()` returns it.
@@ -588,11 +599,14 @@ final class Timezone_Component {
 	 * @return int The day, 1 through 31.
 	 */
 	private function day_of( array $transition ): int {
-		return (int) substr( (string) $transition['local'], 6, 2 );
+		return (int) $transition['day'];
 	}
 
 	/**
 	 * Whether a transition's local onset falls in its month's final seven days.
+	 *
+	 * Both numbers were carried by `describe_transition()`, so no re-parse of
+	 * the formatted onset is involved.
 	 *
 	 * @since 0.36.0
 	 *
@@ -601,9 +615,7 @@ final class Timezone_Component {
 	 * @return bool True when a "last weekday of the month" reading holds.
 	 */
 	private function in_last_week( array $transition ): bool {
-		$moment = (int) strtotime( substr( (string) $transition['local'], 0, 8 ) . ' UTC' );
-
-		return ( (int) gmdate( 't', $moment ) - $this->day_of( $transition ) ) < 7;
+		return ( (int) $transition['days_in_month'] - $this->day_of( $transition ) ) < 7;
 	}
 
 	/**

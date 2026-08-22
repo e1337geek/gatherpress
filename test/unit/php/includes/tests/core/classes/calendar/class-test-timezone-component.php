@@ -415,12 +415,14 @@ class Test_Timezone_Component extends Base {
 		// last Sunday of October.
 		$this->assertSame(
 			array(
-				'from'  => 7200,
-				'to'    => 3600,
-				'abbr'  => 'CET',
-				'local' => '20261025T030000',
-				'month' => 10,
-				'byday' => '-1SU',
+				'from'          => 7200,
+				'to'            => 3600,
+				'abbr'          => 'CET',
+				'local'         => '20261025T030000',
+				'day'           => 25,
+				'days_in_month' => 31,
+				'month'         => 10,
+				'byday'         => '-1SU',
 			),
 			Utility::invoke_hidden_method(
 				$instance,
@@ -434,12 +436,14 @@ class Test_Timezone_Component extends Base {
 		// Sunday of March.
 		$this->assertSame(
 			array(
-				'from'  => -18000,
-				'to'    => -14400,
-				'abbr'  => 'EDT',
-				'local' => '20260308T020000',
-				'month' => 3,
-				'byday' => '2SU',
+				'from'          => -18000,
+				'to'            => -14400,
+				'abbr'          => 'EDT',
+				'local'         => '20260308T020000',
+				'day'           => 8,
+				'days_in_month' => 31,
+				'month'         => 3,
+				'byday'         => '2SU',
 			),
 			Utility::invoke_hidden_method(
 				$instance,
