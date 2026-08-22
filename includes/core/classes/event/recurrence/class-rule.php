@@ -314,8 +314,10 @@ final class Rule {
 		$weekdays = array_values( array_unique( $weekdays ) );
 		sort( $weekdays );
 
+		// The null coalesce maps both an absent key and an explicit null to
+		// '', so nonempty here means the client actually sent a value.
 		$raw_until = $values['until'] ?? '';
-		$has_until = null !== $raw_until && '' !== $raw_until;
+		$has_until = '' !== $raw_until;
 		$until     = null;
 
 		if ( is_string( $raw_until ) && '' !== $raw_until ) {
