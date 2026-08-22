@@ -883,6 +883,20 @@ class Test_Archive extends Base {
 				false,
 				'Failed to assert a non-event post type archive is left to core.',
 			),
+			'defers on a widened archive holding an event type' => array(
+				false,
+				$archive,
+				array( 'post_type' => array( Event::POST_TYPE, 'post' ) ),
+				true,
+				'Failed to assert an archive widened to an array holding an event post type still defers.',
+			),
+			'ignores a widened archive of only non-event types' => array(
+				false,
+				$archive,
+				array( 'post_type' => array( 'post', 'page' ) ),
+				false,
+				'Failed to assert a widened archive holding no event post type is left to core.',
+			),
 		);
 	}
 
