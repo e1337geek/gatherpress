@@ -901,6 +901,74 @@ class Test_Meta extends Base {
 	}
 
 	/**
+	 * Deleting the datetime blob disables the series like any other rewrite.
+	 *
+	 * A cleanup script, an importer, or one line of WP-CLI
+	 * (`wp post meta delete <id> gatherpress_datetime`) can remove the blob
+	 * outright. That leaves the series' timezone unknowable, the exact state
+	 * the re-validation machinery exists to clear; only the trigger differs,
+	 * so `deleted_post_meta` must queue the same shutdown pass the
+	 * `added`/`updated` hooks do.
+	 *
+	 * @covers ::maybe_revalidate_for_datetime
+	 * @covers ::resolve_pending_revalidation
+	 *
+	 * @return void
+	 */
+	public function test_deleting_the_datetime_meta_disables_an_existing_series(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => 5,
+			)
+		);
+
+		$instance = Meta::get_instance();
+
+		$instance->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		// A clean slate, so the queue assertion below can only be satisfied
+		// by the delete itself.
+		remove_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ), 15 );
+
+		$this->assertSame(
+			'daily',
+			get_post_meta( $post_id, 'gatherpress_recurrence_frequency', true ),
+			'Precondition: the series is active.'
+		);
+		$this->assertNotEmpty(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Precondition: the series has projected rows.'
+		);
+
+		delete_post_meta( $post_id, 'gatherpress_datetime' );
+
+		$this->assertNotFalse(
+			has_action( 'shutdown', array( $instance, 'resolve_pending_revalidation' ) ),
+			'Deleting the datetime blob on a recurring post must queue a final validation pass.'
+		);
+
+		$instance->resolve_pending_revalidation();
+
+		foreach ( Meta::DERIVED_META_KEYS as $derived_key ) {
+			$this->assertSame(
+				'',
+				get_post_meta( $post_id, $derived_key, true ),
+				"Expected {$derived_key} to be cleared once the series timezone became unknowable."
+			);
+		}
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'A series with no datetime blob must not keep projected rows.'
+		);
+	}
+
+	/**
 	 * The revalidation trigger is exact: a meta write that is not the datetime
 	 * blob, a post type without `gatherpress-event-date` support, and a post
 	 * holding no recurrence blob all queue nothing, so an ordinary event save
