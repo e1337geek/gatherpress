@@ -71,8 +71,9 @@ final class Series {
 	 * both sides to plain events, which turns the recurring flag off while
 	 * the series relationship persists in the taxonomy. Gating the taxonomy
 	 * on the recurring flag alone therefore made the durable series vanish on
-	 * the very next request. Autoloaded, and recomputed authoritatively from
-	 * term storage on the term lifecycle, never incremented.
+	 * the very next request. Autoloaded while `'1'`, kept but not autoloaded
+	 * while `'0'`, and recomputed authoritatively from term storage on the
+	 * term lifecycle, never incremented.
 	 *
 	 * @since 0.36.0
 	 * @var string
@@ -258,9 +259,10 @@ final class Series {
 	 * the not-found cache absorbs it. This read happens inside `register()` on
 	 * every request, so that SELECT would be a byte-for-byte SQL difference on
 	 * exactly the sites promised none. The alloptions cache is already loaded
-	 * on every request, the option is only ever written with autoload on, and
-	 * an absent option authoritatively means no split has ever happened,
-	 * because every series term write recomputes it.
+	 * on every request, the option autoloads whenever its value is `'1'`, and
+	 * an option that is absent from that cache, whether missing or stored as
+	 * a non-autoloaded `'0'`, authoritatively means the site has no split
+	 * series, because every series term write recomputes it.
 	 *
 	 * @since 0.36.0
 	 *
@@ -283,6 +285,16 @@ final class Series {
 	 * fire while the taxonomy is mid-teardown, where `get_terms()` would
 	 * answer a `WP_Error` instead of the storage truth.
 	 *
+	 * The single writer of the option, and the autoload state is part of the
+	 * write: `'1'` autoloads because `site_has_split_series()` reads the
+	 * alloptions cache on every request, while `'0'` is written without
+	 * autoload, because a site that split once and then deleted every
+	 * fragment would otherwise carry one alloptions row per request forever
+	 * for an answer an absent row already gives. The row itself is kept
+	 * rather than deleted, because a deleted option hands the next
+	 * `get_option()` read one `wp_options` SELECT for the miss, on exactly
+	 * the byte-identical-SQL surface the flag exists to protect.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @return void
@@ -301,7 +313,7 @@ final class Series {
 			)
 		);
 
-		update_option( self::HAS_SPLIT_SERIES_OPTION, $has ? '1' : '0', true );
+		update_option( self::HAS_SPLIT_SERIES_OPTION, $has ? '1' : '0', $has );
 	}
 
 	/**
