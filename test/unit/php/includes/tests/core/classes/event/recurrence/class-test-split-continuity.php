@@ -1337,6 +1337,9 @@ class Test_Split_Continuity extends Base {
 
 		Series::get_instance()->flush_memo();
 
+		// Firing a core registration hook, not declaring a plugin one: this is
+		// the production entry point every next request registers through.
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound
 		do_action( 'registered_post_type', Event::POST_TYPE, get_post_type_object( Event::POST_TYPE ) );
 	}
 
