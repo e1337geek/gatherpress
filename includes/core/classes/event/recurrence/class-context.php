@@ -172,10 +172,12 @@ final class Context {
 	protected function setup_hooks(): void {
 		add_filter( 'get_post_metadata', array( $this, 'metadata' ), 10, 4 );
 		add_action( 'wp', array( $this, 'sync' ) );
-		// Last, so no later `update_post_metadata` filter can short-circuit the
-		// write *after* the note is taken and leave it for an unrelated read to
-		// consume. `add_post_metadata` is deliberately not hooked: see
-		// `note_meta_write()`.
+		// At `PHP_INT_MAX`, so no filter registered before this class boots
+		// can short-circuit the write *after* the note is taken and leave it
+		// for an unrelated read to consume. See condition 3 on
+		// `note_meta_write()` for the one path that can still strand a note
+		// and how it self-heals. `add_post_metadata` is deliberately not
+		// hooked: see `note_meta_write()`.
 		add_filter( 'update_post_metadata', array( $this, 'note_meta_write' ), PHP_INT_MAX, 5 );
 		add_filter( 'the_content', array( $this, 'maybe_prepend_cancelled_notice' ) );
 		// Both permalink filters, because `get_permalink()` routes a custom
@@ -567,8 +569,15 @@ final class Context {
 	 *    has already short-circuited, and core returns before the read.
 	 * 2. `empty( $prev_value )`. Core only compares the stored value when the
 	 *    caller named no previous value; with one, the read never happens.
-	 * 3. This callback runs last (`PHP_INT_MAX`), so no filter after it can
-	 *    short-circuit the write once the note is taken.
+	 * 3. This callback runs at `PHP_INT_MAX`, after every filter registered
+	 *    before GatherPress boots, so none of those can short-circuit the
+	 *    write once the note is taken. A short-circuit registered at the
+	 *    same priority *after* boot still runs later, because equal-priority
+	 *    callbacks run in registration order, and it leaves the note armed.
+	 *    The next read of that pair consumes it and returns the raw series
+	 *    value once, so the substitution self-heals after one read. That
+	 *    residual window needs a max-priority short-circuiting filter on one
+	 *    of the five datetime keys, registered after boot, and is accepted.
 	 *
 	 * `add_post_metadata` is not hooked, and hooking it is the defect this
 	 * guard set replaced. `add_metadata()` does not call `get_metadata_raw()`
