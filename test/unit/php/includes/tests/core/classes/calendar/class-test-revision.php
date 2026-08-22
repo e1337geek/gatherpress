@@ -276,6 +276,118 @@ class Test_Revision extends Base {
 	}
 
 	/**
+	 * The allocation is one in-place statement, and the only write that decides.
+	 *
+	 * A separate read is the window a concurrent writer interleaves through,
+	 * so the property pinned here is the statement's shape: exactly one
+	 * `UPDATE` touches the revision key, and it computes from the row rather
+	 * than writing a value computed in PHP. The mirrors publish the allocated
+	 * value afterwards; on the canonical row that publish must be a no-op.
+	 *
+	 * @covers ::advance
+	 *
+	 * @return void
+	 */
+	public function test_the_allocation_is_one_in_place_statement(): void {
+		global $wpdb;
+
+		$post_id  = $this->make_event();
+		$instance = Revision::get_instance();
+
+		$instance->advance( $post_id );
+
+		$before = count( (array) $wpdb->queries );
+
+		$instance->advance( $post_id );
+
+		$writes = array_values(
+			array_filter(
+				array_column( array_slice( (array) $wpdb->queries, $before ), 0 ),
+				static function ( string $sql ): bool {
+					return str_starts_with( ltrim( $sql ), 'UPDATE' )
+						&& str_contains( $sql, Revision::META_KEY );
+				}
+			)
+		);
+
+		$this->assertCount(
+			1,
+			$writes,
+			'One statement must allocate; a second write or a separate read is a window for a concurrent writer.'
+		);
+		$this->assertStringContainsString(
+			'CAST( meta_value AS SIGNED ) + 1',
+			$writes[0],
+			'And it must compute from the row rather than write a value computed in PHP.'
+		);
+	}
+
+	/**
+	 * An advance from a row already at the ceiling still answers the ceiling.
+	 *
+	 * The in-place statement cannot move such a row, so the read-back has no
+	 * allocated value to report and the computed floor answers instead. This
+	 * is the branch a saturated series lives on for every later change.
+	 *
+	 * @covers ::advance
+	 *
+	 * @return void
+	 */
+	public function test_an_advance_from_exactly_the_ceiling_answers_the_ceiling(): void {
+		$post_id = $this->make_event();
+
+		update_post_meta( $post_id, Revision::META_KEY, Revision::CEILING );
+
+		$this->assertSame(
+			Revision::CEILING,
+			Revision::get_instance()->advance( $post_id ),
+			'A row the statement cannot move still answers the clamped floor, never a stale connection value.'
+		);
+	}
+
+	/**
+	 * An advance survives an integration emptying the series resolution.
+	 *
+	 * `resolve_post_ids()` is filterable, and a filter returning an empty
+	 * array would otherwise leave the allocation with no canonical row and
+	 * the series with no mirror at all.
+	 *
+	 * @covers ::advance
+	 *
+	 * @return void
+	 */
+	public function test_advance_survives_a_filter_that_empties_the_series(): void {
+		global $wpdb;
+
+		$post_id = $this->make_event();
+
+		add_filter( 'gatherpress_series_post_ids', '__return_empty_array' );
+
+		$next = Revision::get_instance()->advance( $post_id );
+
+		remove_filter( 'gatherpress_series_post_ids', '__return_empty_array' );
+
+		$this->assertGreaterThan( 0, $next, 'The advance must still allocate a value.' );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stored = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT meta_value FROM %i WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1',
+				$wpdb->postmeta,
+				$post_id,
+				Revision::META_KEY
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->assertSame(
+			$next,
+			$stored,
+			'And the post itself must carry it, so the resolving fragment is its own fallback series.'
+		);
+	}
+
+	/**
 	 * A negative stored value cannot drag the revision below zero.
 	 *
 	 * @covers ::stored

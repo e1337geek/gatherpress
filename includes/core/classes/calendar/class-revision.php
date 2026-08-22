@@ -145,6 +145,16 @@ final class Revision {
 	 * with it whichever fragment is asked, and it is at least one past the
 	 * current value, so a second call in the same second still separates.
 	 *
+	 * The value is allocated in one SQL statement against a single canonical
+	 * row, the series' lowest post ID, and only then published to the sibling
+	 * mirrors. Read-then-write is the interleave two concurrent cancellations
+	 * produce: both read S, both publish S plus one, and a subscriber receives
+	 * two different bodies at the same `SEQUENCE`, which entitles it to keep
+	 * the first. In the statement, the canonical row's own value plus one is
+	 * taken when it exceeds the floor computed in PHP, so two writers
+	 * serialized on the row lock still allocate distinct values even when both
+	 * computed the same floor from the same stale snapshot.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Any post ID belonging to the series.
@@ -152,13 +162,56 @@ final class Revision {
 	 * @return int The new revision.
 	 */
 	public function advance( int $post_id ): int {
-		$next = min(
+		global $wpdb;
+
+		$post_ids = array_map( 'intval', Series::get_instance()->resolve_post_ids( $post_id ) );
+
+		if ( array() === $post_ids ) {
+			$post_ids = array( $post_id );
+		}
+
+		$canonical = min( $post_ids );
+		$floor     = min(
 			max( $this->current( $post_id ) + 1, time() - self::EPOCH ),
 			self::CEILING
 		);
 
-		foreach ( Series::get_instance()->resolve_post_ids( $post_id ) as $sibling_id ) {
-			update_post_meta( (int) $sibling_id, self::META_KEY, $next );
+		// The allocation row must exist for the statement below to serialize
+		// writers on. Idempotent: with the row present this is one read.
+		add_post_meta( $canonical, self::META_KEY, 0, true );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$updated = $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i SET meta_value = LAST_INSERT_ID(
+					LEAST( GREATEST( CAST( meta_value AS SIGNED ) + 1, %d ), %d )
+				) WHERE post_id = %d AND meta_key = %s ORDER BY meta_id LIMIT 1',
+				$wpdb->postmeta,
+				$floor,
+				self::CEILING,
+				$canonical,
+				self::META_KEY
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		// `LAST_INSERT_ID()` is connection-local, so this reads back the value
+		// this statement allocated even if another writer has advanced the row
+		// since. The fallback covers a row the statement could not move: at
+		// the ceiling the write repeats the stored value, and a short-circuited
+		// metadata layer can leave no row at all. The floor is correct for
+		// both, and never a stale connection value.
+		$next = ( is_int( $updated ) && 0 < $updated )
+			? (int) $wpdb->get_var( 'SELECT LAST_INSERT_ID()' )
+			: $floor;
+
+		wp_cache_delete( $canonical, 'post_meta' );
+
+		foreach ( $post_ids as $sibling_id ) {
+			// As a string, because meta storage is strings: an integer never
+			// strictly equals the stored value, so publishing it would run one
+			// redundant identical-value UPDATE per advance on the canonical row.
+			update_post_meta( $sibling_id, self::META_KEY, (string) $next );
 		}
 
 		return $next;
