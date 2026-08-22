@@ -289,10 +289,15 @@ final class Cache {
 	/**
 	 * Drop every cached copy of the two stamp options.
 	 *
-	 * The stamp is written by bare SQL, so the option cache, the missing-option
-	 * memo and the autoload blob all still hold whatever they held before the
-	 * write, and a read through any of them would resurrect the value the
-	 * write just superseded.
+	 * The stamp is written by bare SQL, so the per-option cache and the
+	 * missing-option memo still hold whatever they held before the write, and
+	 * a read through either would resurrect the value the write just
+	 * superseded. The memo is the dangerous half on a persistent object
+	 * cache: `get_option()` consults it before touching the database, and a
+	 * feed request always reads the counter before the first change allocates
+	 * it, so without the delete the counter reads as zero forever while the
+	 * row keeps incrementing. Both options are written `autoload => 'off'`,
+	 * so the alloptions blob never carries them.
 	 *
 	 * @since 0.36.0
 	 *
@@ -301,6 +306,7 @@ final class Cache {
 	private function flush_option_caches(): void {
 		wp_cache_delete( self::LAST_MODIFIED_OPTION, 'options' );
 		wp_cache_delete( self::CHANGE_COUNT_OPTION, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
 	}
 
 	/**
