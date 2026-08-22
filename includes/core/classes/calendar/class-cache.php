@@ -73,7 +73,7 @@ final class Cache {
 	 * `Last-Modified` has one-second resolution, and it is the whole cache
 	 * namespace: two changes inside one second produce the same stamp, so the
 	 * second one resolves to a key the first already filled and is served the
-	 * body it just invalidated. Cancelling two occurrences of a series is one
+	 * body it just invalidated. Canceling two occurrences of a series is one
 	 * loop, well inside a second, so this is the ordinary case rather than a
 	 * race. The counter separates them without pretending the HTTP validator has
 	 * finer resolution than it does.

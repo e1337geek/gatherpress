@@ -1092,7 +1092,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * resolution. Render, change, render again in the same validator second and
 	 * a lookup keyed by the stamp alone lands on the key the first render
 	 * filled, so the change is correctly absent from the stored body and
-	 * correctly reported as fresh. Cancelling two dates of a series is one
+	 * correctly reported as fresh. Canceling two dates of a series is one
 	 * operator action and lands well inside a second, so this is the ordinary
 	 * case rather than a race.
 	 *
@@ -1163,7 +1163,7 @@ class Test_Calendar_Recurrence extends Base {
 	 * `SEQUENCE` is the only signal by which a client decides whether an
 	 * incoming component supersedes one it already holds, and both of the
 	 * obvious sources of it have one-second resolution: `post_modified_gmt`,
-	 * which an occurrence write does not touch at all, and `time()`. Cancelling
+	 * which an occurrence write does not touch at all, and `time()`. Canceling
 	 * two dates of a series is one loop and lands well inside a second, so this
 	 * is the ordinary case rather than a race.
 	 *
@@ -1558,7 +1558,7 @@ class Test_Calendar_Recurrence extends Base {
 	}
 
 	/**
-	 * Cancelling an occurrence reaches a subscribed client rather than being
+	 * Canceling an occurrence reaches a subscribed client rather than being
 	 * held behind the response cache and a stale `Last-Modified`.
 	 *
 	 * The transient is the lesser half. `Last-Modified` is served from the
@@ -1574,7 +1574,7 @@ class Test_Calendar_Recurrence extends Base {
 	 *
 	 * @return void
 	 */
-	public function test_cancelling_an_occurrence_invalidates_the_calendar_cache(): void {
+	public function test_canceling_an_occurrence_invalidates_the_calendar_cache(): void {
 		$post_id = $this->create_weekly_series();
 
 		$this->enable_pretty_permalinks();
@@ -1608,7 +1608,7 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertNotSame(
 			$stale,
 			$moved,
-			'Cancelling an occurrence must stamp the calendar, or every cached body stays reachable.'
+			'Canceling an occurrence must stamp the calendar, or every cached body stays reachable.'
 		);
 		$this->assertSame(
 			array( sprintf( 'EXDATE;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 1 ) ) ),
