@@ -63,7 +63,12 @@ final class Rsvp_Occurrence {
 	 *
 	 * The single source of truth for the slug format.
 	 *
+	 * Both identifiers are unread: this is a frozen signature whose body, the
+	 * one composition of the two into a slug, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -79,7 +84,12 @@ final class Rsvp_Occurrence {
 	/**
 	 * Attach an RSVP comment to an occurrence.
 	 *
+	 * All three parameters are unread: this is a frozen signature whose body,
+	 * the term assignment onto the comment, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $comment_id    RSVP comment ID.
 	 * @param int    $post_id       Series post ID.
@@ -99,7 +109,12 @@ final class Rsvp_Occurrence {
 	 * Passed through the existing `Rsvp\Query::get_rsvps()` path, so there is no
 	 * new SQL, no new filter, and no table.
 	 *
+	 * Both identifiers are unread: this is a frozen signature whose body, the
+	 * clause built from the occurrence's term slug, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -115,10 +130,15 @@ final class Rsvp_Occurrence {
 	/**
 	 * Move occurrence terms from one series post to another.
 	 *
-	 * The forward-split seam, frozen here as a stub returning 0. Its tests
-	 * and its callers land with the forward split itself.
+	 * The forward-split seam, frozen here as a stub returning 0. Its callers
+	 * land with the forward split itself.
+	 *
+	 * All three parameters are unread: this is a frozen signature whose body,
+	 * the term rename they drive, lands with that forward split.
 	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int      $from_post_id   Series post ID the occurrences currently belong to.
 	 * @param int      $to_post_id     Series post ID they move to.

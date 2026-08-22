@@ -92,7 +92,13 @@ final class Rest_Api {
 	/**
 	 * Set an occurrence's status.
 	 *
+	 * `$request` is unread: this is a frozen signature whose body, the
+	 * composite-key row update that reads `post_id`, `recurrence_id` and
+	 * `status` off the request, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param WP_REST_Request $request Request carrying `post_id`, `recurrence_id` and `status`.
 	 *
@@ -108,7 +114,13 @@ final class Rest_Api {
 	/**
 	 * Report whether the current user may change this occurrence's status.
 	 *
+	 * `$request` is unread: this is a frozen signature whose body, the
+	 * `current_user_can( 'edit_post', $post_id )` check that reads `post_id` off
+	 * the request, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param WP_REST_Request $request Request carrying the `post_id` to authorize against.
 	 *

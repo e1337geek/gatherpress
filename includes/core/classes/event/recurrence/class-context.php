@@ -61,7 +61,12 @@ final class Context {
 	/**
 	 * Enter the context of one occurrence.
 	 *
+	 * Both identifiers are unread: this is a frozen signature whose body, the
+	 * request-scoped store they are written into, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -103,7 +108,12 @@ final class Context {
 	 * implementation will instead return the occurrence's own value inside
 	 * occurrence context and `$value` untouched outside it.
 	 *
+	 * All four parameters are supplied by WordPress' `get_post_metadata` filter
+	 * signature and are unread while the stub short-circuits nothing.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param mixed  $value      Short-circuit value, null when nothing has filtered yet.
 	 * @param int    $object_id  Post ID the meta is read from.
@@ -121,7 +131,12 @@ final class Context {
 	/**
 	 * Build the permalink of one occurrence.
 	 *
+	 * Both identifiers are unread: this is a frozen signature whose body, the
+	 * permalink builder that composes them into a URL, lands on a later branch.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.

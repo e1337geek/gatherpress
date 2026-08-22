@@ -224,7 +224,12 @@ final class Query {
 	 * `Event\Query`'s own priority-10 filters, and will return the clauses
 	 * untouched when the site has no recurring events.
 	 *
+	 * `$query` is supplied by WordPress' `posts_clauses` filter signature and is
+	 * unread while the stub hands the clauses straight back.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param array    $pieces Query clauses keyed as `WP_Query` supplies them.
 	 * @param WP_Query $query  Query being filtered.
@@ -246,7 +251,12 @@ final class Query {
 	 * result set and a full `WP_Post` result set, because the plugin's own
 	 * read API requests IDs.
 	 *
+	 * `$query` is supplied by WordPress' `the_posts` filter signature and is
+	 * unread while the stub hands the results straight back.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param array    $posts Results, either integers or `WP_Post` objects.
 	 * @param WP_Query $query Query being filtered.

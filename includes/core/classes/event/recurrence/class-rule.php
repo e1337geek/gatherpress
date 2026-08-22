@@ -182,7 +182,13 @@ final class Rule {
 	 * and no logic of its own, a promoted constructor has no assignment
 	 * statements of its own for a coverage tool to under-report.
 	 *
+	 * The ten parameters are the ten fields of an immutable value object, not a
+	 * call signature anyone types: the constructor is private, so every instance
+	 * is assembled by `from_array()` or `from_post()`.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.ExcessiveParameterList)
 	 *
 	 * @param string                 $frequency       One of the `FREQUENCY_*` constants.
 	 * @param int                    $interval        Repeat interval.
