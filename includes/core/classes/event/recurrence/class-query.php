@@ -332,7 +332,7 @@ final class Query {
 	 * @param array    $pieces Query clauses keyed as `WP_Query` supplies them.
 	 * @param WP_Query $query  Query being filtered.
 	 *
-	 * @return array The clauses, unmodified by this stub.
+	 * @return array The clauses, occurrence-expanded unless one of the guards above declined.
 	 */
 	public function expand_event_clauses( array $pieces, WP_Query $query ): array {
 		global $wpdb;
@@ -544,8 +544,7 @@ final class Query {
 	 * Filters `the_posts` at priority 10. Every result set reaching this filter
 	 * is a list of `WP_Post` objects, because `WP_Query` returns before
 	 * `the_posts` for both the `'ids'` and the `'id=>parent'` field shapes, so
-	 * the
-	 * plugin's own `Event\Query::get_events_list()` contract is untouched, and
+	 * the plugin's own `Event\Query::get_events_list()` contract is untouched, and
 	 * `Occurrences::select_upcoming()` remains the occurrence-aware read API
 	 * for GatherPress's own lists.
 	 *
@@ -554,7 +553,7 @@ final class Query {
 	 * @param array    $posts Results as `WP_Post` objects.
 	 * @param WP_Query $query Query being filtered.
 	 *
-	 * @return array The results, unmodified by this stub.
+	 * @return array The results, each stamped with its occurrence unless a guard above declined.
 	 */
 	public function attach_occurrences( array $posts, WP_Query $query ): array {
 		if ( ! self::site_has_recurring_events() || ! $this->is_event_query( $query ) ) {
