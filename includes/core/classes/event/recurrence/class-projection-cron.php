@@ -181,15 +181,36 @@ final class Projection_Cron {
 	/**
 	 * Unschedule the sweep on plugin deactivation.
 	 *
+	 * Iterates every site on a network-wide deactivation, using the same
+	 * bounded `switch_to_blog()` walk `Setup::activate_gatherpress_plugin()`
+	 * uses, because each subsite stores the sweep in its own cron option and
+	 * clearing only the current site orphans every child site's hourly event
+	 * for as long as the plugin stays inactive. `wp_clear_scheduled_hook()`
+	 * rather than `wp_unschedule_event()`, so every scheduled timestamp is
+	 * removed, not only the earliest one `wp_next_scheduled()` reports.
+	 *
 	 * @since 0.36.0
+	 *
+	 * @param bool $network_wide Whether the plugin is being deactivated network-wide.
 	 *
 	 * @return void
 	 */
-	public function deactivate(): void {
-		$timestamp = wp_next_scheduled( self::SWEEP_ACTION );
+	public function deactivate( bool $network_wide = false ): void {
+		if ( is_multisite() && $network_wide ) {
+			$site_ids = get_sites(
+				array(
+					'fields'     => 'ids',
+					'network_id' => get_current_site()->id,
+				)
+			);
 
-		if ( false !== $timestamp ) {
-			wp_unschedule_event( $timestamp, self::SWEEP_ACTION );
+			foreach ( $site_ids as $site_id ) {
+				switch_to_blog( $site_id );
+				wp_clear_scheduled_hook( self::SWEEP_ACTION );
+				restore_current_blog();
+			}
+		} else {
+			wp_clear_scheduled_hook( self::SWEEP_ACTION );
 		}
 	}
 }
