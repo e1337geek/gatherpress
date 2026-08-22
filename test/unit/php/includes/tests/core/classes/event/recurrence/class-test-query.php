@@ -1469,6 +1469,7 @@ class Test_Query extends Base {
 				'wp_gatherpress_events.datetime_start_gmt ASC'
 				. " AND `wp_gatherpress_events`.`datetime_end_gmt` >= '2026-01-01 00:00:00'",
 				'wp_gatherpress_events',
+				Query::OCCURRENCE_ALIAS,
 			)
 		);
 
@@ -1494,43 +1495,94 @@ class Test_Query extends Base {
 			Utility::invoke_hidden_method(
 				Query::get_instance(),
 				'coalesce_event_columns',
-				array( 'wp_posts.post_title ASC', 'wp_gatherpress_events' )
+				array( 'wp_posts.post_title ASC', 'wp_gatherpress_events', Query::OCCURRENCE_ALIAS )
 			),
 			'Failed to assert a clause with no anchor columns is returned unchanged.'
 		);
 	}
 
 	/**
-	 * Coverage for both return paths of `orderby_has_post_id`.
+	 * Coverage for `coalesce_event_columns` naming whichever relation it is given.
 	 *
-	 * The request-driven tests above are what prove the wiring, but xdebug
-	 * does not reliably trace a `private` helper reached from its caller in
-	 * the same class, so each return path also gets a direct invoke.
+	 * The alias is a parameter because two callers rewrite the same clauses
+	 * against two different relations: the row-for-row occurrence join and the
+	 * one-row-per-post admin display relation. A hard-coded alias would send
+	 * the admin list's ordering and bucketing at a table that is not joined
+	 * there.
 	 *
-	 * @covers ::orderby_has_post_id
+	 * @covers ::coalesce_event_columns
 	 *
 	 * @return void
 	 */
-	public function test_orderby_has_post_id_return_paths(): void {
-		global $wpdb;
+	public function test_coalesce_event_columns_uses_the_alias_it_is_given(): void {
+		$this->assertSame(
+			sprintf(
+				'COALESCE( %1$s.datetime_start_gmt, wp_gatherpress_events.datetime_start_gmt ) ASC',
+				Query::ADMIN_SORT_ALIAS
+			),
+			Utility::invoke_hidden_method(
+				Query::get_instance(),
+				'coalesce_event_columns',
+				array(
+					'wp_gatherpress_events.datetime_start_gmt ASC',
+					'wp_gatherpress_events',
+					Query::ADMIN_SORT_ALIAS,
+				)
+			),
+			'Failed to assert the rewrite names the relation alias the caller supplied.'
+		);
+	}
 
+	/**
+	 * Coverage for both answers of `carries_anchor_datetime`.
+	 *
+	 * The admin list only needs the occurrence relation when a clause actually
+	 * reads an anchor datetime column. The `where` arm is the one B3 turns on:
+	 * an Upcoming or Past view sorted by title carries no anchor `orderby` at
+	 * all, and bucketing it on the anchor is exactly the defect.
+	 *
+	 * @covers ::carries_anchor_datetime
+	 *
+	 * @return void
+	 */
+	public function test_carries_anchor_datetime_reads_both_clauses(): void {
 		$instance = Query::get_instance();
 
 		$this->assertTrue(
 			Utility::invoke_hidden_method(
 				$instance,
-				'orderby_has_post_id',
-				array( sprintf( 'wp_gatherpress_events.datetime_start_gmt DESC, %s.ID DESC', $wpdb->posts ) )
+				'carries_anchor_datetime',
+				array(
+					array( 'orderby' => 'wp_gatherpress_events.datetime_start_gmt ASC' ),
+					'wp_gatherpress_events',
+				)
 			),
-			'Failed to assert a clause already ordering on the post ID is recognized.'
+			'Failed to assert a date-ordered clause is recognized.'
+		);
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'carries_anchor_datetime',
+				array(
+					array( 'where' => " AND `wp_gatherpress_events`.`datetime_end_gmt` >= '2026-01-01 00:00:00'" ),
+					'wp_gatherpress_events',
+				)
+			),
+			'Failed to assert a bucket predicate is recognized on its own.'
 		);
 		$this->assertFalse(
 			Utility::invoke_hidden_method(
 				$instance,
-				'orderby_has_post_id',
-				array( sprintf( '%s.post_name ASC', $wpdb->posts ) )
+				'carries_anchor_datetime',
+				array(
+					array(
+						'orderby' => 'wp_posts.post_title ASC',
+						'where'   => " AND wp_posts.post_status = 'publish'",
+					),
+					'wp_gatherpress_events',
+				)
 			),
-			'Failed to assert a clause ordering on another posts-table column is not mistaken for one.'
+			'Failed to assert clauses reading no anchor datetime are left alone.'
 		);
 	}
 
@@ -1956,6 +2008,66 @@ class Test_Query extends Base {
 			$once,
 			$twice,
 			'Failed to assert a second pass over already-rewritten clauses changes nothing.'
+		);
+	}
+
+	/**
+	 * Coverage for both renderings one anchor column can appear under.
+	 *
+	 * `Event\Query` writes the ORDER BY column unquoted and the WHERE column
+	 * back-quoted through `$wpdb->prepare()`'s `%i` placeholder. Both have to
+	 * be recognized and both have to be rewritten, so both are named here
+	 * rather than inferred from whichever one a caller happened to exercise.
+	 *
+	 * @covers ::anchor_column_renderings
+	 *
+	 * @return void
+	 */
+	public function test_anchor_column_renderings_names_both_forms(): void {
+		$this->assertSame(
+			array(
+				'wp_gatherpress_events.datetime_end_gmt',
+				'`wp_gatherpress_events`.`datetime_end_gmt`',
+			),
+			Utility::invoke_hidden_method(
+				Query::get_instance(),
+				'anchor_column_renderings',
+				array( 'wp_gatherpress_events', 'datetime_end_gmt' )
+			),
+			'Failed to assert both the unquoted and back-quoted renderings are produced.'
+		);
+	}
+	/**
+	 * Coverage for both return paths of `orderby_has_post_id`.
+	 *
+	 * The request-driven tests above are what prove the wiring, but xdebug
+	 * does not reliably trace a `private` helper reached from its caller in
+	 * the same class, so each return path also gets a direct invoke.
+	 *
+	 * @covers ::orderby_has_post_id
+	 *
+	 * @return void
+	 */
+	public function test_orderby_has_post_id_return_paths(): void {
+		global $wpdb;
+
+		$instance = Query::get_instance();
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'orderby_has_post_id',
+				array( sprintf( 'wp_gatherpress_events.datetime_start_gmt DESC, %s.ID DESC', $wpdb->posts ) )
+			),
+			'Failed to assert a clause already ordering on the post ID is recognized.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'orderby_has_post_id',
+				array( sprintf( '%s.post_name ASC', $wpdb->posts ) )
+			),
+			'Failed to assert a clause ordering on another posts-table column is not mistaken for one.'
 		);
 	}
 

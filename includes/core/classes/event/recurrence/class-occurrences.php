@@ -2153,6 +2153,77 @@ final class Occurrences {
 	}
 
 	/**
+	 * Build the derived one-row-per-post relation of each post's display occurrence.
+	 *
+	 * The SQL twin of `select_display_for_series()`'s choice: for every post
+	 * that owns scheduled occurrence rows, the earliest occurrence that has
+	 * not finished, falling back to the latest one that has, carrying that
+	 * occurrence's own paired `datetime_start_gmt` and `datetime_end_gmt`
+	 * rather than two independent aggregates. The two SQL consumers are
+	 * `Recurrence\Query::adjust_admin_occurrence_sorting()`, which joins it to
+	 * supply both the admin list's date ordering and its Upcoming/Past bucket
+	 * predicate, and `Admin_List::get_event_counts()`, which joins it so the
+	 * view-link counts describe those same rows. The third decision, the date
+	 * the column prints, is the PHP twin `select_display_for_series()` making
+	 * the identical choice for one post. No row can therefore display a date
+	 * that contradicts the view that selected it or the position it was given.
+	 *
+	 * The paired end is what the bucket predicate needs and what two
+	 * independent aggregates cannot supply: bucketing compares the chosen
+	 * occurrence's *end* against now while the ordering compares that same
+	 * occurrence's *start*, and a `MAX( datetime_end_gmt )` taken across the
+	 * whole post would answer for a different occurrence than the one shown.
+	 *
+	 * The relation is deliberately per-post, not per-series: it groups on
+	 * `series_post_id`, the post owning each row, and never consults
+	 * `Series::resolve_post_ids()`. The admin list's unit is the post (its
+	 * row actions, bulk actions and statuses are all per post), a per-series
+	 * date would render every sibling row of a split series identical and
+	 * indistinguishable, and the sibling set is defined by a PHP filter that
+	 * SQL cannot consult. Series-wide reads remain the job of the selector
+	 * methods that take a resolved post ID list.
+	 *
+	 * The inner pick chooses each post's occurrence start; the outer join
+	 * retrieves that occurrence's own row so its start and end stay paired,
+	 * and the `MAX()` on the end collapses the theoretical duplicate of two
+	 * local starts sharing one GMT instant across a DST fold, keeping the
+	 * relation at one row per post.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $now_gmt GMT `Y-m-d H:i:s` instant separating unfinished from finished.
+	 *
+	 * @return string A parenthesized, fully prepared derived-table expression.
+	 */
+	public function display_occurrence_relation_sql( string $now_gmt ): string {
+		global $wpdb;
+
+		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- built from %i/%s placeholders only.
+		return (string) $wpdb->prepare(
+			'( SELECT chosen.series_post_id, chosen.datetime_start_gmt,'
+			. ' MAX( chosen.datetime_end_gmt ) AS datetime_end_gmt'
+			. ' FROM %i AS chosen'
+			. ' INNER JOIN ( SELECT series_post_id,'
+			. ' MIN( CASE WHEN datetime_end_gmt >= %s THEN datetime_start_gmt END ) AS next_start_gmt,'
+			. ' MAX( CASE WHEN datetime_end_gmt < %s THEN datetime_start_gmt END ) AS last_start_gmt'
+			. ' FROM %i WHERE status = %s GROUP BY series_post_id ) AS pick'
+			. ' ON pick.series_post_id = chosen.series_post_id'
+			. ' AND chosen.datetime_start_gmt = COALESCE( pick.next_start_gmt, pick.last_start_gmt )'
+			. ' WHERE chosen.status = %s'
+			. ' GROUP BY chosen.series_post_id, chosen.datetime_start_gmt )',
+			$table,
+			$now_gmt,
+			$now_gmt,
+			$table,
+			self::STATUS_SCHEDULED,
+			self::STATUS_SCHEDULED
+		);
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+	}
+
+	/**
 	 * Set the status of one occurrence.
 	 *
 	 * Scopes its update by both `series_post_id` and `recurrence_id`. Keying on

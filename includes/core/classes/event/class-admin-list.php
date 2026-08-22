@@ -19,7 +19,7 @@ use Exception;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Event\Recurrence\Occurrences;
-use GatherPress\Core\Event\Recurrence\Series;
+use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Rsvp\Query as Rsvp_Query;
 use GatherPress\Core\Rsvp;
 use GatherPress\Core\Traits\Singleton;
@@ -254,6 +254,20 @@ final class Admin_List {
 	 * in the events table (no date set yet) are excluded from both
 	 * buckets — they only appear under the All view.
 	 *
+	 * A count is a promise about the list, so on a site with recurring events
+	 * the end time compared here is the one the list itself buckets on: the
+	 * chosen occurrence's end, read from the same
+	 * `Occurrences::display_occurrence_relation_sql()` relation
+	 * `Recurrence\Query::adjust_admin_occurrence_sorting()` joins onto the list
+	 * query, falling back through `COALESCE()` to the anchor for every post
+	 * with no scheduled occurrence rows. Counting on the anchor here while the
+	 * list buckets on the occurrence would advertise an Upcoming view that
+	 * omits an actively recurring series.
+	 *
+	 * On a site with no recurring events the relation is never built and both
+	 * statements are byte-identical to what they were before recurrence
+	 * existed.
+	 *
 	 * @since 0.34.0
 	 *
 	 * @param string $post_type The event post type to count.
@@ -269,48 +283,55 @@ final class Admin_List {
 
 		$table   = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
 		$current = gmdate( Event::DATETIME_FORMAT, time() );
+		$select  = $wpdb->prepare(
+			'SELECT COUNT(1) FROM %i INNER JOIN %i ON %i.ID = %i.post_id',
+			$wpdb->posts,
+			$table,
+			$wpdb->posts,
+			$table
+		);
+		$where   = $wpdb->prepare(
+			' WHERE %i.post_type = %s AND %i.post_status NOT IN'
+			. " ('trash', 'auto-draft') AND ",
+			$wpdb->posts,
+			$post_type,
+			$wpdb->posts
+		);
+		$column  = $wpdb->prepare( '%i.datetime_end_gmt', $table );
+
+		$occurrences = Occurrences::get_instance();
+
+		if ( Recurrence_Query::site_has_recurring_events() && $occurrences->table_exists() ) {
+			$alias   = Recurrence_Query::ADMIN_SORT_ALIAS;
+			$select .= ' LEFT JOIN '
+				. $occurrences->display_occurrence_relation_sql( $current )
+				. $wpdb->prepare( ' AS %i ON %i.ID = %i.series_post_id', $alias, $wpdb->posts, $alias );
+			$column  = $wpdb->prepare(
+				'COALESCE( %i.datetime_end_gmt, %i.datetime_end_gmt )',
+				$alias,
+				$table
+			);
+		}
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- every fragment concatenated here is prepared above.
 
 		// Upcoming: events whose end time is still in the future (includes
 		// currently running). Events with no row in the events table are
 		// not counted — they only show under the All view.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$upcoming = (int) $wpdb->get_var(
-			$wpdb->prepare(
-				'SELECT COUNT(1) FROM %i INNER JOIN %i ON %i.ID = %i.post_id'
-				. ' WHERE %i.post_type = %s AND %i.post_status NOT IN'
-				. " ('trash', 'auto-draft') AND %i.datetime_end_gmt >= %s",
-				$wpdb->posts,
-				$table,
-				$wpdb->posts,
-				$table,
-				$wpdb->posts,
-				$post_type,
-				$wpdb->posts,
-				$table,
-				$current
-			)
+			$select . $where . $column . $wpdb->prepare( ' >= %s', $current )
 		);
 
 		// Past: events whose end time has already passed. Events with no
 		// row in the events table are excluded — they only show under the
 		// All view.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$past = (int) $wpdb->get_var(
-			$wpdb->prepare(
-				'SELECT COUNT(1) FROM %i INNER JOIN %i ON %i.ID = %i.post_id'
-				. ' WHERE %i.post_type = %s AND %i.post_status NOT IN'
-				. " ('trash', 'auto-draft') AND %i.datetime_end_gmt < %s",
-				$wpdb->posts,
-				$table,
-				$wpdb->posts,
-				$table,
-				$wpdb->posts,
-				$post_type,
-				$wpdb->posts,
-				$table,
-				$current
-			)
+			$select . $where . $column . $wpdb->prepare( ' < %s', $current )
 		);
+
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
 		$this->event_counts[ $post_type ] = array(
 			'upcoming' => $upcoming,
@@ -601,6 +622,16 @@ final class Admin_List {
 	 * shows the occurrence the series is actually next doing, and falls back to
 	 * its most recent past one once the whole series has elapsed.
 	 *
+	 * The occurrence is resolved **per post, not per series**: the list's unit
+	 * is the post, and the ordering and the Upcoming/Past bucketing that place
+	 * this row read the same one-row-per-post relation
+	 * (`Occurrences::display_occurrence_relation_sql()`, joined by
+	 * `Recurrence\Query::adjust_admin_occurrence_sorting()`). Resolving across
+	 * a split series' sibling posts here would print the same date on every
+	 * sibling row and contradict the position and the view the row was given.
+	 * Series-wide reads stay with the callers that pass a resolved post ID
+	 * list.
+	 *
 	 * Rendering goes through occurrence context rather than formatting the row
 	 * by hand, so the string is produced by the same
 	 * `Event::get_display_datetime()` every other surface uses, from the
@@ -621,20 +652,15 @@ final class Admin_List {
 	 */
 	protected function render_datetime_column( int $post_id ): void {
 		$occurrences = Occurrences::get_instance();
-		$post_ids    = Series::get_instance()->resolve_post_ids( $post_id );
 
-		// Probe the occurrence table only when some post of the series
-		// actually carries a rule. `has_recurrence_rule()` is a post-meta
-		// read the list query's cache priming has already paid for, where
-		// the probes are one or two uncached `LIMIT 1` queries per row: on a
-		// site with a single recurring series, every ordinary row of a
-		// twenty-row page would otherwise pay them for queries that cannot
-		// match.
-		$has_rule = array_filter( $post_ids, array( $occurrences, 'has_recurrence_rule' ) );
-
-		$occurrence = array() !== $has_rule
-			? $occurrences->select_display_for_series( $post_ids )
-			: null;
+		// Probe the occurrence table only when this post actually carries a
+		// rule. `has_recurrence_rule()` is a post-meta read the list query's
+		// cache priming has already paid for, where the probes are one or two
+		// uncached `LIMIT 1` queries per row: on a site with a single
+		// recurring series, every ordinary row of a twenty-row page would
+		// otherwise pay them for queries that cannot match.
+		$has_rule   = $occurrences->has_recurrence_rule( $post_id );
+		$occurrence = $has_rule ? $occurrences->select_display_for_series( array( $post_id ) ) : null;
 		$context    = Context::get_instance();
 		$previous   = $context->current();
 
@@ -648,13 +674,10 @@ final class Admin_List {
 		// catches the exception and continues, the next render would
 		// otherwise inherit this row's context.
 		try {
-			// The occurrence row names the post it belongs to. Reading that rather
-			// than the row's own post ID is what keeps a split series working, since
-			// `Context::resolve()` only serves an occurrence to the post that owns it.
-			$event = new Event(
-				( null !== $occurrence ) ? (int) $occurrence['series_post_id'] : $post_id
-			);
-
+			// The row's own post, always: the occurrence was selected for this
+			// post alone, so it is the post `Context::resolve()` will serve it
+			// to, and a post with no occurrence has only its own anchor.
+			$event    = new Event( $post_id );
 			$datetime = $event->get_display_datetime();
 		} finally {
 			$context->restore( $previous );
@@ -662,7 +685,7 @@ final class Admin_List {
 
 		echo esc_html( $datetime );
 
-		if ( ! $occurrences->has_recurrence_rule( $post_id ) ) {
+		if ( ! $has_rule ) {
 			return;
 		}
 

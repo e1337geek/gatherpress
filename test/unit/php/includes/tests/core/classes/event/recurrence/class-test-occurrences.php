@@ -4969,4 +4969,225 @@ class Test_Occurrences extends Base {
 			'Failed to assert the resolution is independent of the order the post IDs are passed in.'
 		);
 	}
+
+	/**
+	 * Every path of the per-post display pick, guards included.
+	 *
+	 * The PHP twin of `display_occurrence_relation_sql()`, and the one the
+	 * admin list's date column reads, so its answer has to agree with the
+	 * relation's on the same fixture: the earliest unfinished occurrence where
+	 * one exists, the latest finished one where none does. Each of the three
+	 * guard arms is exercised on its own, because they are one statement and
+	 * line coverage would report the guard as covered with two of them never
+	 * evaluated.
+	 *
+	 * @covers ::select_display_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_display_for_series_covers_every_path(): void {
+		global $wpdb;
+
+		$now      = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$daily    = array(
+			'frequency' => 'daily',
+			'interval'  => 1,
+			'end_type'  => 'count',
+			'count'     => 5,
+		);
+		$instance = Occurrences::get_instance();
+
+		$running = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-2 days +5 hours' ),
+			$now->modify( '-2 days +6 hours' ),
+			'UTC'
+		);
+		$elapsed = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-30 days' ),
+			$now->modify( '-30 days +1 hour' ),
+			'UTC'
+		);
+
+		$this->assertSame(
+			$now->modify( '+5 hours' )->format( 'Y-m-d H:i:s' ),
+			$instance->select_display_for_series( array( $running ) )['datetime_start_gmt'],
+			'Failed to assert a running series resolves to its earliest unfinished occurrence.'
+		);
+		$this->assertSame(
+			$now->modify( '-26 days' )->format( 'Y-m-d H:i:s' ),
+			$instance->select_display_for_series( array( $elapsed ) )['datetime_start_gmt'],
+			'Failed to assert an elapsed series falls back to its latest finished occurrence.'
+		);
+		$this->assertNull(
+			$instance->select_display_for_series( array() ),
+			'Failed to assert an empty post ID list resolves nothing.'
+		);
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+
+		$this->assertNull(
+			$instance->select_display_for_series( array( $running ) ),
+			'Failed to assert a site with no recurring events never probes the occurrence table.'
+		);
+
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		// The memoized probe answer, forced to "absent" so the third guard arm
+		// is the only one that can act. A blog joined to a network after the
+		// table was created is the production shape of this.
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		Utility::set_and_get_hidden_property( $instance, 'table_exists', array( $table => false ) );
+
+		$absent = $instance->select_display_for_series( array( $running ) );
+
+		$instance->forget_table_exists();
+
+		$this->assertNull( $absent, 'Failed to assert a blog without the occurrence table resolves nothing.' );
+	}
+
+	/**
+	 * The display relation answers one row per post, carrying a paired start and end.
+	 *
+	 * This is the single definition every admin-list date decision reads, so
+	 * the properties asserted are the ones those consumers depend on: exactly
+	 * one row per post that owns scheduled rows, the earliest unfinished
+	 * occurrence where one exists, the latest finished one where none does,
+	 * and the *same* occurrence's start and end rather than two independent
+	 * aggregates.
+	 *
+	 * @covers ::display_occurrence_relation_sql
+	 *
+	 * @return void
+	 */
+	public function test_display_occurrence_relation_answers_one_paired_row_per_post(): void {
+		global $wpdb;
+
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$daily   = array(
+			'frequency' => 'daily',
+			'interval'  => 1,
+			'end_type'  => 'count',
+			'count'     => 5,
+		);
+		$running = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-2 days +5 hours' ),
+			$now->modify( '-2 days +6 hours' ),
+			'UTC'
+		);
+		$elapsed = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-30 days' ),
+			$now->modify( '-30 days +1 hour' ),
+			'UTC'
+		);
+
+		$relation = Occurrences::get_instance()->display_occurrence_relation_sql(
+			$now->format( 'Y-m-d H:i:s' )
+		);
+
+		$this->assertStringNotContainsString(
+			'%',
+			$relation,
+			'Failed to assert the relation is fully prepared, with no placeholder left to interpolate.'
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the relation arrives fully prepared.
+		$rows = $wpdb->get_results(
+			'SELECT * FROM ' . $relation . ' AS relation ORDER BY relation.series_post_id ASC',
+			ARRAY_A
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		$this->assertCount( 2, $rows, 'Failed to assert the relation answers exactly one row per post.' );
+
+		$keyed = array_column( $rows, null, 'series_post_id' );
+
+		$this->assertSame(
+			$now->modify( '+5 hours' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $running ]['datetime_start_gmt'],
+			'Failed to assert a running series is represented by its earliest unfinished occurrence.'
+		);
+		$this->assertSame(
+			$now->modify( '+6 hours' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $running ]['datetime_end_gmt'],
+			'Failed to assert the relation carries that same occurrence\'s own end, not a whole-post maximum.'
+		);
+		$this->assertSame(
+			$now->modify( '-26 days' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $elapsed ]['datetime_start_gmt'],
+			'Failed to assert an elapsed series falls back to its latest finished occurrence.'
+		);
+		$this->assertSame(
+			$now->modify( '-26 days +1 hour' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $elapsed ]['datetime_end_gmt'],
+			'Failed to assert the elapsed fallback also carries its own paired end.'
+		);
+	}
+
+	/**
+	 * The display relation ignores canceled rows entirely.
+	 *
+	 * Cancellation is occurrence state, and a canceled occurrence must never
+	 * become the date a list sorts, buckets or reads by. With the series' only
+	 * unfinished occurrence canceled, the relation has to fall back to the
+	 * latest *finished* one rather than keep the canceled row.
+	 *
+	 * @covers ::display_occurrence_relation_sql
+	 *
+	 * @return void
+	 */
+	public function test_display_occurrence_relation_ignores_canceled_rows(): void {
+		global $wpdb;
+
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => 2,
+			),
+			$now->modify( '-1 day +5 hours' ),
+			$now->modify( '-1 day +6 hours' ),
+			'UTC'
+		);
+
+		$instance = Occurrences::get_instance();
+		$cutoff   = $now->format( 'Y-m-d H:i:s' );
+		$upcoming = array_values(
+			array_filter(
+				$instance->select_for_series( array( $post_id ) ),
+				static function ( array $row ) use ( $cutoff ): bool {
+					return $row['datetime_end_gmt'] >= $cutoff;
+				}
+			)
+		);
+
+		$this->assertCount( 1, $upcoming, 'Failed to arrange exactly one unfinished occurrence.' );
+
+		$instance->set_status( $post_id, $upcoming[0]['recurrence_id'], Occurrences::STATUS_CANCELED );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the relation arrives fully prepared.
+		$rows = $wpdb->get_results(
+			'SELECT * FROM ' . $instance->display_occurrence_relation_sql( $now->format( 'Y-m-d H:i:s' ) )
+			. ' AS relation',
+			ARRAY_A
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		$this->assertCount( 1, $rows, 'Failed to assert the post is still represented once.' );
+		$this->assertSame(
+			$now->modify( '-1 day +5 hours' )->format( 'Y-m-d H:i:s' ),
+			$rows[0]['datetime_start_gmt'],
+			'Failed to assert the canceled occurrence is skipped in favor of the latest finished one.'
+		);
+	}
 }
