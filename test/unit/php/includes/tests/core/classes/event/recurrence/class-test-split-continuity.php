@@ -1218,6 +1218,165 @@ class Test_Split_Continuity extends Base {
 	}
 
 	/**
+	 * A forward-rule projection the database refuses aborts and rolls the split back.
+	 *
+	 * `Occurrences::project()` reports a refused write as a `WP_Error`, and
+	 * the split used to discard that report: the phases kept running against
+	 * rows the projection never wrote, and the response claimed success. The
+	 * failure is produced at the database itself, by redirecting the
+	 * projection's first insert to a nonexistent table, the same seam the
+	 * projection suite's own write-failure tests use. Only the first insert
+	 * is broken, so the rollback's re-projection can restore the origin.
+	 *
+	 * @covers ::rule_phase
+	 * @covers ::write_rule
+	 * @covers ::apply_forward_rule
+	 * @covers ::roll_back
+	 *
+	 * @return void
+	 */
+	public function test_a_forward_rule_projection_the_database_refuses_rolls_the_split_back(): void {
+		$origin_id = $this->arrange_rich_series();
+		$before    = $this->whole_surface();
+		$filter    = $this->break_nth_occurrence_insert( 1 );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, $this->identifiers[2] );
+
+		remove_filter( 'query', $filter );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert a refused forward projection aborts the split instead of reporting success.'
+		);
+		$this->assertSame(
+			'gatherpress_occurrence_write_failed',
+			$result->get_error_code(),
+			'Failed to assert the database refusal itself is what surfaces.'
+		);
+		$this->assertSame(
+			$before,
+			$this->whole_surface(),
+			'Failed to assert a refused forward projection left every post, row, comment, term and meta value as found.'
+		);
+	}
+
+	/**
+	 * An origin-cap projection the database refuses aborts and rolls the split back.
+	 *
+	 * The second projection of a split, so the forward side's rule is already
+	 * written and its own projection has succeeded by the time this one
+	 * fails; the rollback has real work on both sides.
+	 *
+	 * @covers ::rule_phase
+	 * @covers ::write_rule
+	 * @covers ::apply_capped_rule
+	 * @covers ::roll_back
+	 *
+	 * @return void
+	 */
+	public function test_an_origin_cap_projection_the_database_refuses_rolls_the_split_back(): void {
+		$origin_id = $this->arrange_rich_series();
+		$before    = $this->whole_surface();
+		$filter    = $this->break_nth_occurrence_insert( 2 );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, $this->identifiers[2] );
+
+		remove_filter( 'query', $filter );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert a refused origin-cap projection aborts the split.'
+		);
+		$this->assertSame(
+			'gatherpress_occurrence_write_failed',
+			$result->get_error_code(),
+			'Failed to assert the database refusal itself is what surfaces.'
+		);
+		$this->assertSame(
+			$before,
+			$this->whole_surface(),
+			'Failed to assert a refused origin-cap projection left the whole observable surface as found.'
+		);
+	}
+
+	/**
+	 * A rollback whose own re-projection fails reports both failures.
+	 *
+	 * The rollback's final step re-derives the origin's rows from its
+	 * restored rule, and that projection can be refused by the same broken
+	 * database that caused the abort. Swallowing it would report a clean
+	 * rollback that never happened; the report instead carries the original
+	 * failure first and a second, distinctly named
+	 * `gatherpress_split_rollback_failed` after it, so the caller learns the
+	 * tree may be inconsistent. The rollback's code is deliberately *not*
+	 * reused for that second entry: a database refusing every write makes
+	 * both failures `gatherpress_occurrence_write_failed`, and
+	 * `WP_Error::add()` would fold the second into the first exactly when the
+	 * operator most needs to see it. The underlying refusal travels in the
+	 * entry's data instead. The occurrence rows themselves are already back
+	 * where they were, restored by the move undo, so the failed re-projection
+	 * loses no rows.
+	 *
+	 * @covers ::roll_back
+	 * @covers ::split_owned_series
+	 *
+	 * @return void
+	 */
+	public function test_a_rollback_whose_reprojection_fails_reports_both_failures(): void {
+		$origin_id = $this->arrange_rich_series();
+		$filter    = null;
+
+		// Break the occurrence inserts only once every commit-path projection
+		// has succeeded, so the first failing write is the rollback's own.
+		$inject = function ( $outcome, string $completed ) use ( &$filter ) {
+			if ( 'verify_partition' === $completed ) {
+				$filter = $this->break_nth_occurrence_insert( 1 );
+
+				// Carries a status of its own so the assertions below can tell
+				// whose data a REST response would read once the two failures
+				// share one `WP_Error`.
+				return new WP_Error( 'gatherpress_injected', 'Injected failure.', array( 'status' => 400 ) );
+			}
+
+			return $outcome;
+		};
+
+		add_filter( 'gatherpress_split_phase_complete', $inject, 10, 2 );
+
+		$result = Splitter::get_instance()->split_forward( $origin_id, $this->identifiers[2] );
+
+		remove_filter( 'gatherpress_split_phase_complete', $inject, 10 );
+
+		if ( null !== $filter ) {
+			remove_filter( 'query', $filter );
+		}
+
+		$this->assertInstanceOf( WP_Error::class, $result, 'Failed to assert the injected failure aborts the split.' );
+		$this->assertSame(
+			array( 'gatherpress_injected', 'gatherpress_split_rollback_failed' ),
+			$result->get_error_codes(),
+			'Failed to assert the report carries the original failure and a named rollback failure after it.'
+		);
+		$this->assertSame(
+			'gatherpress_occurrence_write_failed',
+			$result->get_error_data( 'gatherpress_split_rollback_failed' )['rollback_error_code'],
+			'Failed to assert the rollback entry carries the refusal that actually broke the rollback.'
+		);
+		$this->assertSame(
+			400,
+			$result->get_error_data()['status'],
+			'Failed to assert the first failure still governs the status the route reports.'
+		);
+		$this->assertSame(
+			$this->identifiers,
+			$this->identifiers_for( $origin_id ),
+			'Failed to assert the move undo restored every row even though the re-projection was refused.'
+		);
+	}
+
+	/**
 	 * Acceptance 3: a series term that cannot be created aborts rather than
 	 * leaving two unrelated posts.
 	 *

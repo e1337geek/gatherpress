@@ -609,7 +609,8 @@ class Test_Splitter extends Base {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @return array{0: int, 1: string[], 2: callable} The post ID, its ordered identifiers, and the horizon filter to remove.
+	 * @return array{0: int, 1: string[], 2: callable} The post ID, its ordered
+	 *               identifiers, and the horizon filter to remove.
 	 */
 	protected function create_series_longer_than_max_count(): array {
 		$horizon = static function (): int {
@@ -911,6 +912,106 @@ class Test_Splitter extends Base {
 			Occurrences::STATUS_CANCELED,
 			(string) Occurrences::get_instance()->get( $origin_id, '20260903T180000' )['status'],
 			'Failed to assert the cancellation survived. It is the reason the rule was kept.'
+		);
+	}
+
+	/**
+	 * A refused write inside the origin's canceled-occurrence fallback surfaces and rolls back.
+	 *
+	 * The demotion fallback for a canceled single occurrence writes a
+	 * one-occurrence rule, and that write projects. A database that refuses
+	 * the projection used to be ignored on this path too; the refusal must
+	 * abort the split and restore the series. The seam breaks the second
+	 * occurrence insert of the split, the fallback's own, so the forward
+	 * side's projection has already succeeded.
+	 *
+	 * @covers ::demote_to_plain_event
+	 * @covers ::apply_capped_rule
+	 * @covers ::write_rule
+	 *
+	 * @return void
+	 */
+	public function test_a_refused_write_in_the_canceled_origin_fallback_rolls_the_split_back(): void {
+		$origin_id = $this->create_and_project();
+
+		Occurrences::get_instance()->set_status( $origin_id, self::FULL_SET[0], Occurrences::STATUS_CANCELED );
+
+		$filter = $this->break_nth_occurrence_insert( 2 );
+		$result = Splitter::get_instance()->split_forward( $origin_id, self::FULL_SET[1] );
+
+		remove_filter( 'query', $filter );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert the refused fallback write aborts the split.'
+		);
+		$this->assertSame(
+			'gatherpress_occurrence_write_failed',
+			$result->get_error_code(),
+			'Failed to assert the database refusal itself is what surfaces.'
+		);
+		$this->assertSame(
+			self::FULL_SET,
+			$this->identifiers_for( $origin_id ),
+			'Failed to assert the whole series is back on the origin.'
+		);
+		$this->assertSame(
+			6,
+			Rule::from_post( $origin_id )->count(),
+			'Failed to assert the origin rule was restored uncapped.'
+		);
+		$this->assertSame(
+			Occurrences::STATUS_CANCELED,
+			(string) Occurrences::get_instance()->get( $origin_id, self::FULL_SET[0] )['status'],
+			'Failed to assert the cancellation survived the rollback.'
+		);
+	}
+
+	/**
+	 * A refused write inside the forward post's canceled-occurrence fallback surfaces and rolls back.
+	 *
+	 * The forward-side twin of the test above: splitting at the final
+	 * occurrence of a `COUNT` rule demotes the forward post, whose one
+	 * occurrence is canceled, so the fallback writes a one-occurrence rule
+	 * on the forward post. Its projection is the split's first occurrence
+	 * insert, and refusing it must abort the split whole.
+	 *
+	 * @covers ::demote_to_plain_event
+	 * @covers ::apply_forward_rule
+	 * @covers ::write_rule
+	 *
+	 * @return void
+	 */
+	public function test_a_refused_write_in_the_canceled_forward_fallback_rolls_the_split_back(): void {
+		$origin_id = $this->create_and_project();
+
+		Occurrences::get_instance()->set_status( $origin_id, self::FULL_SET[5], Occurrences::STATUS_CANCELED );
+
+		$filter = $this->break_nth_occurrence_insert( 1 );
+		$result = Splitter::get_instance()->split_forward( $origin_id, self::FULL_SET[5] );
+
+		remove_filter( 'query', $filter );
+
+		$this->assertInstanceOf(
+			WP_Error::class,
+			$result,
+			'Failed to assert the refused fallback write aborts the split.'
+		);
+		$this->assertSame(
+			'gatherpress_occurrence_write_failed',
+			$result->get_error_code(),
+			'Failed to assert the database refusal itself is what surfaces.'
+		);
+		$this->assertSame(
+			self::FULL_SET,
+			$this->identifiers_for( $origin_id ),
+			'Failed to assert the whole series is back on the origin.'
+		);
+		$this->assertSame(
+			array( $origin_id ),
+			Series::get_instance()->resolve_post_ids( $origin_id ),
+			'Failed to assert no forward post survived the rollback.'
 		);
 	}
 
