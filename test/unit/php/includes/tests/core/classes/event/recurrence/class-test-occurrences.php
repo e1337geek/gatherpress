@@ -2732,6 +2732,66 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * `maybe_lazy_repair()` primes the refs' post meta cache in one batched
+	 * query, never one `update_meta_cache` round trip per ref.
+	 *
+	 * `select_by_horizon()` reads through raw `$wpdb`, which primes no meta
+	 * cache, so on a cold cache every per-ref `has_recurrence_rule()` meta
+	 * read would otherwise issue its own single-post `update_meta_cache`
+	 * query. Three cold refs must cost exactly one `wp_postmeta` SELECT.
+	 *
+	 * @covers ::maybe_lazy_repair
+	 *
+	 * @return void
+	 */
+	public function test_lazy_repair_primes_the_meta_cache_in_one_batch(): void {
+		global $wpdb;
+
+		$timezone = new DateTimeZone( 'America/New_York' );
+		$start    = ( new DateTimeImmutable( 'now', $timezone ) )->modify( '+10 days' )->setTime( 12, 0, 0 );
+
+		for ( $i = 0; $i < 3; $i++ ) {
+			$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+			add_post_meta(
+				$post_id,
+				'gatherpress_datetime',
+				wp_json_encode(
+					array(
+						'dateTimeStart' => $start->modify( sprintf( '+%d hours', $i ) )->format( 'Y-m-d H:i:s' ),
+						'dateTimeEnd'   => $start->modify( sprintf( '+%d hours', $i + 1 ) )->format( 'Y-m-d H:i:s' ),
+						'timezone'      => 'America/New_York',
+					)
+				)
+			);
+			Event_Setup::get_instance()->set_datetimes( $post_id );
+		}
+
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
+		wp_cache_flush();
+
+		$query_count_before = count( $wpdb->queries );
+
+		Occurrences::get_instance()->select_upcoming( 10 );
+
+		$postmeta_selects = array_values(
+			array_filter(
+				array_slice( $wpdb->queries, $query_count_before ),
+				static function ( $query ) use ( $wpdb ) {
+					return str_contains( $query[0], $wpdb->postmeta )
+						&& (bool) preg_match( '/^\s*SELECT/i', $query[0] );
+				}
+			)
+		);
+
+		$this->assertCount(
+			1,
+			$postmeta_selects,
+			'Failed to assert that three cold refs cost exactly one batched wp_postmeta SELECT.'
+		);
+	}
+
+	/**
 	 * Coverage for `maybe_lazy_repair()`'s site-wide short-circuit: no
 	 * repair is attempted when the site has no recurring events.
 	 *
