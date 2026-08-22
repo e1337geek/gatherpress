@@ -1459,6 +1459,85 @@ class Test_Context extends Base {
 	}
 
 	/**
+	 * Coverage for the scheduled-same-series arm of the cancellation notice.
+	 *
+	 * The existing cancellation test checks a *different post* in the inner
+	 * loop. This one checks a different *occurrence of the same post*: on a
+	 * canceled occurrence's own page, an occurrence-expanded Query Loop over
+	 * the same series shares the outer post ID on every row, and each
+	 * scheduled row must render without the outer request's cancellation
+	 * notice. The canceled page's own content must still carry it, so a fix
+	 * cannot pass by suppressing the notice everywhere.
+	 *
+	 * @covers ::maybe_prepend_cancelled_notice
+	 *
+	 * @return void
+	 */
+	public function test_scheduled_same_series_loop_rows_carry_no_cancelled_notice(): void {
+		$notice = 'gatherpress-occurrence-cancelled-notice';
+
+		list( $post_id, $past_id ) = $this->create_series_straddling_now();
+
+		$this->assertTrue(
+			Occurrences::get_instance()->set_status( $post_id, $past_id, Occurrences::STATUS_CANCELLED ),
+			'Fixture is inert: the requested occurrence was not canceled.'
+		);
+
+		$this->go_to( Context::occurrence_url( $post_id, $past_id ) );
+
+		$this->assertSame(
+			$past_id,
+			Context::get_instance()->current()['recurrence_id'] ?? null,
+			'Fixture is inert: the request did not establish the canceled occurrence as context.'
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		$own = apply_filters( 'the_content', 'Body.' );
+
+		$loop = new WP_Query(
+			array(
+				'post_type'                    => Event::POST_TYPE,
+				'post__in'                     => array( $post_id ),
+				Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+				'posts_per_page'               => 20,
+				'orderby'                      => 'datetime',
+				'order'                        => 'ASC',
+			)
+		);
+
+		$this->assertSame(
+			2,
+			$loop->post_count,
+			'Fixture is inert: the straddling series must leave two scheduled same-series rows to loop over.'
+		);
+
+		$row_contents = array();
+
+		while ( $loop->have_posts() ) {
+			$loop->the_post();
+
+			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+			$row_contents[] = apply_filters( 'the_content', 'Body.' );
+		}
+
+		wp_reset_postdata();
+
+		$this->assertStringContainsString(
+			$notice,
+			$own,
+			'Failed to assert the canceled occurrence\'s own page content still carries the notice.'
+		);
+
+		foreach ( $row_contents as $offset => $content ) {
+			$this->assertStringNotContainsString(
+				$notice,
+				$content,
+				'Failed to assert scheduled same-series loop row ' . $offset . ' carries no cancellation notice.'
+			);
+		}
+	}
+
+	/**
 	 * Coverage for a same-series Query Loop rendered on a real occurrence page.
 	 *
 	 * The end-to-end shape of `resolve()`'s precedence: a real request to one
