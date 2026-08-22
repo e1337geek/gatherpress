@@ -181,6 +181,13 @@ final class Rest_Api {
 	 * the sidebar list is to offer a restore action, and a canceled
 	 * occurrence that dropped out of the list would have no way back.
 	 *
+	 * "Upcoming" is inclusive of an occurrence that has started but not
+	 * finished, bounding on `datetime_end_gmt` like
+	 * `Occurrences::select_bounded_occurrence()` and
+	 * `Event\Query::get_datetime_comparison_column()`. The in-progress
+	 * occurrence is the one most urgently needing a cancel action; only a
+	 * finished occurrence has nothing left to act on.
+	 *
 	 * Guarded by `Query::site_has_recurring_events()`: unlike the
 	 * write route, this one is reachable from every ordinary event's editor
 	 * screen the moment the sidebar mounts, not just when an organizer
@@ -215,7 +222,7 @@ final class Rest_Api {
 			array_filter(
 				Occurrences::get_instance()->select_for_series( $post_ids ),
 				static function ( array $row ) use ( $now ): bool {
-					return $row['datetime_start_gmt'] >= $now;
+					return $row['datetime_end_gmt'] >= $now;
 				}
 			)
 		);
