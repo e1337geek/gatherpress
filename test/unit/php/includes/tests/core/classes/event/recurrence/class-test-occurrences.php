@@ -5251,4 +5251,178 @@ class Test_Occurrences extends Base {
 			}
 		}
 	}
+
+	/**
+	 * Collect the statements this request issued against the occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $offset Index into `$wpdb->queries` to start reading from.
+	 *
+	 * @return array<int, string> The matching statements, in the order they ran.
+	 */
+	protected function occurrence_statements_since( int $offset ): array {
+		global $wpdb;
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		return array_values(
+			array_map(
+				static fn( array $query ): string => (string) $query[0],
+				array_filter(
+					array_slice( $wpdb->queries, $offset ),
+					static fn( array $query ): bool => str_contains( (string) $query[0], $table )
+				)
+			)
+		);
+	}
+
+	/**
+	 * Count the statements of one kind among a set of collected statements.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array<int, string> $statements Statements to count within.
+	 * @param string             $keyword    Leading SQL keyword to count.
+	 *
+	 * @return int How many statements start with the keyword.
+	 */
+	protected function count_statements( array $statements, string $keyword ): int {
+		return count(
+			array_filter(
+				$statements,
+				static fn( string $sql ): bool => str_starts_with( ltrim( $sql ), $keyword )
+			)
+		);
+	}
+
+	/**
+	 * A request that rewrites both the datetime blob and the recurrence blob
+	 * projects the series once, not twice.
+	 *
+	 * The datetime write queues `Recurrence\Meta::resolve_pending_revalidation()`
+	 * at `shutdown` priority 15, which re-validates the rule and then calls
+	 * `project()`. The blob write independently queues
+	 * `resolve_pending_projection()` at priority 20 for the same post. The
+	 * priority gap orders the two passes; on its own it does not stop the
+	 * second from repeating the first, which is a full expand plus an upsert
+	 * chunk plus a stale-row delete for every series an organizer retimes.
+	 * `project()` consuming the queue entry is what makes the request issue
+	 * one projection.
+	 *
+	 * @covers ::project
+	 * @covers ::maybe_queue_projection
+	 * @covers ::resolve_pending_projection
+	 *
+	 * @return void
+	 */
+	public function test_revalidated_series_projects_once_in_one_request(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+		$offset  = count( $wpdb->queries );
+
+		// A timezone edit, then a rule edit, both through the real meta
+		// hooks that queue the two shutdown passes.
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => 'America/Chicago',
+				)
+			)
+		);
+		update_post_meta(
+			$post_id,
+			Meta::META_KEY,
+			wp_json_encode( array_merge( self::WEEKLY_RULE, array( 'count' => 4 ) ) )
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
+
+		$statements = $this->occurrence_statements_since( $offset );
+
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'INSERT' ),
+			'Failed to assert that the re-validated series was upserted exactly once.'
+		);
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'DELETE' ),
+			'Failed to assert that the re-validated series pruned its stale rows exactly once.'
+		);
+		$this->assertCount(
+			4,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that the single projection wrote the edited rule.'
+		);
+	}
+
+	/**
+	 * Consuming the queue entry must not consume the cleanup it carries.
+	 *
+	 * `resolve_pending_projection()` hands `run_projection()` the
+	 * `$was_recurring` flag captured at queue time, and that flag is what
+	 * drives the removal-cleanup arm for a blob deleted by a writer that never
+	 * fires the save hook. Dropping the entry would lose that signal if the
+	 * pass that drops it did less. It does not: `project()` runs with
+	 * `$cleanup_when_not_recurring` hard-coded to `true`, the strongest value
+	 * the queue can hold, so the rows of a series whose blob is deleted in the
+	 * same request as a datetime write are still cleared, in one delete rather
+	 * than two.
+	 *
+	 * @covers ::project
+	 * @covers ::maybe_queue_projection
+	 * @covers ::resolve_pending_projection
+	 *
+	 * @return void
+	 */
+	public function test_blob_deleted_beside_a_datetime_write_still_clears_its_rows(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		$this->assertCount( 5, Occurrences::get_instance()->select_for_series( array( $post_id ) ) );
+
+		$offset = count( $wpdb->queries );
+
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => 'America/Chicago',
+				)
+			)
+		);
+		delete_post_meta( $post_id, Meta::META_KEY );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
+
+		$statements = $this->occurrence_statements_since( $offset );
+
+		$this->assertCount(
+			0,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that the removed rule left no orphaned occurrence rows.'
+		);
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'DELETE' ),
+			'Failed to assert that the cleanup ran once rather than once per shutdown pass.'
+		);
+		$this->assertSame(
+			0,
+			$this->count_statements( $statements, 'INSERT' ),
+			'Failed to assert that a series with no rule wrote no occurrence rows.'
+		);
+	}
 }

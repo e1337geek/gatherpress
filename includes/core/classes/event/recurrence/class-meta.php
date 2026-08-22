@@ -477,7 +477,10 @@ final class Meta {
 
 		// Priority 15: after `resolve_pending_recurrence()` at the default 10,
 		// and before `Occurrences::resolve_pending_projection()` at 20, so a
-		// post caught by more than one deferral resolves in one order.
+		// post caught by more than one deferral resolves in one order. The
+		// ordering alone does not stop the same post projecting twice, since
+		// both passes project; what does is `Occurrences::project()` dropping
+		// the post's queue entry as this pass calls it.
 		add_action( 'shutdown', array( $this, 'resolve_pending_revalidation' ), 15 );
 	}
 
@@ -513,7 +516,9 @@ final class Meta {
 			}
 
 			// `project()` cleans up when it finds no rule, which is exactly
-			// what a rejected timezone must leave behind.
+			// what a rejected timezone must leave behind, and it consumes any
+			// projection queued for this post so the priority-20 pass does not
+			// project the same series a second time in one request.
 			Occurrences::get_instance()->project( $post_id );
 		}
 	}

@@ -203,9 +203,11 @@ final class Occurrences {
 	 * hook at all: WP-CLI, an importer updating an existing post, or a direct
 	 * `update_post_meta()` call. Rather than guess, the post is noted here
 	 * and decided again on `shutdown`, once every write this request is going
-	 * to make has already happened. A save-path projection that runs after
-	 * the queuing write removes the entry again, so the ordinary editor save
-	 * projects once, not twice.
+	 * to make has already happened. Any `project()` call that runs after the
+	 * queuing write removes the entry again, so the ordinary editor save
+	 * projects once, not twice, and so does a series that
+	 * `Recurrence\Meta::resolve_pending_revalidation()` re-projects at
+	 * `shutdown` priority 15.
 	 *
 	 * Each value is whether the post already had valid recurrence mirrors at
 	 * the moment it was deferred. It is captured before `Meta`'s own deferred
@@ -316,14 +318,13 @@ final class Occurrences {
 		$data = get_post_meta( $post_id, Meta::META_KEY, true );
 
 		if ( ! empty( $data ) ) {
-			$this->project( $post_id );
-
-			// This projection consumed the blob as it stands right now, so a
+			// This projection consumes the blob as it stands right now, so a
 			// reconciliation queued by an earlier write this request (a blob
 			// landed before the save hook fired, or a creation-time deferral
-			// followed by a second save) is already satisfied. A blob write
-			// after this point re-queues the post.
-			unset( $this->pending_projection[ $post_id ] );
+			// followed by a second save) is already satisfied. `project()`
+			// drops the queue entry itself, for every caller rather than only
+			// this one. A blob write after this point re-queues the post.
+			$this->project( $post_id );
 
 			return;
 		}
@@ -1272,6 +1273,20 @@ final class Occurrences {
 	 * and this method is the only thing that ever deletes the occurrence rows
 	 * mirrors used to imply.
 	 *
+	 * Completing that pass also consumes any queued reconciliation for the
+	 * same post, the way `maybe_project()` consumes it on the save path. The
+	 * queue's whole job is to decide, at shutdown, whether the rows still
+	 * match the blob, and this call has just decided it against the blob as it
+	 * stands. The cleanup signal survives the unqueue because it is
+	 * `$cleanup_when_not_recurring = true` here, which is the strongest value
+	 * the queue can carry: a post queued as `true` gets its cleanup, and one
+	 * queued as `false` gets more than it asked for rather than less. Without
+	 * this, `Recurrence\Meta::resolve_pending_revalidation()` calling
+	 * `project()` at `shutdown` priority 15 leaves the priority-20 pass to
+	 * project the same post a second time in one request. A blob write after
+	 * this point re-queues the post, exactly as it does after
+	 * `maybe_project()`.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Series post ID.
@@ -1280,7 +1295,11 @@ final class Occurrences {
 	 *                      `WP_Error` when a database write failed.
 	 */
 	public function project( int $post_id ): int|WP_Error {
-		return $this->run_projection( $post_id, true );
+		$result = $this->run_projection( $post_id, true );
+
+		unset( $this->pending_projection[ $post_id ] );
+
+		return $result;
 	}
 
 	/**
