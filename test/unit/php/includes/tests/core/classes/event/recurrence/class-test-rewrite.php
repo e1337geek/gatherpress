@@ -1353,10 +1353,15 @@ class Test_Rewrite extends Base {
 	 *
 	 * The origin's own dates have all passed while the same logical series has
 	 * upcoming dates on the post a forward split created. Rendering the origin's
-	 * stale anchor is the defect; the request is answered with a `301` to the
+	 * stale anchor is the defect; the request is answered with a `302` to the
 	 * occurrence URL of the series' earliest upcoming row instead, so the
 	 * occurrence keeps exactly one canonical address and it sits under the post
 	 * that owns the row.
+	 *
+	 * The status is deliberately temporary. The target is whichever occurrence
+	 * is next at the instant of the request, so a cacheable `301` would freeze
+	 * a visitor on a date that later passes, which is the defect this test
+	 * names in the sentence above.
 	 *
 	 * @covers ::maybe_resolve_bare_series
 	 * @covers ::maybe_follow_series
@@ -1377,7 +1382,7 @@ class Test_Rewrite extends Base {
 			function () use ( $post_id ): void {
 				$this->go_to( get_permalink( $post_id ) );
 			},
-			301
+			302
 		);
 	}
 
@@ -1483,7 +1488,7 @@ class Test_Rewrite extends Base {
 			function () use ( $post_id ): void {
 				$this->go_to( get_permalink( $post_id ) );
 			},
-			301
+			302
 		);
 
 		wp_set_current_user( 0 );
@@ -1519,7 +1524,7 @@ class Test_Rewrite extends Base {
 			function () use ( $post_id ): void {
 				$this->go_to( get_permalink( $post_id ) );
 			},
-			301
+			302
 		);
 
 		$this->assertTrue(
@@ -1639,7 +1644,7 @@ class Test_Rewrite extends Base {
 			function () use ( $post_id ): void {
 				$this->go_to( get_permalink( $post_id ) );
 			},
-			301
+			302
 		);
 	}
 

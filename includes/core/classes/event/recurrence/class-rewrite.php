@@ -486,9 +486,19 @@ final class Rewrite {
 			return;
 		}
 
+		// 302, not 301. The target is the series' earliest upcoming occurrence
+		// at the instant of the request, which is a moving value. A 301 is
+		// cacheable by default under RFC 9110 section 15.4.2 with no explicit
+		// freshness required, and WordPress sends no `Cache-Control` here:
+		// `nocache_headers()` runs for admin, feed and logged-in requests, not
+		// for an anonymous front-end redirect. So a browser would persist the
+		// forward indefinitely and keep landing on a date that has since
+		// passed, without ever reaching the server again. That is the defect
+		// this feature exists to remove, made unfixable server-side. Any
+		// shared cache does the same for everyone behind it.
 		wp_safe_redirect(
 			self::get_occurrence_url( $identity->owner_post_id, $identity->recurrence_id ),
-			301
+			302
 		);
 		// The PMC test harness intercepts wp_safe_redirect before this line runs.
 		// phpcs:ignore Squiz.Commenting.InlineComment.InvalidEndChar -- PHPUnit annotation.
