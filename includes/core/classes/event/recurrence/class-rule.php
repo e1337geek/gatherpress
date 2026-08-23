@@ -528,12 +528,22 @@ final class Rule {
 		);
 		$valid_end_types   = array( self::END_TYPE_NEVER, self::END_TYPE_UNTIL, self::END_TYPE_COUNT );
 
-		// A weekly rule needs at least one weekday, and every weekday it names
-		// must be a real day, 0 (Sunday) through 6 (Saturday). An unchecked
-		// out-of-range value (e.g. 7, or -1) would otherwise leave an
-		// undefined WEEKDAY_CODES lookup at write-mirror and RRULE-export time.
-		$weekly_weekdays_valid = self::FREQUENCY_WEEKLY !== $this->frequency
-			|| ( array() !== $this->weekdays && array() === array_diff( $this->weekdays, range( 0, 6 ) ) );
+		// Every weekday named must be a real day, 0 (Sunday) through 6
+		// (Saturday), whatever the frequency. The range check deliberately does
+		// not depend on the frequency, because its consumer does not either:
+		// `Meta::write_mirrors()` maps `WEEKDAY_CODES` over `weekdays()` for
+		// every rule it writes, so a daily or monthly rule carrying `7` reaches
+		// an undefined index and warns on the save path. The blob is
+		// `show_in_rest`, so that input is reachable by any user who can edit
+		// the post.
+		//
+		// Only the "at least one" half is weekly-specific: a weekly rule with
+		// no weekdays names no days at all, while a monthly rule ignores the
+		// field entirely.
+		$weekdays_in_range = array() === array_diff( $this->weekdays, range( 0, 6 ) );
+		$weekly_has_days   = self::FREQUENCY_WEEKLY !== $this->frequency || array() !== $this->weekdays;
+
+		$weekdays_valid = $weekdays_in_range && $weekly_has_days;
 
 		// Guard every top-level shape requirement in one place: a recognized
 		// frequency and end type, an interval within bounds, and a weekly
@@ -542,7 +552,7 @@ final class Rule {
 			|| $this->interval < 1
 			|| $this->interval > self::MAX_INTERVAL
 			|| ! in_array( $this->end_type, $valid_end_types, true )
-			|| ! $weekly_weekdays_valid
+			|| ! $weekdays_valid
 		) {
 			return false;
 		}

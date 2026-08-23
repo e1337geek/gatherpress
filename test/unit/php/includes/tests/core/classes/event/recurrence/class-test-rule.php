@@ -554,6 +554,76 @@ class Test_Rule extends Base {
 	}
 
 	/**
+	 * A non-weekly rule carrying an out-of-range weekday is rejected too.
+	 *
+	 * The range check cannot be weekly-only, because its consumer is not:
+	 * `Meta::write_mirrors()` maps `WEEKDAY_CODES` over `weekdays()` for every
+	 * rule it writes, whatever the frequency. A daily rule carrying `7` used to
+	 * pass validation and then warn on an undefined index while saving the
+	 * post. The recurrence blob is `show_in_rest`, so the value is reachable by
+	 * any user who can edit the post.
+	 *
+	 * @covers ::from_array
+	 * @covers ::is_valid
+	 *
+	 * @return void
+	 */
+	public function test_non_weekly_with_out_of_range_weekday_is_rejected(): void {
+		foreach ( array( 'daily', 'monthly', 'yearly' ) as $frequency ) {
+			$this->assertNull(
+				Rule::from_array(
+					array(
+						'frequency' => $frequency,
+						'interval'  => 1,
+						'weekdays'  => array( 7 ),
+						'end_type'  => 'never',
+					)
+				),
+				sprintf( 'A %s rule with weekday 7 should be rejected.', $frequency )
+			);
+			$this->assertNull(
+				Rule::from_array(
+					array(
+						'frequency' => $frequency,
+						'interval'  => 1,
+						'weekdays'  => array( -1 ),
+						'end_type'  => 'never',
+					)
+				),
+				sprintf( 'A %s rule with weekday -1 should be rejected.', $frequency )
+			);
+		}
+
+		// The tightened check must not start rejecting the shapes that were
+		// always legal: a non-weekly rule naming no weekdays at all, and one
+		// naming weekdays that are in range.
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'weekdays'  => array(),
+					'end_type'  => 'never',
+				)
+			),
+			'A daily rule naming no weekdays stays valid.'
+		);
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_array(
+				array(
+					'frequency' => 'yearly',
+					'interval'  => 1,
+					'weekdays'  => array( 0, 6 ),
+					'end_type'  => 'never',
+				)
+			),
+			'A yearly rule naming in-range weekdays stays valid.'
+		);
+	}
+
+	/**
 	 * A monthly rule with neither a recognized monthly mode is rejected.
 	 *
 	 * @covers ::from_array
