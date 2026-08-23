@@ -147,9 +147,14 @@ class Test_Timezone_Component extends Base {
 	 * An open-ended series names no final date, so the only concrete moments in
 	 * its component are its own start and end, which would bound the window to
 	 * a single day and leave the definition unable to describe the dates the
-	 * rule goes on producing. Both arms of the check matter: a bounded rule must
-	 * *not* extend the window, or every feed on the site pays for transitions
-	 * nothing refers to.
+	 * rule goes on producing. Both arms of the check matter: an `UNTIL`-bounded
+	 * rule must *not* extend the window, or every feed on the site pays for
+	 * transitions nothing refers to.
+	 *
+	 * `COUNT` is on the open-ended side, which is the correction here. The
+	 * window is assembled from the date-time literals the body contains, and
+	 * `COUNT` writes none, so it tells the window nothing while still naming
+	 * occurrences years out. See the dedicated test below.
 	 *
 	 * Invoked directly because xdebug does not trace a private helper reached
 	 * through a same-class delegation.
@@ -166,13 +171,13 @@ class Test_Timezone_Component extends Base {
 		$open     = "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20200115T140000\r\n"
 			. "RRULE:FREQ=WEEKLY\r\nEND:VEVENT";
 
-		$this->assertFalse(
+		$this->assertTrue(
 			Utility::invoke_hidden_method( $instance, 'has_open_ended_rule', array( $bounded ) ),
-			'A rule carrying COUNT names its last instant.'
+			'A COUNT bound writes no date-time literal, so it cannot bound the window.'
 		);
 		$this->assertTrue(
 			Utility::invoke_hidden_method( $instance, 'has_open_ended_rule', array( $open ) ),
-			'A rule carrying neither UNTIL nor COUNT does not.'
+			'A rule carrying no UNTIL does not name a last instant in the body.'
 		);
 		$this->assertFalse(
 			Utility::invoke_hidden_method(
@@ -183,7 +188,10 @@ class Test_Timezone_Component extends Base {
 			'An UNTIL bound names it too.'
 		);
 
-		[ , $bounded_end ] = Utility::invoke_hidden_method( $instance, 'range_of', array( $bounded ) );
+		$until = "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20200115T140000\r\n"
+			. "RRULE:FREQ=WEEKLY;UNTIL=20200219T130000Z\r\nEND:VEVENT";
+
+		[ , $bounded_end ] = Utility::invoke_hidden_method( $instance, 'range_of', array( $until ) );
 		[ , $open_end ]    = Utility::invoke_hidden_method( $instance, 'range_of', array( $open ) );
 
 		$this->assertGreaterThan(
@@ -195,6 +203,53 @@ class Test_Timezone_Component extends Base {
 			time() + ( 70 * YEAR_IN_SECONDS ),
 			$open_end,
 			'And it must reach decades past the tz database\'s enumerated knowledge, not a sampling window.'
+		);
+	}
+
+	/**
+	 * A `COUNT` bound does not shorten the window to before its own occurrences.
+	 *
+	 * `COUNT` names a number of occurrences, never a date, so unlike `UNTIL` it
+	 * puts no date-time literal in the body for the window to be built from.
+	 * Counting it as a bound ended the window at `max( DTSTART, DTEND, now )`
+	 * plus three years while the rule went on naming occurrences well past it,
+	 * and every one of those resolved against a terminal `RRULE` inferred from
+	 * two samples rather than against a described transition.
+	 *
+	 * `Rule::MAX_COUNT` is 730, so this is not a corner case: a weekly rule at
+	 * the cap runs fourteen years. Measured on the committed class over
+	 * `FREQ=WEEKLY;COUNT=730`, 44 of 730 occurrences resolved an hour wrong in
+	 * `Asia/Gaza`, first at 2035-03-24.
+	 *
+	 * Invoked directly because xdebug does not trace a private helper reached
+	 * through a same-class delegation.
+	 *
+	 * @covers ::has_open_ended_rule
+	 * @covers ::range_of
+	 *
+	 * @return void
+	 */
+	public function test_a_count_bound_does_not_shorten_the_window(): void {
+		$instance = Timezone_Component::get_instance();
+		$anchor   = '20260101T180000';
+		$body     = "BEGIN:VEVENT\r\nDTSTART;TZID=Asia/Gaza:{$anchor}\r\n"
+			. "RRULE:FREQ=WEEKLY;COUNT=730\r\nEND:VEVENT";
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method( $instance, 'has_open_ended_rule', array( $body ) ),
+			'Failed to assert a COUNT rule is treated as reaching past the literals in its body.'
+		);
+
+		[ , $end ] = Utility::invoke_hidden_method( $instance, 'range_of', array( $body ) );
+
+		// 730 weekly occurrences counting the anchor as the first puts the last
+		// one 729 weeks out, a little over fourteen years.
+		$last = strtotime( '2026-01-01 18:00:00 +729 weeks' );
+
+		$this->assertGreaterThan(
+			$last,
+			$end,
+			'Failed to assert the definition window covers the last occurrence a COUNT rule names.'
 		);
 	}
 

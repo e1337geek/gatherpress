@@ -246,19 +246,35 @@ final class Timezone_Component {
 	}
 
 	/**
-	 * Whether any rule in the body recurs without a last instant.
+	 * Whether any rule in the body reaches past the date-time literals in it.
+	 *
+	 * Only `UNTIL` bounds the definition window, and the reason is that the
+	 * window is built from the date-time literals the body actually contains:
+	 * `DTSTART`, `DTEND`, `EXDATE`, `RDATE`, `RECURRENCE-ID`, and a rule's
+	 * `UNTIL`. `COUNT` writes no literal at all, so it tells the window
+	 * nothing while still naming occurrences arbitrarily far ahead:
+	 * `Rule::MAX_COUNT` is 730, which is fourteen years for a weekly rule and
+	 * sixty for a monthly one.
+	 *
+	 * Treating `COUNT` as a bound ended the window at `max( DTSTART, DTEND,
+	 * now )` plus three years, and every occurrence past that point resolved
+	 * against a terminal `RRULE` inferred from two samples. Measured on the
+	 * committed class over `FREQ=WEEKLY;COUNT=730`, that was 44 of 730
+	 * occurrences an hour wrong in `Asia/Gaza` and `Asia/Hebron`, first at
+	 * 2035-03-24, and smaller counts in `Asia/Jerusalem` and
+	 * `America/Santiago`.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param string $body One or more assembled `VEVENT` components.
 	 *
-	 * @return bool True when a rule carries neither `UNTIL` nor `COUNT`.
+	 * @return bool True when a rule carries no `UNTIL`.
 	 */
 	private function has_open_ended_rule( string $body ): bool {
 		preg_match_all( '/^RRULE:(.*)$/m', $body, $rules );
 
 		foreach ( $rules[1] as $rule ) {
-			if ( ! str_contains( $rule, 'UNTIL=' ) && ! str_contains( $rule, 'COUNT=' ) ) {
+			if ( ! str_contains( $rule, 'UNTIL=' ) ) {
 				return true;
 			}
 		}
