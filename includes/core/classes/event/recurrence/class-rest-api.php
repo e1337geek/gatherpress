@@ -128,11 +128,13 @@ final class Rest_Api {
 	 *
 	 * `per_page` bounds the response. `Rule::MAX_COUNT` is 730, so an
 	 * unbounded route hands a legitimately authored daily series 730 rows on
-	 * every editor open. The schema's `minimum` and `maximum` are what make
-	 * the bound real: without them a caller asks for the unbounded read back
-	 * by passing a large number, and the server-side clamp in
-	 * `Occurrences::select_for_series()` is the second line of the same
-	 * defense. The `maximum` of 100 is WordPress's own collection ceiling.
+	 * every editor open. The schema's `minimum` and `maximum` are the only
+	 * thing making that bound real, and there is no second line of defense:
+	 * `Occurrences::select_for_series()` applies `max( 0, (int) $args['limit'] )`,
+	 * a lower clamp and no upper one. Relaxing the `maximum` here therefore
+	 * relaxes the read itself, and any authenticated caller who can edit the
+	 * post can then pull every row of a 730-occurrence series on every
+	 * request. The `maximum` of 100 is WordPress's own collection ceiling.
 	 *
 	 * The default of `DEFAULT_PER_PAGE` is chosen for the one consumer: the
 	 * sidebar panel in `src/panels/event-settings/occurrences/` renders every
