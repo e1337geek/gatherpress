@@ -406,7 +406,9 @@ class Test_Calendar_Recurrence extends Base {
 		$this->assertSame(
 			array( sprintf( 'DTSTART;TZID=%s:%s', self::TIMEZONE, $this->occurrence_id( 0 ) ) ),
 			$this->lines_for( $body, 'DTSTART' ),
-			'DTSTART must be the series anchor, qualified by the named timezone.'
+			'DTSTART must be the first projected occurrence, qualified by the named timezone.'
+				. ' This fixture repeats on the anchor\'s own weekday, so the two coincide here;'
+				. ' test_dtstart_names_a_date_the_rule_produces() is where they do not.'
 		);
 		$this->assertSame(
 			array( 'RRULE:FREQ=WEEKLY;BYDAY=' . $this->byday() ),
@@ -2556,6 +2558,230 @@ class Test_Calendar_Recurrence extends Base {
 			array(),
 			$this->lines_for( $body, 'RRULE' ),
 			'And it must not read the rule mirrors either.'
+		);
+	}
+	/**
+	 * `DTSTART` names a date the rule actually produces.
+	 *
+	 * RFC 5545 section 3.8.5.3 makes `DTSTART` part of the recurrence set, and
+	 * nothing couples the series anchor's weekday to the rule's `weekdays`:
+	 * neither `Rule::from_array()` nor the editor panel requires them to agree.
+	 * Emitting the anchor therefore handed subscribers a date the site does not
+	 * list, on a weekday `Expander::matches()` excludes, and which cannot be
+	 * canceled because no occurrence row exists to cancel. Under `COUNT`, which
+	 * is what these fixtures use, it is worse than an extra date: a client
+	 * counting `DTSTART` as instance 1 of `COUNT=5` emits four rule dates
+	 * instead of five, so the export both adds a date the site lacks and drops
+	 * one it has.
+	 *
+	 * The round-trip suite cannot see this, because it expands both sides with
+	 * GatherPress's own `Expander`, which shares the exclusion, and because
+	 * every other fixture here sets `weekdays` to the anchor's own weekday. So
+	 * this fixture deliberately does not.
+	 *
+	 * @covers ::datetime_lines
+	 * @covers ::first_projected_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_dtstart_names_a_date_the_rule_produces(): void {
+		$anchor = $this->anchor();
+
+		// Two days off the anchor's own weekday, so the anchor is not a date
+		// this rule can produce.
+		$rule_weekday = ( ( (int) $anchor->format( 'w' ) ) + 2 ) % 7;
+		$post_id      = $this->create_weekly_series( array( 'weekdays' => array( $rule_weekday ) ) );
+
+		$this->enable_pretty_permalinks();
+
+		$body     = $this->body_for( $this->series_ical_url( $post_id ) );
+		$starts   = $this->lines_for( $body, 'DTSTART' );
+		$prefix   = sprintf( 'DTSTART;TZID=%s:', self::TIMEZONE );
+		$expected = wp_list_pluck(
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'recurrence_id'
+		);
+
+		$this->assertCount( 1, $starts, 'Failed to assert the series component carries one DTSTART.' );
+		$this->assertNotEmpty( $expected, 'Failed to assert the fixture projected any occurrences.' );
+
+		$emitted = substr( $starts[0], strlen( $prefix ) );
+
+		$this->assertContains(
+			$emitted,
+			$expected,
+			'Failed to assert DTSTART names one of the occurrences the site actually lists.'
+		);
+		$this->assertNotSame(
+			$anchor->format( 'Ymd\THis' ),
+			$emitted,
+			'Failed to assert DTSTART moved off an anchor the rule does not produce. If this fails'
+				. ' with the others passing, the fixture stopped putting the anchor off the rule.'
+		);
+	}
+
+	/**
+	 * `DTSTART` is this post's own first occurrence, not the series'.
+	 *
+	 * The occurrence read behind `DTSTART` deliberately does not resolve the
+	 * series, and this is the case that separates the two. `EXDATE` does
+	 * resolve it, because a series that has been spread across several posts
+	 * still excludes every date it canceled whichever post holds the row.
+	 * `DTSTART` is the opposite: it has to agree with the `RRULE` emitted
+	 * beside it, and that rule is read from this post alone.
+	 *
+	 * Reading series-wide gave every post in a multi-post series the same
+	 * earliest date, so two components opened on the same instant and a
+	 * subscriber merging them held duplicates. The forward split that creates
+	 * that shape arrives in a later branch; `gatherpress_series_post_ids` is
+	 * the documented seam it uses, so the shape is reachable here through the
+	 * filter.
+	 *
+	 * @covers ::datetime_lines
+	 * @covers ::first_projected_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_dtstart_is_this_posts_own_first_occurrence(): void {
+		$earlier = $this->create_weekly_series();
+
+		$this->anchor_offset = '+30 days';
+
+		$later = $this->create_weekly_series();
+
+		$this->assertNotSame(
+			$earlier,
+			$later,
+			'Fixture setup: the two posts must be distinct.'
+		);
+
+		// One logical series spanning both posts, which is what a forward
+		// split produces and what this filter exists to express.
+		$series = array( $earlier, $later );
+
+		add_filter(
+			'gatherpress_series_post_ids',
+			static function () use ( $series ): array {
+				return $series;
+			}
+		);
+
+		$this->enable_pretty_permalinks();
+
+		$body = $this->body_for( $this->series_ical_url( $later ) );
+
+		// Read the component belonging to this post rather than the first one
+		// in the body. A branch that emits one component per post in the series
+		// is a later addition to this stack, and the invariant here is
+		// per-component: whichever component describes this post opens on one
+		// of this post's own dates.
+		$blocks    = array_filter(
+			explode( 'BEGIN:VEVENT', $body ),
+			static function ( string $block ) use ( $later ): bool {
+				return str_contains( $block, sprintf( 'URL:%s', get_permalink( $later ) ) );
+			}
+		);
+		$component = (string) reset( $blocks );
+		$starts    = $this->matching_lines( $component, 'DTSTART' );
+		$prefix    = sprintf( 'DTSTART;TZID=%s:', self::TIMEZONE );
+		$own       = wp_list_pluck(
+			Occurrences::get_instance()->select_for_series( array( $later ) ),
+			'recurrence_id'
+		);
+		$sibling   = wp_list_pluck(
+			Occurrences::get_instance()->select_for_series( array( $earlier ) ),
+			'recurrence_id'
+		);
+
+		$this->assertNotEmpty( $blocks, 'Failed to find a component for this post in the feed.' );
+		$this->assertCount( 1, $starts, 'Failed to assert this post\'s component carries one DTSTART.' );
+		$this->assertNotEmpty( $own, 'Fixture setup: the later post must have projected rows.' );
+		$this->assertNotEmpty( $sibling, 'Fixture setup: the earlier post must have projected rows.' );
+
+		$emitted = substr( $starts[0], strlen( $prefix ) );
+
+		$this->assertContains(
+			$emitted,
+			$own,
+			'Failed to assert DTSTART names one of this post\'s own occurrences.'
+		);
+		$this->assertNotContains(
+			$emitted,
+			$sibling,
+			'Failed to assert DTSTART did not fall through to a sibling post\'s earlier date.'
+		);
+	}
+
+	/**
+	 * Each arm of the first-occurrence guard answers null.
+	 *
+	 * Invoked directly because xdebug does not trace a private helper reached
+	 * through a same-class delegation: the guard's `return null` runs on every
+	 * request for a non-recurring event and still records as uncovered.
+	 *
+	 * The four arms are not interchangeable. A component with no named
+	 * timezone emits no `RRULE` at all, so its `DTSTART` is not part of any
+	 * recurrence set and belongs on the anchor. A single occurrence's
+	 * component carries a `RECURRENCE-ID` and names its own date. A site with
+	 * no recurring events must not pay the read. And a post with no rule of
+	 * its own has no rule for a `DTSTART` to agree with, however many other
+	 * events on the site do.
+	 *
+	 * @covers ::first_projected_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_the_first_occurrence_guard_refuses_each_way(): void {
+		$post_id  = $this->create_weekly_series();
+		$instance = new Calendar( $post_id );
+		$row      = Occurrences::get_instance()->select_bounded_occurrence( array( $post_id ), true );
+
+		$this->assertNotNull( $row, 'Fixture setup: the series must have an upcoming occurrence.' );
+
+		$this->assertNull(
+			Utility::invoke_hidden_method( $instance, 'first_projected_occurrence', array( '', null ) ),
+			'A component with no named timezone emits no RRULE, so DTSTART stays on the anchor.'
+		);
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				$instance,
+				'first_projected_occurrence',
+				array( self::TIMEZONE, $row )
+			),
+			'A single occurrence\'s component carries a RECURRENCE-ID and names its own date.'
+		);
+
+		$this->assertNotNull(
+			Utility::invoke_hidden_method(
+				$instance,
+				'first_projected_occurrence',
+				array( self::TIMEZONE, null )
+			),
+			'Fixture setup: with both arguments usable the helper resolves a row.'
+		);
+
+		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '0', true );
+
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				$instance,
+				'first_projected_occurrence',
+				array( self::TIMEZONE, null )
+			),
+			'A site with no recurring events must not pay the read.'
+		);
+
+		update_option( Recurrence_Query::HAS_RECURRING_OPTION, '1', true );
+
+		$plain = new Calendar( $this->create_plain_event() );
+
+		$this->assertNull(
+			Utility::invoke_hidden_method(
+				$plain,
+				'first_projected_occurrence',
+				array( self::TIMEZONE, null )
+			),
+			'A post with no rule of its own has no rule for a DTSTART to agree with.'
 		);
 	}
 }

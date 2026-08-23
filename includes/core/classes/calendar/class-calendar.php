@@ -303,7 +303,7 @@ final class Calendar {
 				'BEGIN:VEVENT',
 				sprintf( 'URL:%s', esc_url_raw( get_permalink( $this->event->event->ID ) ) ),
 			),
-			$this->datetime_lines( $timezone ),
+			$this->datetime_lines( $timezone, $this->first_projected_occurrence( $timezone, $occurrence ) ),
 			array(
 				sprintf( 'DTSTAMP:%s', sanitize_text_field( $datetime_stamp ) ),
 				sprintf( 'LAST-MODIFIED:%s', sanitize_text_field( $last_modified ) ),
@@ -343,6 +343,53 @@ final class Calendar {
 	}
 
 	/**
+	 * The first occurrence a rule-bearing series actually projects.
+	 *
+	 * Null whenever `DTSTART` should stay on the anchor: for a component that
+	 * carries no `RRULE` (a fixed-offset event emits none, and neither does an
+	 * event with no rule), for a single occurrence's own component, which
+	 * carries a `RECURRENCE-ID` instead, and for a series whose projection is
+	 * empty.
+	 *
+	 * Read from the projection rather than re-derived from the rule, so the
+	 * date the feed opens on is the same one the site lists. The read is
+	 * `LIMIT 1` and is skipped entirely on a site with no recurring events.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string     $timezone   A named tz-database identifier, or '' for none.
+	 * @param array|null $occurrence The occurrence this component renders, if any.
+	 *
+	 * @return array|null The first scheduled occurrence row, or null.
+	 */
+	private function first_projected_occurrence( string $timezone, ?array $occurrence ): ?array {
+		if ( '' === $timezone
+			|| null !== $occurrence
+			|| ! Recurrence_Query::site_has_recurring_events()
+			|| null === Rule::from_post( $this->event->event->ID )
+		) {
+			return null;
+		}
+
+		// This post's own rows, not the resolved series. `exdate_line()` reads
+		// series-wide because a split series still excludes every date it
+		// canceled, whichever post holds the row. `DTSTART` is the opposite: it
+		// has to agree with the `RRULE` emitted beside it, and that rule comes
+		// from this post alone. Reading series-wide gave both fragments of a
+		// split the same earliest date, so the two components opened on the
+		// same instant and a subscriber merged duplicates.
+		$rows = Occurrences::get_instance()->select_for_series(
+			array( $this->event->event->ID ),
+			array(
+				'status' => Occurrences::STATUS_SCHEDULED,
+				'limit'  => 1,
+			)
+		);
+
+		return $rows[0] ?? null;
+	}
+
+	/**
 	 * The `DTSTART` and `DTEND` properties for this component.
 	 *
 	 * A named timezone produces the `TZID`-qualified local wall clock RFC 5545
@@ -350,13 +397,45 @@ final class Calendar {
 	 * UTC form, which is what a fixed-offset event has always emitted and is
 	 * still correct for a component carrying no rule.
 	 *
+	 * When a rule is attached, these come from the first projected occurrence
+	 * rather than from the series anchor. RFC 5545 section 3.8.5.3 makes
+	 * `DTSTART` part of the recurrence set, and nothing couples the anchor's
+	 * weekday to the rule's: a Wednesday anchor carrying `BYDAY=FR` is not an
+	 * occurrence as far as `Expander::matches()` is concerned, so emitting it
+	 * gave subscribers a date the site does not list and cannot cancel, since
+	 * no row exists to cancel. Under `COUNT`, which is what the fixtures use,
+	 * it also drops a real date off the end, because a client counts `DTSTART`
+	 * as the first instance.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param string $timezone A named tz-database identifier, or '' for none.
+	 * @param string     $timezone A named tz-database identifier, or '' for none.
+	 * @param array|null $first    First projected occurrence row, or null to use
+	 *                             the series anchor.
 	 *
 	 * @return string[] The two property lines, in order.
 	 */
-	private function datetime_lines( string $timezone ): array {
+	private function datetime_lines( string $timezone, ?array $first = null ): array {
+		if ( null !== $first ) {
+			$zone  = new DateTimeZone( $timezone );
+			$utc   = new DateTimeZone( 'UTC' );
+			$start = new DateTimeImmutable( (string) $first['datetime_start_gmt'], $utc );
+			$end   = new DateTimeImmutable( (string) $first['datetime_end_gmt'], $utc );
+
+			return array(
+				sprintf(
+					'DTSTART;TZID=%s:%s',
+					$timezone,
+					$start->setTimezone( $zone )->format( 'Ymd\THis' )
+				),
+				sprintf(
+					'DTEND;TZID=%s:%s',
+					$timezone,
+					$end->setTimezone( $zone )->format( 'Ymd\THis' )
+				),
+			);
+		}
+
 		if ( '' === $timezone ) {
 			return array(
 				sprintf(
