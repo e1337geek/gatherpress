@@ -84,13 +84,15 @@ import RecurrencePanel from '@src/panels/event-settings/recurrence';
  *
  * @param {string|undefined} recurrenceMeta Raw `gatherpress_recurrence` meta value.
  * @param {string}           timezone       Timezone value from the datetime store.
+ * @param {number}           postId         Current post ID from the editor store.
  *
  * @return {Function} A `select( storeName )` stand-in.
  */
-function makeSelect( recurrenceMeta, timezone = 'America/New_York' ) {
+function makeSelect( recurrenceMeta, timezone = 'America/New_York', postId = 1 ) {
 	return ( storeName ) => {
 		if ( 'core/editor' === storeName ) {
 			return {
+				getCurrentPostId: () => postId,
 				getEditedPostAttribute: () => ( {
 					gatherpress_recurrence: recurrenceMeta,
 				} ),
@@ -831,6 +833,49 @@ describe( 'RecurrencePanel', () => {
 
 		expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
 		expect( screen.getByLabelText( 'Frequency' ) ).toHaveValue( 'weekly' );
+	} );
+
+	test( 're-syncs when the post changes under a byte-identical blob', () => {
+		// Gutenberg can change the current post without unmounting this
+		// panel, which the occurrences panel in this same directory already
+		// documents and guards against. Two posts can also carry
+		// byte-identical blobs, because the same weekly Tuesday schedule
+		// serializes to the same string.
+		//
+		// Comparing only the string, the switch looked like "our own write
+		// came back" and the sync effect returned early, leaving post A's
+		// withheld local edit on screen as though it were post B's rule. From
+		// there, checking one more weekday could persist A's stale rule onto
+		// B.
+		const sharedBlob = storedBlob( {
+			frequency: 'weekly',
+			weekdays: [ 2 ],
+		} );
+
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( sharedBlob, 'America/New_York', 1 ) ),
+		);
+
+		const { rerender } = render( <RecurrencePanel /> );
+
+		expect( screen.getByLabelText( 'Tuesday' ) ).toBeChecked();
+
+		// Unchecking the only weekday is a rule the server would reject, so
+		// the panel keeps it in local state and withholds the write. That is
+		// the state that must not survive the post switch.
+		fireEvent.click( screen.getByLabelText( 'Tuesday' ) );
+
+		expect( screen.getByLabelText( 'Tuesday' ) ).not.toBeChecked();
+		expect( editPost ).not.toHaveBeenCalled();
+
+		// Same blob, different post.
+		useSelect.mockImplementation( ( selector ) =>
+			selector( makeSelect( sharedBlob, 'America/New_York', 2 ) ),
+		);
+		rerender( <RecurrencePanel /> );
+
+		expect( screen.getByLabelText( 'Tuesday' ) ).toBeChecked();
+		expect( editPost ).not.toHaveBeenCalled();
 	} );
 
 	// Every test in this block pins the write side of the same agreement the

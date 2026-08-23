@@ -526,8 +526,9 @@ const RecurrencePanel = () => {
 	const isEventDateSupported = usePostTypeSupports( 'gatherpress-event-date' );
 	const { editPost } = useDispatch( 'core/editor' );
 
-	const { recurrenceMeta, timezone } = useSelect( ( select ) => {
+	const { postId, recurrenceMeta, timezone } = useSelect( ( select ) => {
 		return {
+			postId: select( 'core/editor' )?.getCurrentPostId(),
 			recurrenceMeta: select( 'core/editor' )
 				?.getEditedPostAttribute( 'meta' )
 				?.gatherpress_recurrence,
@@ -539,22 +540,39 @@ const RecurrencePanel = () => {
 		parseRecurrenceBlob( recurrenceMeta ),
 	);
 
-	// Tracks the blob this component itself last wrote, so the effect below
-	// can tell "the store caught up with our own write" apart from "the
-	// entity resolved, or was changed, out from under us". Without this, a
-	// panel that mounts before `core/editor` resolves the post entity renders
-	// "Repeat: off" for a saved recurring event and never corrects itself: a
-	// late entity resolution would clobber the saved state.
-	const lastWrittenBlobRef = useRef( recurrenceMeta );
+	// Tracks the blob this component itself last wrote, and which post it
+	// wrote it to, so the effect below can tell "the store caught up with our
+	// own write" apart from "the entity resolved, or was changed, out from
+	// under us". Without this, a panel that mounts before `core/editor`
+	// resolves the post entity renders "Repeat: off" for a saved recurring
+	// event and never corrects itself: a late entity resolution would clobber
+	// the saved state.
+	//
+	// The post ID is half of the identity because the blob alone is not
+	// unique. Gutenberg can change the current post without unmounting this
+	// panel, exactly as the occurrences panel in this same directory
+	// documents, and two posts can carry byte-identical blobs: the same
+	// weekly Tuesday schedule serializes to the same string. Comparing only
+	// the string, a switch between two such posts looked like "our own write
+	// came back" and the effect returned without resyncing, leaving the
+	// previous post's local edits on screen as though they belonged to the
+	// new one.
+	const lastWrittenRef = useRef( { postId, blob: recurrenceMeta } );
 
 	useEffect( () => {
-		if ( recurrenceMeta === lastWrittenBlobRef.current ) {
+		// A post change resyncs unconditionally. There is no local state
+		// worth preserving across it, and any that survives belongs to a post
+		// the panel is no longer editing.
+		if (
+			postId === lastWrittenRef.current.postId &&
+			recurrenceMeta === lastWrittenRef.current.blob
+		) {
 			return;
 		}
 
-		lastWrittenBlobRef.current = recurrenceMeta;
+		lastWrittenRef.current = { postId, blob: recurrenceMeta };
 		setState( parseRecurrenceBlob( recurrenceMeta ) );
-	}, [ recurrenceMeta ] );
+	}, [ postId, recurrenceMeta ] );
 
 	const isFixedOffsetTimezone = !! timezone?.includes( ':' );
 
@@ -569,7 +587,7 @@ const RecurrencePanel = () => {
 	const persist = ( nextEnabled, nextRule ) => {
 		const blob = nextEnabled ? JSON.stringify( nextRule ) : '';
 
-		lastWrittenBlobRef.current = blob;
+		lastWrittenRef.current = { postId, blob };
 
 		editPost( {
 			meta: {
