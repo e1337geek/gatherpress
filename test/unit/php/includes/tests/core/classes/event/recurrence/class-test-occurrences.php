@@ -4583,4 +4583,63 @@ class Test_Occurrences extends Base {
 			'Failed to assert that top_up reports zero when every projection failed.'
 		);
 	}
+	/**
+	 * Coverage for both single-post writes reporting a refused statement.
+	 *
+	 * `set_status()` used to issue its `UPDATE` and return a bare `true`, and
+	 * `delete_for_post()` used to cast the result to `int`, which turns `false`
+	 * into a successful delete of zero rows. Both now answer with what the
+	 * database did. The distinction matters most for `set_status()`: it is the
+	 * single write behind cancel and un-cancel, so a caller told `true` after a
+	 * refused write shows an occurrence canceled that is still `scheduled` and
+	 * still selected by every listing.
+	 *
+	 * The refusal is injected by redirecting the statement to a table that is
+	 * not there, rather than by dropping the real one, because dropping it is
+	 * DDL and commits implicitly, escaping the test transaction.
+	 *
+	 * @covers ::set_status
+	 * @covers ::delete_for_post
+	 *
+	 * @return void
+	 */
+	public function test_single_post_writes_report_a_refused_statement(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+		$rows     = $instance->select_for_series( array( $post_id ) );
+
+		$this->assertNotEmpty( $rows, 'Failed to arrange projected rows for the write to refuse.' );
+
+		$update = $this->break_occurrence_statements( 'UPDATE' );
+
+		$status_result = $instance->set_status(
+			$post_id,
+			(string) $rows[0]['recurrence_id'],
+			Occurrences::STATUS_CANCELED
+		);
+
+		remove_filter( 'query', $update );
+
+		$this->assertFalse(
+			$status_result,
+			'Failed to assert set_status() reports a refused UPDATE rather than returning true.'
+		);
+
+		$delete = $this->break_occurrence_statements( 'DELETE' );
+
+		$delete_result = $instance->delete_for_post( $post_id );
+
+		remove_filter( 'query', $delete );
+
+		$this->assertFalse(
+			$delete_result,
+			'Failed to assert delete_for_post() distinguishes a refused DELETE from deleting no rows.'
+		);
+
+		$this->assertSame(
+			0,
+			$instance->delete_for_post( -1 ),
+			'Failed to assert a post with no rows still reports zero rather than false.'
+		);
+	}
 }

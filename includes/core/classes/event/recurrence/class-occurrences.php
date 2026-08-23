@@ -1852,8 +1852,15 @@ final class Occurrences {
 			return false;
 		}
 
-		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->query(
+		// Reports what the database did rather than that a statement was
+		// issued. The row existing a moment ago is not evidence the update
+		// landed: a deadlock, a read-only replica, or the table being dropped
+		// between the probe above and this write all return false, and a
+		// caller told `true` would show an occurrence canceled that is still
+		// scheduled and still in every listing. Routing through
+		// `execute_write()` also gets the missing-table self-heal the other
+		// writes have.
+		return false !== $this->execute_write(
 			$wpdb->prepare(
 				'UPDATE %i SET status = %s WHERE series_post_id = %d AND recurrence_id = %s',
 				$table,
@@ -1862,9 +1869,6 @@ final class Occurrences {
 				$recurrence_id
 			)
 		);
-		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-
-		return true;
 	}
 
 	/**
@@ -1881,15 +1885,19 @@ final class Occurrences {
 	 *
 	 * @param int $post_id Post ID whose occurrence rows should be removed.
 	 *
-	 * @return int Rows deleted.
+	 * @return int|false Rows deleted, or false when the statement failed.
 	 */
-	public function delete_for_post( int $post_id ): int {
+	public function delete_for_post( int $post_id ): int|false {
 		global $wpdb;
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
-		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		return (int) $wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id ) );
-		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// `int|false`, not `int`: `(int) false` is `0`, which is
+		// indistinguishable from a successful delete of a post that had no
+		// rows. The two answers mean opposite things to a caller deciding
+		// whether the table still holds state for this post.
+		return $this->execute_write(
+			$wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id )
+		);
 	}
 }
