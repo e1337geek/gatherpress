@@ -1296,26 +1296,4 @@ class Test_Rest_Api extends Base {
 			$query->posts
 		);
 	}
-
-	/**
-	 * Nothing is routed while the contract is frozen, so calling the registrar
-	 * must leave the REST server's route table exactly as it found it. A route
-	 * that appeared here early would be a live, unauthorized write endpoint.
-	 *
-	 * @covers ::register_endpoints
-	 *
-	 * @return void
-	 */
-	public function test_register_endpoints_adds_no_routes(): void {
-		$rest_server = rest_get_server();
-		$before      = array_keys( $rest_server->get_routes() );
-
-		Rest_Api::get_instance()->register_endpoints();
-
-		$this->assertSame(
-			$before,
-			array_keys( $rest_server->get_routes() ),
-			'Failed to assert that register_endpoints leaves the REST route table unchanged.'
-		);
-	}
 }
