@@ -134,31 +134,37 @@ const BUDGET_DAYS_PER_FREQUENCY = {
 const EXPANDER_MAX_ITERATIONS = 200000;
 
 /**
- * Coerce a decoded JSON value to an integer the way PHP's `(int)` cast does.
+ * Read a decoded JSON value the way `Rule::to_int()` reads it.
  *
- * `Rule::from_array()` reads every numeric field through `(int)`, so the
- * panel's reading of a stored blob has to land on the same number: a float
- * truncates toward zero, a boolean reads as 1 or 0, a leading-digits string
- * keeps its digits, and anything without a leading number reads as 0.
+ * Not a cast. `Rule::from_array()` does not use PHP's `(int)`; it uses
+ * `to_int()`, which accepts an actual integer or a canonical integer string
+ * and returns null for everything else, and a single null rejects the whole
+ * rule. So a fractional interval, a boolean count, and a leading-digits string
+ * are all refusals on the server, not values. Truncating them here is what let
+ * this panel present a rule as enabled while the server had rejected the blob
+ * and cleared its projection.
+ *
+ * One case the two sides cannot agree on: JSON `2.0` decodes to a PHP float,
+ * which `is_int()` refuses, and to the JavaScript number 2, which is an
+ * integer. Nothing this side can inspect distinguishes it from `2`, and the
+ * blob this panel writes never emits that form.
  *
  * @since 0.36.0
  *
  * @param {*} value Decoded value of unknown type.
  *
- * @return {number} The integer PHP's cast would produce.
+ * @return {number|null} The integer, or null when the server would refuse it.
  */
 function toServerInt( value ) {
-	if ( 'number' === typeof value ) {
-		return Math.trunc( value );
+	if ( Number.isInteger( value ) ) {
+		return value;
 	}
 
-	if ( 'boolean' === typeof value ) {
-		return value ? 1 : 0;
+	if ( 'string' === typeof value && /^-?(?:0|[1-9][0-9]*)$/.test( value ) ) {
+		return Number( value );
 	}
 
-	const parsed = parseInt( value, 10 );
-
-	return Number.isNaN( parsed ) ? 0 : parsed;
+	return null;
 }
 
 /**
@@ -217,14 +223,18 @@ function coerceStoredRule( parsed ) {
 
 	return {
 		frequency: String( parsed.frequency ?? '' ),
-		interval: 1 > interval ? 1 : interval,
+		interval: null === interval ? null : Math.max( 1, interval ),
 		weekdays,
 		monthly_mode: String( parsed.monthly_mode ?? '' ),
 		monthly_day: toServerInt( parsed.monthly_day ?? 0 ),
 		monthly_ordinal: toServerInt( parsed.monthly_ordinal ?? 0 ),
 		monthly_weekday: toServerInt( parsed.monthly_weekday ?? 0 ),
 		end_type: String( parsed.end_type ?? '' ),
-		until: 'string' === typeof parsed.until ? parsed.until : '',
+		// Kept raw, not narrowed to a string. `from_array()` decides
+		// `$has_until` from the raw field, so a non-string `until` is a
+		// present-but-unparsable end date that rejects the rule, where
+		// blanking it here would read as no end date at all.
+		until: parsed.until ?? '',
 		count: toServerInt( parsed.count ?? 0 ),
 	};
 }
@@ -308,6 +318,38 @@ function isValidEndShape( rule ) {
  * @return {boolean} Whether `Rule::from_array()` would return a rule.
  */
 function isServerValidRule( rule ) {
+	// `to_int()` returning null for any numeric field rejects the whole rule
+	// on the server, so a refusal has to be a refusal here too rather than a
+	// coerced value that renders as an enabled schedule.
+	const integers = [
+		rule.interval,
+		rule.monthly_day,
+		rule.monthly_ordinal,
+		rule.monthly_weekday,
+		rule.count,
+	];
+
+	if (
+		integers.some( ( field ) => ! Number.isInteger( field ) ) ||
+		rule.weekdays.some( ( day ) => ! Number.isInteger( day ) )
+	) {
+		return false;
+	}
+
+	// `from_array()` runs both of these on the raw field's presence, before
+	// the shape checks below ever see a parsed date. A nonempty `until` that
+	// does not parse is rejected rather than erased, and RFC 5545 forbids a
+	// rule carrying both an end date and a count, so an unparsable `until`
+	// cannot slip a count rule through by failing to parse.
+	const hasRawUntil = '' !== ( rule.until ?? '' );
+
+	if (
+		hasRawUntil &&
+		( ! isParseableUntil( rule.until ) || 0 < rule.count )
+	) {
+		return false;
+	}
+
 	if (
 		! VALID_FREQUENCIES.includes( rule.frequency ) ||
 		52 < rule.interval ||

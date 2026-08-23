@@ -1138,16 +1138,20 @@ describe( 'RecurrencePanel', () => {
 			expect( screen.getByLabelText( 'Repeat every' ) ).toHaveValue( 1 );
 		} );
 
-		test( 'truncates a fractional interval the way the PHP int cast does', () => {
+		test( 'refuses a fractional interval, which the server refuses too', () => {
+			// `Rule::to_int()` accepts an integer or a canonical integer
+			// string and nothing else, so 2.9 is not interval 2 to the
+			// server, it is a rejected rule. Truncating here presented an
+			// enabled schedule for a blob whose mirrors and projection the
+			// server had already cleared.
 			renderWithStoredBlob( storedBlob( { interval: 2.9 } ) );
 
-			expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
-			expect( screen.getByLabelText( 'Repeat every' ) ).toHaveValue( 2 );
+			expectRepairState();
 		} );
 
-		test( 'casts stored booleans the way the PHP int cast does', () => {
-			// PHP reads `(int) false` as 0 (clamped to interval 1) and
-			// `(int) true` as 1, a valid one-occurrence count rule.
+		test( 'refuses stored booleans, which the server refuses too', () => {
+			// `to_int()` never reads a boolean as a number, so neither of
+			// these is a value the server would accept.
 			renderWithStoredBlob(
 				storedBlob( {
 					interval: false,
@@ -1156,11 +1160,7 @@ describe( 'RecurrencePanel', () => {
 				} ),
 			);
 
-			expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
-			expect( screen.getByLabelText( 'Repeat every' ) ).toHaveValue( 1 );
-			expect(
-				screen.getByLabelText( 'Number of occurrences' ),
-			).toHaveValue( 1 );
+			expectRepairState();
 		} );
 
 		test( 'accepts a stringified count the way the server casts it', () => {
@@ -1185,11 +1185,12 @@ describe( 'RecurrencePanel', () => {
 			);
 		} );
 
-		test( 'accepts an unparsable end date on a count rule and blanks it for display', () => {
-			// `from_array()` treats an unparsable `until` as no date at all,
-			// so it does not collide with the count and the rule stands.
-			// Displaying the garbage string would hand it back to the user
-			// the moment they switch to "On date", so it is blanked instead.
+		test( 'refuses a count rule carrying an unparsable end date', () => {
+			// `from_array()` decides both of its `until` rejections on the
+			// raw field's presence, before anything parses it: a nonempty
+			// `until` that does not parse is rejected rather than erased, and
+			// that check is what stops an unparsable date slipping a count
+			// rule past RFC 5545's ban on carrying both.
 			renderWithStoredBlob(
 				storedBlob( {
 					end_type: 'count',
@@ -1198,24 +1199,15 @@ describe( 'RecurrencePanel', () => {
 				} ),
 			);
 
-			expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
-
-			fireEvent.change( screen.getByLabelText( 'Ends' ), {
-				target: { value: 'until' },
-			} );
-
-			expect( screen.getByLabelText( 'End date' ) ).toHaveValue( '' );
-			expect(
-				screen.getByText(
-					'Choose an end date to save this recurrence.',
-				),
-			).toBeInTheDocument();
+			expectRepairState();
 		} );
 
-		test( 'accepts an nth-weekday rule regardless of its unused day field', () => {
-			// The server validates only the active mode's companions, so a
-			// junk `monthly_day` on an nth-weekday rule is dead weight, not
-			// grounds for rejection.
+		test( 'refuses a junk day field even on an nth-weekday rule', () => {
+			// `is_valid_monthly_shape()` does check only the active mode's
+			// companions, but `from_array()` runs `to_int()` over all five
+			// integer fields before any shape check, and one null rejects the
+			// whole rule. So an unused `monthly_day` is not dead weight.
+			// Measured against the production PHP: rejected.
 			renderWithStoredBlob(
 				storedBlob( {
 					frequency: 'monthly',
@@ -1226,10 +1218,7 @@ describe( 'RecurrencePanel', () => {
 				} ),
 			);
 
-			expect( screen.getByLabelText( 'Repeat' ) ).toBeChecked();
-			expect(
-				screen.queryByLabelText( 'Day of the month' ),
-			).not.toBeInTheDocument();
+			expectRepairState();
 		} );
 
 		test( 'clears the repair state the moment the user authors a fresh rule', () => {
