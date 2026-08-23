@@ -265,7 +265,17 @@ final class Rsvp {
 		// so returning early skipped the invalidation on the one save that removes
 		// an attendee, leaving them visible in warm counts for the length of
 		// `Cache::CACHE_EXPIRATION` under a persistent object cache.
-		Cache::delete( $this->event->ID );
+		//
+		// `$this->event` is `?WP_Post` and `Cache::delete()` takes a non-nullable
+		// `int`, so an unusable post ID threw a `TypeError` here instead of
+		// returning `DEFAULT_SAVE_RESPONSE` as this method documents. There is
+		// nothing to invalidate in that case anyway. `process()` below guards the
+		// same property the same way.
+		$event_id = $this->event->ID ?? 0;
+
+		if ( 0 < $event_id ) {
+			Cache::delete( $event_id );
+		}
 
 		if ( null === $state ) {
 			return self::DEFAULT_SAVE_RESPONSE;
