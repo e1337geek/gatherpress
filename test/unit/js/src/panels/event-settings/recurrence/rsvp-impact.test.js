@@ -9,9 +9,23 @@ import '@testing-library/jest-dom';
  * WordPress dependencies
  */
 jest.mock( '@wordpress/i18n', () => ( {
+	__: ( text ) => text,
 	_n: ( single, plural, number ) => ( 1 === number ? single : plural ),
 	sprintf: ( format, ...args ) =>
 		format.replace( /%d/g, () => String( args.shift() ) ),
+} ) );
+
+const mockLockPostSaving = jest.fn();
+const mockUnlockPostSaving = jest.fn();
+
+// Deliberately hands back fresh function identities on every call, which is
+// the shape that turns a dependency on them into a render loop. The component
+// holds them in a ref for exactly that reason, so this mock also pins that.
+jest.mock( '@wordpress/data', () => ( {
+	useDispatch: () => ( {
+		lockPostSaving: ( ...args ) => mockLockPostSaving( ...args ),
+		unlockPostSaving: ( ...args ) => mockUnlockPostSaving( ...args ),
+	} ),
 } ) );
 
 const mockApiFetch = jest.fn();
@@ -130,15 +144,124 @@ describe( 'RsvpImpact', () => {
 		expect( container ).toBeEmptyDOMElement();
 	} );
 
-	test( 'reports nothing when the impact request fails', async () => {
+	test( 'says the check did not run when the impact request fails', async () => {
+		// Rendering nothing here is what an all-clear looks like, so reading a
+		// failure as zero made a broken route indistinguishable from "no RSVPs
+		// are at risk" at the moment the organizer commits.
 		mockApiFetch.mockRejectedValue( new Error( 'nope' ) );
 
-		const { container } = render(
+		render( <RsvpImpact postId={ 42 } rule={ RULE } /> );
+
+		await waitFor( () =>
+			expect(
+				screen.getByText(
+					'The affected RSVPs could not be checked. Saving this change may leave RSVPs on dates it removes.',
+				),
+			).toBeInTheDocument(),
+		);
+	} );
+
+	test( 'locks saving until the answer arrives, and releases it either way', async () => {
+		// The count is only useful before the organizer commits. Without the
+		// lock, Update could be pressed while the answer was still in flight
+		// and the rule would save with no warning shown at all.
+		let resolvePending;
+
+		const pending = new Promise( ( resolve ) => {
+			resolvePending = resolve;
+		} );
+
+		mockApiFetch.mockReturnValueOnce( pending );
+
+		render( <RsvpImpact postId={ 42 } rule={ RULE } /> );
+
+		await waitFor( () =>
+			expect( mockLockPostSaving ).toHaveBeenCalledWith(
+				'gatherpress-recurrence-impact',
+			),
+		);
+		expect( mockUnlockPostSaving ).not.toHaveBeenCalled();
+		expect(
+			screen.getByText( 'Checking which RSVPs this change affects…' ),
+		).toBeInTheDocument();
+
+		await act( async () => {
+			resolvePending( { removed: [ 'x' ], rsvp_count: 2 } );
+			await pending;
+		} );
+
+		expect( mockUnlockPostSaving ).toHaveBeenCalledWith(
+			'gatherpress-recurrence-impact',
+		);
+	} );
+
+	test( 'releases the save lock when the request fails', async () => {
+		// This route is informational, so a site whose route is unavailable
+		// must still be able to edit its events. The warning above is what
+		// keeps that honest.
+		mockApiFetch.mockRejectedValue( new Error( 'nope' ) );
+
+		render( <RsvpImpact postId={ 42 } rule={ RULE } /> );
+
+		await waitFor( () =>
+			expect( mockUnlockPostSaving ).toHaveBeenCalledWith(
+				'gatherpress-recurrence-impact',
+			),
+		);
+	} );
+
+	test( 'gives up and releases the lock when the request never settles', async () => {
+		// A rejected request releases the lock through its own arm. A request
+		// that never settles has no arm to run, and an unbounded lock leaves
+		// the post unsavable with only the checking message on screen, with no
+		// way out but reloading the editor and losing the rest of the edit.
+		// A hang gets the same outcome a failure gets.
+		jest.useFakeTimers();
+
+		try {
+			mockApiFetch.mockReturnValueOnce( new Promise( () => {} ) );
+
+			render( <RsvpImpact postId={ 42 } rule={ RULE } /> );
+
+			expect( mockLockPostSaving ).toHaveBeenCalledWith(
+				'gatherpress-recurrence-impact',
+			);
+			expect( mockUnlockPostSaving ).not.toHaveBeenCalled();
+
+			await act( async () => {
+				jest.advanceTimersByTime( 10000 );
+			} );
+
+			expect(
+				screen.getByText(
+					'The affected RSVPs could not be checked. Saving this change may leave RSVPs on dates it removes.',
+				),
+			).toBeInTheDocument();
+			expect( mockUnlockPostSaving ).toHaveBeenCalledWith(
+				'gatherpress-recurrence-impact',
+			);
+		} finally {
+			jest.useRealTimers();
+		}
+	} );
+
+	test( 'releases the save lock when it unmounts mid-flight', async () => {
+		// A lock outlives the component that took it, so an unmount while a
+		// request is pending would leave the post unsavable with nothing on
+		// screen explaining why.
+		mockApiFetch.mockReturnValueOnce( new Promise( () => {} ) );
+
+		const { unmount } = render(
 			<RsvpImpact postId={ 42 } rule={ RULE } />,
 		);
 
-		await waitFor( () => expect( mockApiFetch ).toHaveBeenCalled() );
-		expect( container ).toBeEmptyDOMElement();
+		await waitFor( () => expect( mockLockPostSaving ).toHaveBeenCalled() );
+
+		unmount();
+
+		expect( mockUnlockPostSaving ).toHaveBeenCalledWith(
+			'gatherpress-recurrence-impact',
+		);
 	} );
 
 	test( 'reports nothing when the response carries no count', async () => {
