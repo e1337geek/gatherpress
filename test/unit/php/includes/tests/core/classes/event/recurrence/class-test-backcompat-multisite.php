@@ -629,6 +629,92 @@ class Test_Backcompat_Multisite extends Base {
 	}
 
 	/**
+	 * `find_in_series()` reads nothing when the occurrence table is absent.
+	 *
+	 * Its schema probe shares one line with two argument guards, so removing
+	 * `! $this->table_exists()` leaves every suite green and the file still
+	 * reports 100% coverage: the line runs either way. That is the
+	 * line-versus-branch gap `AGENTS.md` is written against, sitting on a guard
+	 * whose whole job is to stop a front-end request emitting a `SELECT`
+	 * against a table that is not there. This method resolves occurrence
+	 * context while rendering, so the error would surface to a visitor.
+	 *
+	 * Same shape as the `select_upcoming()` case above, on the read that one
+	 * did not reach.
+	 *
+	 * @group multisite
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::find_in_series
+	 * @covers \GatherPress\Core\Event\Recurrence\Occurrences::table_exists
+	 *
+	 * @return void
+	 */
+	public function test_find_in_series_reads_nothing_when_table_is_absent(): void {
+		global $wpdb;
+
+		$new_site_id = $this->factory()->blog->create();
+
+		switch_to_blog( $new_site_id );
+
+		Utility::invoke_hidden_method( Setup::get_instance(), 'create_tables' );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery -- simulating the lazy-creation hazard.
+		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+
+		Occurrences::get_instance()->forget_table_exists();
+
+		$post_id = $this->create_event();
+
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		$saved              = $wpdb->save_queries;
+		$wpdb->save_queries = true;
+		$wpdb->queries      = array();
+
+		$exception = null;
+		$row       = 'unset';
+
+		try {
+			$row = Occurrences::get_instance()->find_in_series(
+				array( $post_id ),
+				$this->anchor()->format( 'Ymd\THis' )
+			);
+		} catch ( Throwable $e ) {
+			$exception = $e;
+		}
+
+		$captured = array_column( $wpdb->queries, 0 );
+
+		$wpdb->save_queries = $saved;
+		$wpdb->queries      = array();
+
+		$occurrence_reads = array_values(
+			array_filter(
+				$captured,
+				static function ( string $sql ) use ( $table ): bool {
+					return str_contains( $sql, $table ) && ! str_contains( $sql, 'SHOW TABLES' );
+				}
+			)
+		);
+
+		restore_current_blog();
+
+		$this->assertNull(
+			$exception,
+			'Failed to assert find_in_series() does not throw when the occurrence table is absent.'
+		);
+		$this->assertNull(
+			$row,
+			'Failed to assert find_in_series() resolves no occurrence when the table is absent.'
+		);
+		$this->assertSame(
+			array(),
+			$occurrence_reads,
+			'Failed to assert the absent-table guard issues no read against the occurrence table.'
+		);
+	}
+
+	/**
 	 * The date-bomb guard for this file, and it fails by name.
 	 *
 	 * If you are reading this because it failed, someone re-pinned `anchor()`
