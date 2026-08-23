@@ -1423,6 +1423,98 @@ class Test_Rewrite extends Base {
 	}
 
 	/**
+	 * A duplicate row never forwards a bare URL to a post the guard excluded.
+	 *
+	 * `next_upcoming_in_series()` filters the series through `can_follow_to()`
+	 * and queries only the survivors, but it then passes just the recurrence
+	 * identifier to `Occurrence_Identity::resolve()`, which goes back through
+	 * `find_in_series()` over the whole series and picks a winner with
+	 * `ORDER BY series_post_id ASC LIMIT 1`. A lower-ID sibling carrying the
+	 * same identifier therefore wins the re-resolution even though this method
+	 * just excluded it, and its slug would go into a `Location` header for an
+	 * anonymous visitor with no second permission check.
+	 *
+	 * The duplicate is written directly here because the uniqueness guard this
+	 * stack adds prevents it going forward. That guard's own comment is what
+	 * makes the case: rows written before it existed, or by anything else with
+	 * table access, can still carry the duplicate, and a site upgraded from an
+	 * earlier build of this stack is exactly that state.
+	 *
+	 * Failing closed is the contract: with the excluded post winning the
+	 * re-resolution there is no safe target, so the origin renders as a lapsed
+	 * series rather than forwarding anywhere.
+	 *
+	 * @covers ::maybe_follow_series
+	 * @covers ::next_upcoming_in_series
+	 * @covers ::can_follow_to
+	 *
+	 * @return void
+	 */
+	public function test_a_bare_url_does_not_follow_a_duplicate_row_to_an_excluded_post(): void {
+		global $wpdb;
+
+		list( $post_id, $forward ) = $this->split_into_a_lapsed_origin();
+
+		$row = Occurrences::get_instance()->select_bounded_occurrence( array( $forward ), true );
+
+		$this->assertNotNull( $row, 'Fixture setup: the forward post must have an upcoming occurrence.' );
+
+		// A public sibling with a higher post ID than the private one, so the
+		// re-resolution's ascending order prefers the post that was excluded.
+		$public = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$this->assertGreaterThan(
+			$forward,
+			$public,
+			'Fixture setup: the public sibling must sort after the private one by post ID.'
+		);
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- writing the legacy row the guard now prevents.
+		$wpdb->insert(
+			sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+			array(
+				'series_post_id'     => $public,
+				'recurrence_id'      => (string) $row['recurrence_id'],
+				'datetime_start'     => (string) $row['datetime_start'],
+				'datetime_start_gmt' => (string) $row['datetime_start_gmt'],
+				'datetime_end'       => (string) $row['datetime_end'],
+				'datetime_end_gmt'   => (string) $row['datetime_end_gmt'],
+				'timezone'           => (string) $row['timezone'],
+				'status'             => Occurrences::STATUS_SCHEDULED,
+			)
+		);
+
+		wp_update_post(
+			array(
+				'ID'          => $forward,
+				'post_status' => 'private',
+			)
+		);
+
+		$series = array( $post_id, $forward, $public );
+
+		add_filter(
+			'gatherpress_series_post_ids',
+			static function () use ( $series ): array {
+				return $series;
+			}
+		);
+
+		wp_set_current_user( 0 );
+
+		$this->assert_not_redirect(
+			function () use ( $post_id ): void {
+				$this->go_to( get_permalink( $post_id ) );
+			}
+		);
+	}
+
+	/**
 	 * A private sibling is never revealed by a bare URL.
 	 *
 	 * A visitor who may not read the forward post must not be sent to it, and

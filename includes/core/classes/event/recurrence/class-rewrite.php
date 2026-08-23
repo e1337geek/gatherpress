@@ -570,7 +570,22 @@ final class Rewrite {
 
 		// Still resolved through the identity seam rather than assembled from
 		// the row, so the redirect target is the owner the seam names.
-		return Occurrence_Identity::resolve( $post_id, (string) $row['recurrence_id'] );
+		$identity = Occurrence_Identity::resolve( $post_id, (string) $row['recurrence_id'] );
+
+		// The bounded read above queried only the candidates `can_follow_to()`
+		// allows, but `resolve()` goes back through `find_in_series()` over the
+		// whole series and picks a winner with `ORDER BY series_post_id ASC`.
+		// A duplicate `recurrence_id` on a lower-ID sibling that was excluded
+		// here therefore wins, and its slug would go into a `Location` header
+		// for an anonymous visitor with no second `can_follow_to()` check.
+		// The comment on the uniqueness guard in this stack says rows written
+		// before that guard existed can still carry the duplicate, so a site
+		// upgraded from an earlier build is exactly that state. The other
+		// redirect in this class re-checks the owner the same way, which is
+		// why that path is safe.
+		return ( null !== $identity && in_array( $identity->owner_post_id, $candidates, true ) )
+			? $identity
+			: null;
 	}
 
 	/**
