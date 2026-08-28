@@ -78,53 +78,6 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Create and project a recurring event anchored relative to "now", rather
-	 * than to `Occurrence_Fixtures`' fixed 2026-09-03 anchor.
-	 *
-	 * `select_upcoming()`/`select_past()` compare against `current_time()`, so
-	 * a test asserting "upcoming" or "past" placement against a fixed
-	 * calendar date is a date bomb. It silently starts failing once real
-	 * time passes the fixture's anchor. This builds the event directly rather
-	 * than through `create_recurring_event()`, so the anchor is always
-	 * relative to whenever the suite actually runs.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @param array             $rule     Recurrence rule values.
-	 * @param DateTimeImmutable $start    Anchor start, in `$timezone`.
-	 * @param DateTimeImmutable $end      Anchor end, in `$timezone`.
-	 * @param string            $timezone Named tz-database identifier for the series.
-	 *
-	 * @return int The projected post ID.
-	 */
-	protected function create_relative_recurring_event(
-		array $rule,
-		DateTimeImmutable $start,
-		DateTimeImmutable $end,
-		string $timezone = 'America/New_York'
-	): int {
-		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
-
-		add_post_meta(
-			$post_id,
-			'gatherpress_datetime',
-			wp_json_encode(
-				array(
-					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
-					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
-					'timezone'      => $timezone,
-				)
-			)
-		);
-		Event_Setup::get_instance()->set_datetimes( $post_id );
-		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $rule ) );
-		Meta::get_instance()->set_recurrence( $post_id );
-		Occurrences::get_instance()->project( $post_id );
-
-		return $post_id;
-	}
-
-	/**
 	 * Coverage for `__construct` and `setup_hooks`.
 	 *
 	 * @covers ::__construct
@@ -673,8 +626,8 @@ class Test_Occurrences extends Base {
 	 * guarantee. Checking only project()'s return value (the test above) is
 	 * not enough to guard this: the fix for orphaned rows made the
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
-	 * clean up unconditionally, which silently added a DELETE query to this
-	 * exact, most-common save path. That regression passed a return-value-only
+	 * silently adds a DELETE query to this
+	 * exact, most-common save path. Such a regression passes a return-value-only
 	 * assertion; it only shows up in the query log, which is why this test
 	 * drives the real `wp_after_insert_post` / `shutdown` hooks rather than
 	 * calling project() directly.
@@ -763,7 +716,7 @@ class Test_Occurrences extends Base {
 	 * hand-called sequence cannot fail even when the wiring it claims to test
 	 * is broken. Inverting `maybe_project()`'s `wp_after_insert_post`
 	 * priority and its dynamic `shutdown` priority so `Occurrences` runs
-	 * *before* `Meta` left the previous, hand-called version of this test
+	 * *before* `Meta` leaves a hand-called version of this test
 	 * green. Firing the hooks for real is what makes the ordering the
 	 * deferred design depends on part of what is under test.
 	 *
@@ -1925,6 +1878,147 @@ class Test_Occurrences extends Base {
 				add_post_type_support( $post_type, 'gatherpress-event-date' );
 			}
 		}
+	}
+
+	/**
+	 * The anchor-only arm of `select_by_horizon()` — the statement every
+	 * site with no recurring events runs — keeps its boundary predicate in
+	 * `WHERE` on the real `datetime_end_gmt` column through an `INNER JOIN`,
+	 * never in `HAVING` on the projected alias. `HAVING` on the alias forces
+	 * a temporary table plus filesort, and the `LEFT JOIN` it filtered was
+	 * effectively inner already: a post with no events-table row yields
+	 * `NULL`, which fails the boundary comparison in either direction. The
+	 * result set is identical either way, so the pin here is the statement's
+	 * shape, in both directions.
+	 *
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_anchor_only_arm_filters_in_where_through_an_inner_join(): void {
+		global $wpdb;
+
+		$timezone = new DateTimeZone( 'UTC' );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $now->modify( '+2 days' )->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $now->modify( '+2 days +2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$events_table      = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$refs = Occurrences::get_instance()->select_upcoming( 10 );
+		$sql  = $wpdb->last_query;
+
+		$this->assertContains(
+			$post_id,
+			wp_list_pluck( $refs, 'post_id' ),
+			'Failed to assert that the anchor-only arm returns the upcoming event.'
+		);
+		$this->assertStringNotContainsString(
+			$occurrences_table,
+			$sql,
+			'Failed to assert that the anchor-only arm never names the occurrence table.'
+		);
+		$this->assertStringContainsString(
+			"INNER JOIN `{$events_table}`",
+			$sql,
+			'Failed to assert that the anchor-only arm joins the events table with INNER JOIN.'
+		);
+		$this->assertStringNotContainsString(
+			'LEFT JOIN',
+			$sql,
+			'Failed to assert that the anchor-only arm emits no LEFT JOIN.'
+		);
+		$this->assertStringNotContainsString(
+			'HAVING',
+			$sql,
+			'Failed to assert that the anchor-only arm emits no HAVING clause.'
+		);
+		$this->assertStringContainsString(
+			"AND `{$events_table}`.datetime_end_gmt >= ",
+			$sql,
+			'Failed to assert that the upcoming boundary filters in WHERE on the real column.'
+		);
+
+		Occurrences::get_instance()->select_past( 10 );
+
+		$this->assertStringContainsString(
+			"AND `{$events_table}`.datetime_end_gmt < ",
+			$wpdb->last_query,
+			'Failed to assert that the past boundary filters in WHERE on the real column.'
+		);
+		$this->assertStringNotContainsString(
+			'HAVING',
+			$wpdb->last_query,
+			'Failed to assert that the past direction emits no HAVING clause.'
+		);
+	}
+
+	/**
+	 * A published event post with no events-table row is absent from the
+	 * anchor-only arm in both directions — the same result the previous
+	 * `LEFT JOIN` + `HAVING` shape produced, since `NULL` fails the boundary
+	 * comparison either way. The `INNER JOIN` makes that elimination
+	 * structural instead of incidental.
+	 *
+	 * @covers ::select_by_horizon
+	 *
+	 * @return void
+	 */
+	public function test_anchor_only_arm_omits_an_event_with_no_events_table_row(): void {
+		global $wpdb;
+
+		$timezone = new DateTimeZone( 'UTC' );
+		$now      = new DateTimeImmutable( 'now', $timezone );
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $now->modify( '+2 days' )->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $now->modify( '+2 days +2 hours' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		$events_table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Required to strip the events-table row from a published post.
+		$wpdb->delete( $events_table, array( 'post_id' => $post_id ) );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		update_option( Query::HAS_RECURRING_OPTION, '0' );
+
+		$instance = Occurrences::get_instance();
+
+		$this->assertNotContains(
+			$post_id,
+			wp_list_pluck( $instance->select_upcoming( 50 ), 'post_id' ),
+			'Failed to assert that a rowless event post is absent from select_upcoming().'
+		);
+		$this->assertNotContains(
+			$post_id,
+			wp_list_pluck( $instance->select_past( 50 ), 'post_id' ),
+			'Failed to assert that a rowless event post is absent from select_past().'
+		);
 	}
 
 	/**
@@ -3358,6 +3452,38 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * `find_in_series()` matches on the composite key across every post of a series.
+	 *
+	 * The lookup that validates a request-supplied `recurrence_id`. It takes an
+	 * array of post IDs rather than one, so a forward split that
+	 * moves an occurrence onto a sibling post does not make the identifier
+	 * stop resolving.
+	 *
+	 * @covers ::find_in_series
+	 *
+	 * @return void
+	 */
+	public function test_find_in_series_matches_the_composite_key(): void {
+		$post_id = $this->create_and_project();
+		$found   = Occurrences::get_instance()->find_in_series(
+			array( $post_id + 1000, $post_id ),
+			'20260915T180000'
+		);
+
+		$this->assertIsArray( $found, 'Failed to assert an occurrence of the series resolves.' );
+		$this->assertSame(
+			'20260915T180000',
+			$found['recurrence_id'],
+			'Failed to assert the resolved row is the one the identifier named.'
+		);
+		$this->assertSame(
+			$post_id,
+			(int) $found['series_post_id'],
+			'Failed to assert the resolved row belongs to the post that owns it.'
+		);
+	}
+
+	/**
 	 * Coverage for the rowless-repair blocker on the lazy path: an
 	 * upcoming-events read that surfaces a rowless series through
 	 * `select_by_horizon()`'s no-rows fallback must repair it. The fallback
@@ -3875,6 +4001,17 @@ class Test_Occurrences extends Base {
 		$directions = array(
 			'>=' => true,
 			'<'  => false,
+		);
+
+		// The joined arm is the one under test, and this branch adds an
+		// anchor-only arm ahead of it that names no occurrence table at all.
+		// Flagging the site is what makes the joined arm the arm that runs,
+		// so the capture below cannot pass by reading the wrong statement.
+		update_option( Query::HAS_RECURRING_OPTION, '1' );
+
+		$this->assertTrue(
+			Query::site_has_recurring_events(),
+			'Failed to arrange the site state the joined horizon arm requires.'
 		);
 
 		foreach ( $directions as $comparison => $upcoming ) {
@@ -4590,6 +4727,7 @@ class Test_Occurrences extends Base {
 			'Failed to assert that top_up reports zero when every projection failed.'
 		);
 	}
+
 	/**
 	 * Coverage for both single-post writes reporting a refused statement.
 	 *
@@ -4647,6 +4785,111 @@ class Test_Occurrences extends Base {
 			0,
 			$instance->delete_for_post( -1 ),
 			'Failed to assert a post with no rows still reports zero rather than false.'
+		);
+	}
+
+	/**
+	 * `find_in_series()` resolves nothing for an unusable or unmatched lookup.
+	 *
+	 * @covers ::find_in_series
+	 *
+	 * @return void
+	 */
+	public function test_find_in_series_returns_null_when_nothing_matches(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+
+		$this->assertNull(
+			$instance->find_in_series( array(), '20260915T180000' ),
+			'Failed to assert an empty series resolves nothing.'
+		);
+		$this->assertNull(
+			$instance->find_in_series( array( $post_id ), '' ),
+			'Failed to assert an empty identifier resolves nothing.'
+		);
+		$this->assertNull(
+			$instance->find_in_series( array( $post_id ), '20991231T235959' ),
+			'Failed to assert an identifier the series does not carry resolves nothing.'
+		);
+		$this->assertNull(
+			$instance->find_in_series( array( $post_id + 1000 ), '20260915T180000' ),
+			'Failed to assert an occurrence of another series does not resolve here.'
+		);
+	}
+
+	/**
+	 * An identifier carried by two posts of one series resolves deterministically.
+	 *
+	 * `find_in_series()` is `LIMIT 1`, and a `LIMIT` without an `ORDER BY` means
+	 * whatever the query plan returns. That is not cosmetic once a forward split lets a
+	 * series span several posts: the `series_post_id` this returns is what every
+	 * consumer keys the RSVP's occurrence term off, so an unstable pick would
+	 * move a responder's RSVP between sibling posts from one request to the
+	 * next. Lowest post ID wins.
+	 *
+	 * The two candidate rows are inserted **highest post ID first**, so a plan
+	 * returning insertion order would produce the wrong answer rather than
+	 * accidentally the right one.
+	 *
+	 * @covers ::find_in_series
+	 *
+	 * @return void
+	 */
+	public function test_find_in_series_picks_the_lowest_post_id_deterministically(): void {
+		global $wpdb;
+
+		$lower_post_id  = $this->create_and_project();
+		$higher_post_id = $this->create_and_project();
+
+		$this->assertLessThan(
+			$higher_post_id,
+			$lower_post_id,
+			'Failed to arrange two posts whose IDs order the way this test assumes.'
+		);
+
+		$table         = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$recurrence_id = '20260915T180000';
+
+		// Both fixtures already carry this identifier, and the higher post's row
+		// was written second, so the physical order favors the wrong answer.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_col(
+			$wpdb->prepare(
+				'SELECT series_post_id FROM %i WHERE recurrence_id = %s AND series_post_id IN ( %d, %d )',
+				$table,
+				$recurrence_id,
+				$lower_post_id,
+				$higher_post_id
+			)
+		);
+
+		$this->assertCount(
+			2,
+			$rows,
+			'Failed to arrange one row per post for the shared identifier.'
+		);
+
+		$resolved = Occurrences::get_instance()->find_in_series(
+			array( $higher_post_id, $lower_post_id ),
+			$recurrence_id
+		);
+
+		$this->assertNotNull( $resolved, 'Failed to assert the shared identifier resolves at all.' );
+		$this->assertSame(
+			$lower_post_id,
+			(int) $resolved['series_post_id'],
+			'Failed to assert find_in_series picks the lowest series post ID rather than a plan-dependent row.'
+		);
+
+		// Argument order must not change the answer either. The ORDER BY decides,
+		// not the caller's array.
+		$this->assertSame(
+			$lower_post_id,
+			(int) Occurrences::get_instance()->find_in_series(
+				array( $lower_post_id, $higher_post_id ),
+				$recurrence_id
+			)['series_post_id'],
+			'Failed to assert the resolution is independent of the order the post IDs are passed in.'
 		);
 	}
 }

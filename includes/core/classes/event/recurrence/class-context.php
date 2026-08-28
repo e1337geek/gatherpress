@@ -113,6 +113,24 @@ final class Context {
 	protected ?array $writing = null;
 
 	/**
+	 * Request-scoped memo of `resolve_in_series()` results.
+	 *
+	 * Keyed `{blog_id}:{post_id}:{recurrence_id}`. Values are the resolved row
+	 * or null, so a miss is remembered as cheaply as a hit. A fabricated
+	 * identifier costs one query per request rather than one per lookup.
+	 *
+	 * The blog ID leads the key because the other two halves are blog-local: a
+	 * request that resolves on one blog and then calls `switch_to_blog()`
+	 * would otherwise be handed the first blog's row on the second blog, and
+	 * the leaked `series_post_id` would feed routing, authorization, term
+	 * slugs and cache keys there as a foreign owner.
+	 *
+	 * @since 0.36.0
+	 * @var array<string, array|null>
+	 */
+	protected static array $resolved = array();
+
+	/**
 	 * The post ID whose occurrence permalink is currently being composed.
 	 *
 	 * `Rewrite::get_occurrence_url()` builds the occurrence URL on top of
@@ -207,6 +225,93 @@ final class Context {
 	}
 
 	/**
+	 * Enter the context of one occurrence named by a request parameter.
+	 *
+	 * The counterpart to `set()` for requests that never reach `wp`, which is
+	 * the whole of REST: core's `rest_api_loaded()` runs on `parse_request` and
+	 * ends in `die()`, so `sync()` is never called for a REST request.
+	 * Resolution goes through `Series::resolve_post_ids()` rather than pinning
+	 * the one post the caller named, so an occurrence a forward split has moved
+	 * onto a sibling post still resolves.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id       Post ID the request names.
+	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
+	 *
+	 * @return bool True when the identifier resolved and context was entered.
+	 */
+	public function set_for_series( int $post_id, string $recurrence_id ): bool {
+		$this->occurrence = self::resolve_in_series( $post_id, $recurrence_id );
+
+		return null !== $this->occurrence;
+	}
+
+	/**
+	 * Resolve an occurrence across every post of a series, without entering it.
+	 *
+	 * Shared by `set_for_series()` and by `Occurrence_Identity::resolve()`,
+	 * which the REST permission callbacks and the classic form use to refuse
+	 * an unknown identifier rather than silently falling back to the series.
+	 *
+	 * The recurring-events guard comes first: on a site with no recurring events this
+	 * returns without touching the occurrence table, so a request carrying a
+	 * fabricated `recurrence_id` costs nothing there.
+	 *
+	 * The result is memoized per `(blog_id, post_id, recurrence_id)` for the
+	 * life of the request, blog first because the other two halves are
+	 * blog-local. A REST dispatch resolves the same pair twice, once in the
+	 * permission callback and once on entry. The two stay separate
+	 * deliberately: the permission callback resolves only to authorize the
+	 * occurrence's owner, and entering context there would leave it standing
+	 * on a request that then 403s with no teardown filter registered. The
+	 * memo removes the duplicated query without collapsing that separation.
+	 *
+	 * Memoizing is safe within a request because the occurrence table is only
+	 * written by projection, which is not something a read request performs;
+	 * the cache is per-process and dies with it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int    $post_id       Post ID the request names.
+	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
+	 *
+	 * @return array|null The occurrence row, or null when nothing in the series carries that identifier.
+	 */
+	public static function resolve_in_series( int $post_id, string $recurrence_id ): ?array {
+		if ( ! Query::site_has_recurring_events() || '' === $recurrence_id || 1 > $post_id ) {
+			return null;
+		}
+
+		$key = sprintf( '%d:%d:%s', get_current_blog_id(), $post_id, $recurrence_id );
+
+		if ( ! array_key_exists( $key, self::$resolved ) ) {
+			self::$resolved[ $key ] = Occurrences::get_instance()->find_in_series(
+				Series::get_instance()->resolve_post_ids( $post_id ),
+				$recurrence_id
+			);
+		}
+
+		return self::$resolved[ $key ];
+	}
+
+	/**
+	 * Discard the request-scoped resolution memo.
+	 *
+	 * Production never needs this, since the memo lives and dies with the
+	 * request. A test process projects and re-projects occurrences inside one
+	 * PHP lifetime, so it needs a way to tell the memo that storage moved under
+	 * it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public static function flush_resolved(): void {
+		self::$resolved = array();
+	}
+
+	/**
 	 * Leave the current occurrence context.
 	 *
 	 * @since 0.36.0
@@ -215,6 +320,30 @@ final class Context {
 	 */
 	public function clear(): void {
 		$this->occurrence = null;
+	}
+
+	/**
+	 * Put back an occurrence a caller previously held.
+	 *
+	 * The counterpart to `current()` for anything that has to nest. Occurrence
+	 * context is a property of the innermost thing running, not of the process,
+	 * so a caller that enters one must be able to restore whatever was standing
+	 * before it rather than clearing unconditionally: a nested REST dispatch
+	 * clearing on its own way out would leave the outer route reading and
+	 * writing series-wide for the rest of its callback.
+	 *
+	 * The row is taken as-is, with no lookup, because it has already been
+	 * resolved once and re-resolving on the way back out could fail on a row
+	 * that has since been deleted and silently widen the outer scope.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array|null $occurrence The occurrence row to restore, or null for no context.
+	 *
+	 * @return void
+	 */
+	public function restore( ?array $occurrence ): void {
+		$this->occurrence = $occurrence;
 	}
 
 	/**
@@ -373,9 +502,28 @@ final class Context {
 		}
 
 		$occurrence = $this->resolve( $post_id );
-		$url        = ( null === $occurrence )
-			? ''
-			: Rewrite::get_occurrence_url( $post_id, (string) $occurrence['recurrence_id'] );
+
+		if ( null === $occurrence ) {
+			return (string) $permalink;
+		}
+
+		// Suppression has to cover the WHOLE occurrence-URL composition, not
+		// just the bare permalink read nested inside it.
+		// `Rewrite::get_occurrence_url()` applies the
+		// `gatherpress_recurrence_id_format` filter *after*
+		// `series_permalink()` has already restored the previous value, so an
+		// integration whose format filter calls `get_permalink()` for this
+		// same post would re-enter this method unsuppressed and recurse until
+		// the stack is exhausted. Saving and restoring rather than clearing
+		// keeps a nested build for a *different* post working.
+		$previous      = $this->linking;
+		$this->linking = $post_id;
+
+		try {
+			$url = Rewrite::get_occurrence_url( $post_id, (string) $occurrence['recurrence_id'] );
+		} finally {
+			$this->linking = $previous;
+		}
 
 		// An occurrence URL is composed on top of the series permalink, so it is
 		// empty when the post has none. The permalink core already had is a
@@ -478,13 +626,21 @@ final class Context {
 	 * `Query::expand_event_clauses()` filters on `status`, so the row this
 	 * rebuilds says so.
 	 *
+	 * Public because the RSVP layer reads it first: an archive or Query Loop has
+	 * no *request* occurrence, so `current()` answers null for every row and the
+	 * RSVP block would read series-wide state on all of them. The loop's stamped
+	 * occurrence is the only thing that distinguishes one row from the next, and
+	 * `Rsvp_Occurrence::current_occurrence()` cannot reach it through
+	 * `resolve()` without also inheriting that method's exact-post-match arm,
+	 * which would undo the widened-series admission it deliberately makes.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID being read.
 	 *
 	 * @return array|null An occurrence row, or null when the current post is not a stamped occurrence of it.
 	 */
-	protected function loop_occurrence( int $post_id ): ?array {
+	public function loop_occurrence( int $post_id ): ?array {
 		$post = get_post();
 
 		if ( ! $post instanceof WP_Post || (int) $post->ID !== $post_id ) {

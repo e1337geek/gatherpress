@@ -47,28 +47,36 @@ final class Rsvp_Occurrence {
 	/**
 	 * Class constructor.
 	 *
-	 * Protected, so the singleton contract is structural rather than
-	 * conventional: the class is reached through `get_instance()` and
-	 * external construction fails instead of quietly minting a second
-	 * instance.
+	 * Nothing to hook: the `delete_comment` relationship cleanup this class
+	 * used to own cleans all three RSVP comment taxonomies, only one of which
+	 * is about recurrence, and now lives on `Rsvp\Cleanup` alongside the
+	 * hard-delete cron it belongs with.
+	 *
+	 * The declaration is not decorative. `Traits\Singleton` declares no
+	 * constructor of its own, so dropping this one would hand the class PHP's
+	 * implicit **public** constructor and make `new Rsvp_Occurrence()` legal
+	 * from anywhere. That allows two instances of a singleton, which is the one
+	 * thing `get_instance()` exists to prevent.
 	 *
 	 * @since 0.36.0
 	 */
 	protected function __construct() {
 	}
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
 	 * Build the term slug for one occurrence.
 	 *
-	 * The single source of truth for the slug format.
+	 * The single source of truth for the slug format. The composite is passed
+	 * through `sanitize_title()` so the value this returns is byte-identical to
+	 * what WordPress stores in `wp_terms.slug`. A caller can look a term up by
+	 * this string without a second sanitization step, and the assigned and
+	 * queried slugs cannot drift apart.
 	 *
-	 * Both identifiers are unread: this is a frozen signature whose body, the
-	 * one composition of the two into a slug, lands on a later branch.
+	 * The series post ID prefix is what makes a collision structurally
+	 * impossible: two series can share a recurrence identifier, but not a post
+	 * ID.
 	 *
 	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -76,20 +84,316 @@ final class Rsvp_Occurrence {
 	 * @return string The term slug, in `{series_post_id}-{recurrence_id}` form.
 	 */
 	public static function term_slug( int $post_id, string $recurrence_id ): string {
-		return '';
+		return sanitize_title( sprintf( '%d-%s', $post_id, $recurrence_id ) );
 	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
 	/**
-	 * Attach an RSVP comment to an occurrence.
+	 * Resolve the occurrence the current request scopes this post's RSVPs to.
 	 *
-	 * All three parameters are unread: this is a frozen signature whose body,
-	 * the term assignment onto the comment, lands on a later branch.
+	 * Returns the **occurrence's own** `series_post_id` alongside the
+	 * identifier, and callers must key their term slug off that rather than off
+	 * the post they asked about. Resolution is series-wide: `Context` resolves an
+	 * incoming identifier through `Series::resolve_post_ids()`, so once the
+	 * forward split moves an occurrence onto a sibling post of the same series,
+	 * the context legitimately holds a row whose `series_post_id` is not the
+	 * post the request named. This method used to compare the two for equality,
+	 * which rejected exactly the case `Context` had gone out of its way
+	 * to admit, and every scoping consumer then fell back to series-wide with no
+	 * error anywhere: the RSVP would be written with no occurrence term at all
+	 * while the visitor believed they had booked a specific date.
+	 *
+	 * The first guard keeps the cost off ordinary sites: a site with no recurring events never
+	 * reaches the occurrence context at all, so every RSVP read and write runs
+	 * exactly the SQL it ran before this class existed.
+	 *
+	 * **The row's own stamp wins over the request's occurrence**, matching
+	 * `Context::resolve()`. See its docblock for why, and for why the reverse
+	 * order is a defect rather than a preference. The stamp is per-row and
+	 * unambiguous; the request has one occurrence for the whole response, so
+	 * preferring it collapses every row of a loop rendered on a singular
+	 * occurrence page onto the requested date.
+	 *
+	 * The request arm keeps its widened-series membership check, and that
+	 * admission is deliberate, for the split-series reason given above. The
+	 * identity comparison stays ahead of `resolve_post_ids()`, so a one-post
+	 * series never reaches the filter. That is the whole of today's traffic.
 	 *
 	 * @since 0.36.0
 	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 * @param int $post_id Series post ID whose RSVPs are being read or written.
+	 *
+	 * @return array{series_post_id: int, recurrence_id: string}|null The occurrence, or null when the
+	 *               request is not scoped to one of this post's series.
+	 */
+	public static function current_occurrence( int $post_id ): ?array {
+		if ( ! Query::site_has_recurring_events() ) {
+			return null;
+		}
+
+		// The occurrence the current loop iteration was stamped with, which is
+		// pure property access on the result object and already scoped to the
+		// post it was stamped onto, so it needs no membership check of its own.
+		$occurrence = Context::get_instance()->loop_occurrence( $post_id );
+
+		if ( null === $occurrence ) {
+			$request        = Context::get_instance()->current();
+			$series_post_id = ( null === $request ) ? 0 : (int) $request['series_post_id'];
+
+			// The request's occurrence applies only when it belongs to this
+			// post or to a sibling post of its series. On an archive or Query
+			// Loop there is no request occurrence at all, and without the stamp
+			// above every row would read the same series-wide RSVP state: an
+			// attendee on the 18th appears to be attending every date.
+			if (
+				null !== $request
+				&& (
+					$series_post_id === $post_id
+					|| in_array( $series_post_id, Series::get_instance()->resolve_post_ids( $post_id ), true )
+				)
+			) {
+				$occurrence = $request;
+			}
+		}
+
+		if ( null === $occurrence ) {
+			return null;
+		}
+
+		return array(
+			'series_post_id' => (int) $occurrence['series_post_id'],
+			'recurrence_id'  => (string) $occurrence['recurrence_id'],
+		);
+	}
+
+	/**
+	 * Resolve just the identifier of the occurrence the request is scoped to.
+	 *
+	 * The thin accessor for the consumers that need the identifier without the
+	 * post it belongs to: `block_context()` publishes it in the client's
+	 * composite state key, and `Blocks\Rsvp_Form::occurrence_input()` emits it
+	 * as the classic form's hidden field.
+	 *
+	 * Anything that also needs the owning post, in particular anything
+	 * composing an occurrence **term slug**, must use `current_occurrence()`
+	 * instead. Its docblock explains why.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID whose RSVPs are being read or written.
+	 *
+	 * @return string|null The recurrence identifier, or null when the request is not scoped to one.
+	 */
+	public static function current_recurrence_id( int $post_id ): ?string {
+		$occurrence = self::current_occurrence( $post_id );
+
+		return null === $occurrence ? null : $occurrence['recurrence_id'];
+	}
+
+	/**
+	 * Report whether an event's classic RSVP writes need an explicit scope.
+	 *
+	 * True exactly when the event is a recurring series, which is when a
+	 * response can mean either one date or all of them and the two must never
+	 * be conflated. `Blocks\Rsvp_Form` renders a scope marker on every such
+	 * form, an occurrence identifier or the explicit series value, and
+	 * `Rsvp\Form` refuses a submission that carries neither: a marker-less
+	 * submission to a recurring event can only come from markup rendered
+	 * before the marker existed, and treating it as an intentional series-wide
+	 * RSVP writes data nothing can afterwards tell apart from one.
+	 *
+	 * The presence test is `Occurrences::has_recurrence_rule()`, the same
+	 * mirror every other series-shaped decision reads, so the renderer and the
+	 * handler cannot disagree about which events require the marker. The site
+	 * flag guard runs first: on a site with no recurring events this returns
+	 * false from the autoloaded option alone, and both callers keep the exact
+	 * behavior they had before the marker existed.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Event post ID the form belongs to.
+	 *
+	 * @return bool True when submissions must carry an explicit scope marker.
+	 */
+	public static function requires_explicit_scope( int $post_id ): bool {
+		return Query::site_has_recurring_events()
+			&& Occurrences::get_instance()->has_recurrence_rule( $post_id );
+	}
+
+	/**
+	 * Build the interactivity block context one rendered row publishes to the client.
+	 *
+	 * The single source of truth for that payload, and the reason it exists is
+	 * that occurrence identity is `(post_id, recurrence_id)`, and until this
+	 * method every block emitted `postId` alone. On an archive or Query Loop the
+	 * whole point is that one post appears many times, so a client store keyed
+	 * on the post ID collapsed every row of a series into one entry. An RSVP
+	 * on one date visibly applied to all of them, over server markup that was
+	 * already correct per row.
+	 *
+	 * A post with no occurrence in play gets back exactly what it got before:
+	 * `array( 'postId' => $post_id )`, byte-identical JSON. That covers every
+	 * ordinary event, and every post on a site that has never authored a
+	 * recurring series,
+	 * so its state key stays the bare post ID and its request bodies do not
+	 * change. The two key shapes cannot collide, either: a bare key is
+	 * `/^\d+$/` and a composite one always carries a `:` separator.
+	 *
+	 * Resolution goes through `current_recurrence_id()` rather than through
+	 * `Context::cache_key()` so the identity the client is handed is the same
+	 * one the server scoped this row's RSVP reads by, widened-series admission
+	 * included. The cost guard rides along on that call's first guard: on a site with no
+	 * recurring events it returns before touching the occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Post ID the block instance is rendering.
+	 *
+	 * @return array{postId: int, recurrenceId?: string} The block's `data-wp-context` payload.
+	 */
+	public static function block_context( int $post_id ): array {
+		$context       = array( 'postId' => $post_id );
+		$recurrence_id = self::current_recurrence_id( $post_id );
+
+		if ( null !== $recurrence_id ) {
+			$context['recurrenceId'] = $recurrence_id;
+		}
+
+		return $context;
+	}
+
+	/**
+	 * Resolve the occurrence an already-stored RSVP belongs to.
+	 *
+	 * Reads the comment's own `_gatherpress_occurrence` term rather than the
+	 * request, which is what makes it usable from callbacks that run before
+	 * `wp`. `Rsvp\Token::handle_rsvp_token()` on `init` is the one that
+	 * matters, since without this its cache invalidation drops only the
+	 * series-wide key and leaves the occurrence's warm counts stale for the
+	 * length of `Cache::CACHE_EXPIRATION`, shared across every visitor under a
+	 * persistent object cache.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $comment_id RSVP comment ID.
+	 *
+	 * @return string|null The occurrence identifier, or null when the RSVP is not scoped to one.
+	 */
+	public static function recurrence_id_for_comment( int $comment_id ): ?string {
+		$occurrence = self::occurrence_for_comment( $comment_id );
+
+		return null === $occurrence ? null : $occurrence['recurrence_id'];
+	}
+
+	/**
+	 * Resolve the whole composite key an already-stored RSVP belongs to.
+	 *
+	 * The counterpart to `current_occurrence()` for callbacks that have no
+	 * request to read. The RSVP confirmation email is the one that matters,
+	 * since it is composed while a comment is inserted (`Rsvp\Form`, reached
+	 * from the REST route and from `comment_post`) and is then *sent*, so a
+	 * link to the wrong date cannot be corrected afterwards.
+	 *
+	 * Both halves of the composite identity come off the term slug rather than
+	 * from the comment's `comment_post_ID`: `assign()` keys the slug on the
+	 * **occurrence's own** `series_post_id`, which the forward split makes
+	 * legitimately different from the post the responder RSVPd on. Composing a
+	 * URL from `comment_post_ID` would name a post the occurrence no longer
+	 * lives on, and `Rewrite::parse_request()` matches on the exact pair.
+	 *
+	 * The recurring-events check is the first guard: on a site with no recurring events this
+	 * returns without reading a term relationship at all, so the email path
+	 * runs byte-identical SQL there.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $comment_id RSVP comment ID.
+	 *
+	 * @return array{series_post_id: int, recurrence_id: string}|null The occurrence's composite key,
+	 *               or null when the RSVP is not scoped to one.
+	 */
+	public static function occurrence_for_comment( int $comment_id ): ?array {
+		if ( ! Query::site_has_recurring_events() || 1 > $comment_id ) {
+			return null;
+		}
+
+		$slugs = wp_get_object_terms( $comment_id, self::TAXONOMY, array( 'fields' => 'slugs' ) );
+
+		if ( is_wp_error( $slugs ) || empty( $slugs ) ) {
+			return null;
+		}
+
+		$slug          = (string) $slugs[0];
+		$recurrence_id = self::recurrence_id_from_slug( $slug );
+		$post_id       = self::series_post_id_from_slug( $slug );
+
+		if ( null === $recurrence_id || null === $post_id ) {
+			return null;
+		}
+
+		return array(
+			'series_post_id' => $post_id,
+			'recurrence_id'  => $recurrence_id,
+		);
+	}
+
+	/**
+	 * Recover the series post ID from a term slug.
+	 *
+	 * The other half of `recurrence_id_from_slug()`'s inverse. The identifier
+	 * is `Ymd\THis` and carries no `-`, and a post ID is decimal digits, so the
+	 * final `-` is the only separator and the prefix is the post ID whole. A
+	 * prefix that is not a positive integer means the slug was not produced by
+	 * `term_slug()` at all, and is refused rather than cast to zero.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $slug Term slug, in the form `term_slug()` produces.
+	 *
+	 * @return int|null The series post ID, or null when the slug carries none.
+	 */
+	public static function series_post_id_from_slug( string $slug ): ?int {
+		$separator = strrpos( $slug, '-' );
+
+		if ( false === $separator ) {
+			return null;
+		}
+
+		$prefix = substr( $slug, 0, $separator );
+
+		return ctype_digit( $prefix ) && 0 < (int) $prefix ? (int) $prefix : null;
+	}
+
+	/**
+	 * Recover the canonical occurrence identifier from a term slug.
+	 *
+	 * The exact inverse of `term_slug()`, and it has to be: `term_slug()`
+	 * passes the composite through `sanitize_title()`, which lowercases it, so
+	 * the stored slug reads `12-20260903t180000` while every cache key and
+	 * every occurrence row carries `20260903T180000`. `Ymd\THis` contains
+	 * exactly one letter, so uppercasing recovers the identifier byte for
+	 * byte; handing the lowercased form back would compose a cache key that
+	 * matches nothing.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $slug Term slug, in the form `term_slug()` produces.
+	 *
+	 * @return string|null The occurrence identifier, or null when the slug carries none.
+	 */
+	public static function recurrence_id_from_slug( string $slug ): ?string {
+		$separator = strrpos( $slug, '-' );
+
+		if ( false === $separator || strlen( $slug ) - 1 === $separator ) {
+			return null;
+		}
+
+		return strtoupper( substr( $slug, $separator + 1 ) );
+	}
+
+	/**
+	 * Attach an RSVP comment to an occurrence.
+	 *
+	 * @since 0.36.0
 	 *
 	 * @param int    $comment_id    RSVP comment ID.
 	 * @param int    $post_id       Series post ID.
@@ -98,23 +402,29 @@ final class Rsvp_Occurrence {
 	 * @return bool True when the term was assigned.
 	 */
 	public function assign( int $comment_id, int $post_id, string $recurrence_id ): bool {
-		return false;
-	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
+		// An incomplete composite key would produce a slug that silently
+		// collides with every other incomplete one, so refuse it rather than
+		// writing a term nothing can be scoped by.
+		if ( 1 > $comment_id || 1 > $post_id || '' === $recurrence_id ) {
+			return false;
+		}
 
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
+		$assigned = wp_set_object_terms(
+			$comment_id,
+			self::term_slug( $post_id, $recurrence_id ),
+			self::TAXONOMY
+		);
+
+		return ! is_wp_error( $assigned ) && ! empty( $assigned );
+	}
+
 	/**
 	 * Build the taxonomy query scoping RSVPs to one occurrence.
 	 *
 	 * Passed through the existing `Rsvp\Query::get_rsvps()` path, so there is no
 	 * new SQL, no new filter, and no table.
 	 *
-	 * Both identifiers are unread: this is a frozen signature whose body, the
-	 * clause built from the occurrence's term slug, lands on a later branch.
-	 *
 	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
@@ -122,32 +432,12 @@ final class Rsvp_Occurrence {
 	 * @return array A `tax_query` clause.
 	 */
 	public function tax_query( int $post_id, string $recurrence_id ): array {
-		return array();
+		return array(
+			array(
+				'taxonomy' => self::TAXONOMY,
+				'field'    => 'slug',
+				'terms'    => array( self::term_slug( $post_id, $recurrence_id ) ),
+			),
+		);
 	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
-
-	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
-	/**
-	 * Move occurrence terms from one series post to another.
-	 *
-	 * The forward-split seam, frozen here as a stub returning 0. Its callers
-	 * land with the forward split itself.
-	 *
-	 * All three parameters are unread: this is a frozen signature whose body,
-	 * the term rename they drive, lands with that forward split.
-	 *
-	 * @since 0.36.0
-	 *
-	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
-	 *
-	 * @param int      $from_post_id   Series post ID the occurrences currently belong to.
-	 * @param int      $to_post_id     Series post ID they move to.
-	 * @param string[] $recurrence_ids Occurrence identifiers to move.
-	 *
-	 * @return int Terms renamed.
-	 */
-	public function rename_series( int $from_post_id, int $to_post_id, array $recurrence_ids ): int {
-		return 0;
-	}
-	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
 }

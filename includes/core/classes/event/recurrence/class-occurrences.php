@@ -48,7 +48,18 @@ use WP_Error;
  *
  * Singleton repository, matching the shape of `Rsvp\Query`.
  *
+ * Over PHPMD's size thresholds, deliberately and with the maintainers' call
+ * recorded: this is the one repository for the occurrence table, and every
+ * method on it is a read or a write against that table. Splitting it to satisfy
+ * a line and method count would put statements against one table behind two
+ * class names without making any of them simpler, and the split would have to
+ * be designed rather than mechanical. Refactoring it remains open for the
+ * maintainers; the suppression states the position rather than hiding it.
+ *
  * @since 0.36.0
+ *
+ * @SuppressWarnings(PHPMD.TooManyMethods)
+ * @SuppressWarnings(PHPMD.ExcessiveClassLength)
  */
 final class Occurrences {
 
@@ -529,6 +540,80 @@ final class Occurrences {
 		$comparison        = $upcoming ? '>=' : '<';
 		$order             = $upcoming ? 'ASC' : 'DESC';
 
+		// The no-recurring-events guard and the table-less-blog contract, on this read API as well as
+		// on the `posts_clauses` filter. Both arms must be checked here and not
+		// only in `Query::expand_event_clauses()`: this method is the public
+		// occurrence-aware read entry point, so a caller reaching it directly
+		// would otherwise emit SQL naming the occurrence table on a site with
+		// no recurring events. On a blog where the table is absent it would
+		// return an empty set rather than the anchor rows, because the missing
+		// table poisons the `LEFT JOIN` / `NOT EXISTS` pair below.
+		//
+		// The fallback keeps the same projection and ordering with the
+		// occurrence join removed entirely, so non-recurring events are
+		// returned exactly as they would be with none of this code present.
+		// That includes the `ID` tie-breaker: `effective_start_gmt` alone is
+		// not a total order, so two events sharing one start instant can swap
+		// places between two identical reads and a paginated list repeats or
+		// drops one. Only the `recurrence_id` leg of the joined order is
+		// dropped, because this arm has no occurrence rows to name.
+		//
+		// The upcoming/past split reads the event's own end as
+		// `effective_end_gmt`, the same boundary the joined arm applies, while
+		// ordering stays on the effective start. Splitting on the start
+		// instead demotes a running event into the past bucket the moment it
+		// begins, and only on sites where nothing happens to recur.
+		if ( ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
+			// The join is INNER and the boundary lives in WHERE on the real
+			// column, not in HAVING on its alias: the alias here *is* the
+			// column, and a post with no events-table row fails the boundary
+			// in either direction (`NULL` compares as unknown), so a LEFT
+			// JOIN filtered on the joined column returns the same rows while
+			// forcing a temporary table and blocking the events-table index
+			// from narrowing the scan.
+			$sql = 'SELECT %i.ID AS post_id, NULL AS recurrence_id,'
+				. ' %i.datetime_start_gmt AS effective_start_gmt,'
+				. ' %i.datetime_end_gmt AS effective_end_gmt'
+				. ' FROM %i'
+				. ' INNER JOIN %i ON %i.ID = %i.post_id'
+				. " WHERE %i.post_type IN ( {$type_placeholders} ) AND %i.post_status = %s"
+				. " AND %i.datetime_end_gmt {$comparison} %s"
+				. " ORDER BY effective_start_gmt {$order}, %i.ID {$order}"
+				. ' LIMIT %d';
+
+			$values = array_merge(
+				array(
+					$wpdb->posts,
+					$events_table,
+					$events_table,
+					$wpdb->posts,
+					$events_table,
+					$wpdb->posts,
+					$events_table,
+					$wpdb->posts,
+				),
+				$post_types,
+				array(
+					$wpdb->posts,
+					'publish',
+					$events_table,
+					current_time( 'mysql', true ),
+					$wpdb->posts,
+					$limit,
+				)
+			);
+
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from %i/%s/%d placeholders only.
+			$anchor_rows = $wpdb->get_results( $wpdb->prepare( $sql, $values ), ARRAY_A );
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+			// No lazy repair on this arm: there are no occurrence rows to be
+			// stale, and a site with no recurring events forbids the write it would attempt.
+			return array_map( array( $this, 'row_to_ref' ), $anchor_rows );
+		}
+
 		$sql = 'SELECT %i.ID AS post_id, scheduled_occurrence.recurrence_id AS recurrence_id,'
 			. ' COALESCE( scheduled_occurrence.datetime_start_gmt, %i.datetime_start_gmt ) AS effective_start_gmt,'
 			. ' COALESCE( scheduled_occurrence.datetime_end_gmt, %i.datetime_end_gmt ) AS effective_end_gmt'
@@ -705,13 +790,18 @@ final class Occurrences {
 	 * served from the post meta cache `maybe_lazy_repair()` primes in one
 	 * batch for the whole read.
 	 *
+	 * Public because `Rsvp_Occurrence::requires_explicit_scope()` keys the
+	 * classic RSVP form's scope requirement on the same presence test, so the
+	 * renderer and the submission handler cannot drift from what the lazy
+	 * repair treats as a series.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Post ID to check.
 	 *
 	 * @return bool True when the post has a non-empty recurrence end-type mirror.
 	 */
-	protected function has_recurrence_rule( int $post_id ): bool {
+	public function has_recurrence_rule( int $post_id ): bool {
 		return '' !== (string) get_post_meta( $post_id, 'gatherpress_recurrence_end_type', true );
 	}
 
@@ -1830,6 +1920,59 @@ final class Occurrences {
 			ARRAY_A
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		return $row;
+	}
+
+	/**
+	 * Read one occurrence of a series by its identifier.
+	 *
+	 * Takes an array of post IDs, never a single ID, so the query emits
+	 * `series_post_id IN (…)` and the forward split stays reachable. This is the lookup
+	 * every request-supplied `recurrence_id` is validated against: `get()`
+	 * pins one post, which would refuse an occurrence that a forward split had
+	 * moved to a sibling post of the same series.
+	 *
+	 * `LIMIT 1` needs an `ORDER BY` to mean anything. Once a forward split makes a series
+	 * span several posts, an identifier can legitimately name a row under more
+	 * than one of them, which happens when two posts of one series are projected
+	 * from rules that meet at the same moment. Without an ordering the row MySQL
+	 * happens to return is whatever the query plan produces. That choice is not cosmetic:
+	 * the returned `series_post_id` is what every downstream consumer keys the
+	 * RSVP's occurrence term off, so an unstable pick would move a responder's
+	 * RSVP between sibling posts from one request to the next. Lowest post ID
+	 * wins, which is stable and is the earliest post of the series.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[]  $post_ids      Post IDs from `Series::resolve_post_ids()`.
+	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
+	 *
+	 * @return array|null The row, or null when nothing in the series carries that identifier.
+	 */
+	public function find_in_series( array $post_ids, string $recurrence_id ): ?array {
+		global $wpdb;
+
+		// The schema probe belongs here for the same reason it does on `get()`
+		// and `select_for_series()`: a blog whose recurring-events flag is on
+		// but whose table was never installed would otherwise take a database
+		// error. This read in particular resolves occurrence context on a
+		// front-end request, so the error would surface to a visitor.
+		if ( array() === $post_ids || '' === $recurrence_id || ! $this->table_exists() ) {
+			return null;
+		}
+
+		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+		$placeholders = implode( ', ', array_fill( 0, count( $post_ids ), '%d' ) );
+		$sql          = "SELECT * FROM %i WHERE series_post_id IN ( {$placeholders} )"
+			. ' AND recurrence_id = %s ORDER BY series_post_id ASC LIMIT 1';
+		$values       = array_merge( array( $table ), $post_ids, array( $recurrence_id ) );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $values ), ARRAY_A );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
 		return $row;
 	}
