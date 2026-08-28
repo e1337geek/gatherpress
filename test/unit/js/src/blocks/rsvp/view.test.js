@@ -60,15 +60,28 @@ import '@src/blocks/rsvp/view';
 import '@src/blocks/modal-manager/view';
 
 /**
- * Waits long enough for the fire-and-forget sendRsvpApiRequest promise
- * chain and the 10ms closeModal timeout inside updateRsvp to settle.
+ * Settles the fire-and-forget RSVP flow without waiting on the wall clock.
+ *
+ * `updateRsvp` does not return its promise, so there is nothing to await
+ * directly. Draining the microtask queue runs the request chain to the point
+ * where it schedules `closeModal` on a 10ms timer, and only then can the timer
+ * be fired. Both halves are required and the order matters: running the timers
+ * first would find none scheduled yet.
+ *
+ * This replaces a real 30ms sleep that raced the same chain. Under CPU
+ * contention the chain ate the slack, the assertion saw zero calls, and the
+ * gate went red on branches that do not touch this file.
  *
  * @return {Promise<void>} Resolves after the RSVP flow settles.
  */
-function flushRsvpFlow() {
-	return new Promise( ( resolve ) => {
-		setTimeout( resolve, 30 );
-	} );
+async function flushRsvpFlow() {
+	// Ten is well past the chain's link count and costs nothing when it
+	// settles sooner.
+	for ( let i = 0; 10 > i; i++ ) {
+		await Promise.resolve();
+	}
+
+	await jest.runAllTimersAsync();
 }
 
 /**
@@ -119,9 +132,15 @@ describe( 'rsvp updateRsvp post-success modal switch', () => {
 					} ),
 			} );
 		} );
+
+		// The flow's only timer is the 10ms closeModal delay, and the fetch
+		// mock above resolves without one, so faking the clock makes the whole
+		// flow deterministic rather than time-dependent.
+		jest.useFakeTimers();
 	} );
 
 	afterEach( () => {
+		jest.useRealTimers();
 		jest.restoreAllMocks();
 		delete global.fetch;
 	} );
