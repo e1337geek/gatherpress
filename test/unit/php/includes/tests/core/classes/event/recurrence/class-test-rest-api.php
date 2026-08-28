@@ -251,6 +251,16 @@ class Test_Rest_Api extends Base {
 			$namespace[ sprintf( '/%s/event/occurrence-status', GATHERPRESS_REST_NAMESPACE ) ],
 			'Failed to assert occurrence-status endpoint is registered'
 		);
+		$this->assertEquals(
+			1,
+			$namespace[ sprintf( '/%s/event/split-series', GATHERPRESS_REST_NAMESPACE ) ],
+			'Failed to assert split-series endpoint is registered'
+		);
+		$this->assertEquals(
+			1,
+			$namespace[ sprintf( '/%s/event/recurrence-impact', GATHERPRESS_REST_NAMESPACE ) ],
+			'Failed to assert recurrence-impact endpoint is registered'
+		);
 	}
 
 	/**
@@ -291,6 +301,299 @@ class Test_Rest_Api extends Base {
 		$this->assertSame(
 			array( Occurrences::STATUS_SCHEDULED, Occurrences::STATUS_CANCELED ),
 			$routes[1]['args']['args']['status']['enum']
+		);
+
+		$this->assertSame( 'split-series', $routes[2]['route'] );
+		$this->assertSame( WP_REST_Server::EDITABLE, $routes[2]['args']['methods'] );
+		$this->assertSame(
+			array( $instance, 'split_series' ),
+			$routes[2]['args']['callback']
+		);
+		$this->assertSame(
+			array( $instance, 'has_edit_permission' ),
+			$routes[2]['args']['permission_callback']
+		);
+
+		$this->assertSame( 'recurrence-impact', $routes[3]['route'] );
+		$this->assertSame( WP_REST_Server::READABLE, $routes[3]['args']['methods'] );
+		$this->assertSame(
+			array( $instance, 'get_recurrence_impact' ),
+			$routes[3]['args']['callback']
+		);
+		$this->assertSame(
+			array( $instance, 'has_edit_permission' ),
+			$routes[3]['args']['permission_callback']
+		);
+	}
+
+	/**
+	 * The split route partitions the series through the real REST server.
+	 *
+	 * Driven through `WP_REST_Server::dispatch()` rather than by calling the
+	 * callback, so authentication, the `edit_post` permission callback and the
+	 * `recurrence_id` validator all run the way a browser would reach them.
+	 *
+	 * @covers ::split_series
+	 * @covers ::split_series_route
+	 *
+	 * @return void
+	 */
+	public function test_split_series_route_partitions_the_series(): void {
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$request = new WP_REST_Request( 'POST', '/gatherpress/v1/event/split-series' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param( 'recurrence_id', $rows[2]['recurrence_id'] );
+
+		$response = $this->dispatch( $request );
+		$data     = $response->get_data();
+
+		$this->assertSame( 200, $response->get_status(), 'Failed to assert the split route answered 200.' );
+		$this->assertTrue( $data['split'], 'Failed to assert the route reported a split.' );
+		$this->assertSame( 3, $data['moved'], 'Failed to assert three of five occurrences moved.' );
+		$this->assertSame(
+			array( $rows[0]['recurrence_id'], $rows[1]['recurrence_id'] ),
+			array_column(
+				Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+				'recurrence_id'
+			),
+			'Failed to assert only the first two occurrences remain on the original post.'
+		);
+		$this->assertSame(
+			array( $rows[2]['recurrence_id'], $rows[3]['recurrence_id'], $rows[4]['recurrence_id'] ),
+			array_column(
+				Occurrences::get_instance()->select_for_series( array( (int) $data['forward_post_id'] ) ),
+				'recurrence_id'
+			),
+			'Failed to assert the last three occurrences moved to the forward post.'
+		);
+	}
+
+	/**
+	 * A recurrence ID belonging to no occurrence of this series is a 404.
+	 *
+	 * @covers ::split_series
+	 *
+	 * @return void
+	 */
+	public function test_split_series_route_reports_an_unknown_occurrence_as_404(): void {
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$request = new WP_REST_Request( 'POST', '/gatherpress/v1/event/split-series' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param( 'recurrence_id', '20991231T235959' );
+
+		$this->assertSame(
+			404,
+			$this->dispatch( $request )->get_status(),
+			'Failed to assert an unknown occurrence is refused rather than splitting something arbitrary.'
+		);
+	}
+
+	/**
+	 * A subscriber cannot split someone else's series.
+	 *
+	 * @covers ::split_series
+	 * @covers ::has_edit_permission
+	 *
+	 * @return void
+	 */
+	public function test_split_series_route_refuses_a_user_without_edit_post(): void {
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'subscriber' ) ) );
+
+		$request = new WP_REST_Request( 'POST', '/gatherpress/v1/event/split-series' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param( 'recurrence_id', $rows[2]['recurrence_id'] );
+
+		$response = $this->dispatch( $request );
+
+		$this->assertSame(
+			403,
+			$response->get_status(),
+			'Failed to assert a user without edit_post is refused.'
+		);
+		$this->assertCount(
+			5,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert the refused request changed nothing.'
+		);
+	}
+
+	/**
+	 * The split route touches nothing on a site with no recurring events.
+	 *
+	 * @covers ::split_series
+	 *
+	 * @return void
+	 */
+	public function test_split_series_route_short_circuits_without_recurring_events(): void {
+		global $wpdb;
+
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$counter = static function ( string $query ) use ( &$seen, $table ): string {
+			if ( str_contains( $query, $table ) ) {
+				++$seen;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $counter );
+
+		$request = new WP_REST_Request( 'POST', '/gatherpress/v1/event/split-series' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param( 'recurrence_id', $rows[2]['recurrence_id'] );
+
+		$response = $this->dispatch( $request );
+
+		remove_filter( 'query', $counter );
+
+		$this->assertSame( 400, $response->get_status(), 'Failed to assert the split route refuses a flag-off site.' );
+		$this->assertSame(
+			0,
+			$seen,
+			'A site with no recurring events must issue zero occurrence-table queries from the split route.'
+		);
+	}
+
+	/**
+	 * The impact route reports the RSVP count a rule change would strand.
+	 *
+	 * @covers ::get_recurrence_impact
+	 * @covers ::recurrence_impact_route
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_impact_route_reports_stranded_occurrences(): void {
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/recurrence-impact' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param(
+			'recurrence',
+			(string) wp_json_encode( array_merge( self::DAILY_RULE, array( 'count' => 3 ) ) )
+		);
+
+		$data = $this->dispatch( $request )->get_data();
+
+		$this->assertSame(
+			array( $rows[3]['recurrence_id'], $rows[4]['recurrence_id'] ),
+			$data['removed'],
+			'Failed to assert the route names the two dates a three-occurrence rule stops producing.'
+		);
+		$this->assertSame(
+			0,
+			$data['rsvp_count'],
+			'Failed to assert no RSVPs are reported when none of the stranded dates carries one.'
+		);
+	}
+
+	/**
+	 * A rule the editor cannot yet persist reports no impact rather than an error.
+	 *
+	 * @covers ::get_recurrence_impact
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_impact_route_treats_an_invalid_rule_as_no_impact(): void {
+		list( $post_id ) = $this->create_event_with_occurrence();
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/recurrence-impact' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param( 'recurrence', 'not json' );
+
+		$response = $this->dispatch( $request );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame(
+			array(
+				'removed'    => array(),
+				'rsvp_count' => 0,
+			),
+			$response->get_data(),
+			'Failed to assert a mid-edit rule reports no impact rather than surfacing an error.'
+		);
+	}
+
+	/**
+	 * The impact route queries nothing on a site with no recurring events.
+	 *
+	 * @covers ::get_recurrence_impact
+	 *
+	 * @return void
+	 */
+	public function test_recurrence_impact_route_short_circuits_without_recurring_events(): void {
+		global $wpdb;
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		wp_set_current_user( $this->factory->user->create( array( 'role' => 'administrator' ) ) );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$counter = static function ( string $query ) use ( &$seen, $table ): string {
+			if ( str_contains( $query, $table ) ) {
+				++$seen;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $counter );
+
+		$request = new WP_REST_Request( 'GET', '/gatherpress/v1/event/recurrence-impact' );
+		$request->set_param( 'post_id', $post_id );
+		$request->set_param( 'recurrence', (string) wp_json_encode( self::DAILY_RULE ) );
+
+		$response = $this->dispatch( $request );
+
+		remove_filter( 'query', $counter );
+
+		$this->assertSame(
+			array(
+				'removed'    => array(),
+				'rsvp_count' => 0,
+			),
+			$response->get_data(),
+			'Failed to assert the impact route reports nothing on a flag-off site.'
+		);
+		$this->assertSame(
+			0,
+			$seen,
+			'A site with no recurring events must issue zero occurrence-table queries from the impact route.'
 		);
 	}
 

@@ -33,6 +33,7 @@ use GatherPress\Core\Event\Recurrence\Series;
 use GatherPress\Core\Event\Recurrence\Timezone_Guard;
 use GatherPress\Core\Utility;
 use WP_Post;
+use WP_Term;
 
 /**
  * Per-event calendar wrapper.
@@ -282,10 +283,9 @@ final class Calendar {
 
 		$timezone       = $this->series_timezone();
 		$occurrence     = $this->current_occurrence();
-		$modified_gmt   = strtotime( $this->event->event->post_modified_gmt );
-		$datetime_stamp = sprintf( '%sT%sZ', gmdate( 'Ymd', $modified_gmt ), gmdate( 'His', $modified_gmt ) );
-		$last_modified  = $datetime_stamp;
 		$sequence       = $this->get_sequence();
+		$datetime_stamp = $this->revision_stamp( $sequence );
+		$last_modified  = $datetime_stamp;
 		$venue          = $this->event->get_venue_information();
 		$location       = $venue['name'];
 		$description    = $this->event->get_calendar_description();
@@ -313,10 +313,9 @@ final class Calendar {
 				sprintf( 'LOCATION:%s', $location ),
 			),
 			$this->recurrence_lines( $timezone, $occurrence ),
-			array(
-				sprintf( 'UID:%s', $this->uid() ),
-				'END:VEVENT',
-			)
+			array( sprintf( 'UID:%s', $this->uid() ) ),
+			$this->related_lines(),
+			array( 'END:VEVENT' )
 		);
 
 		return implode( "\r\n", array_map( array( $this, 'fold_content_line' ), $args ) );
@@ -608,6 +607,106 @@ final class Calendar {
 	 */
 	private function uid(): string {
 		return 'gatherpress_' . intval( $this->event->event->ID );
+	}
+
+	/**
+	 * The `RELATED-TO` property tying a split fragment back to its origin.
+	 *
+	 * A forward split gives the dates it moves a new `UID`, because they now
+	 * belong to a different post with its own rule, its own edits and its own
+	 * RSVPs. RFC 5545 section 3.8.4.5 is how the two components say they are one
+	 * thing: the fragment points at the `UID` the subscription was first taken
+	 * out against, with the default `RELTYPE=PARENT`. A client that understands
+	 * the property groups the fragments; a client that does not ignores an
+	 * unknown property, which is why this is additive rather than a change to
+	 * `UID`.
+	 *
+	 * Emitted only by a fragment. The origin carries no pointer, because it is
+	 * the identifier everything else points at, and a self-reference would make
+	 * the relationship a cycle rather than a tree.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string[] The property line, or an empty array for an unsplit series.
+	 */
+	private function related_lines(): array {
+		$post_id = (int) $this->event->event->ID;
+		$origin  = $this->series_origin_post_id( $post_id );
+
+		if ( 0 === $origin || $origin === $post_id ) {
+			return array();
+		}
+
+		return array( sprintf( 'RELATED-TO:gatherpress_%d', $origin ) );
+	}
+
+	/**
+	 * The post a logical series started on.
+	 *
+	 * The series term's slug names it (`Series::create_term_for()`), which is
+	 * durable across further splits: a second split of either fragment joins the
+	 * same term rather than minting a new one, so every fragment resolves to the
+	 * one post a subscriber's `UID` was first issued for.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Any post of the series.
+	 *
+	 * @return int The origin post ID, or 0 when this post belongs to no series term.
+	 */
+	private function series_origin_post_id( int $post_id ): int {
+		// A site with neither recurring events nor a split series reads
+		// neither the taxonomy nor the term cache on a calendar request. The
+		// split flag keeps a fully demoted split's fragments pointing at the
+		// origin's UID after the recurring flag has returned to '0'.
+		if ( ! ( Recurrence_Query::site_has_recurring_events() || Series::site_has_split_series() ) ) {
+			return 0;
+		}
+
+		$series  = Series::get_instance();
+		$term_id = $series->term_id_for_post( $post_id );
+
+		if ( 0 === $term_id ) {
+			return 0;
+		}
+
+		$term    = get_term( $term_id, Series::TAXONOMY );
+		$slug    = ( $term instanceof WP_Term ) ? $term->slug : '';
+		$matches = array();
+		$named   = 1 === preg_match( '/^series-(\d+)$/', $slug, $matches ) ? (int) $matches[1] : 0;
+		$members = $series->resolve_post_ids( $post_id );
+
+		// The slug is only believed when it names a post that is still in the
+		// series: a renamed term, or one whose origin has been deleted, would
+		// otherwise point subscribers at a `UID` no component in the body
+		// carries. The lowest member is the fallback, since a split only ever
+		// creates posts after the one it splits.
+		return in_array( $named, $members, true ) ? $named : min( $members );
+	}
+
+	/**
+	 * The GMT stamp reporting when this series' calendar content last changed.
+	 *
+	 * `DTSTAMP` and `LAST-MODIFIED` are derived from the same revision
+	 * `SEQUENCE` reports rather than from `post_modified_gmt` directly, so the
+	 * three properties cannot disagree about whether a component is newer than
+	 * the one a subscriber holds. They did disagree: a forward split caps the
+	 * origin's `RRULE` with a bare `postmeta` write, which advances the revision
+	 * and leaves the post row alone, so the capped component announced a shorter
+	 * rule under an unchanged modification time. The revision floors at
+	 * `post_modified_gmt`, so for an event nothing has ever advanced this is the
+	 * same string it has always emitted.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $sequence This component's revision, in seconds from the epoch.
+	 *
+	 * @return string The stamp in RFC 5545 UTC form.
+	 */
+	private function revision_stamp( int $sequence ): string {
+		$timestamp = self::SEQUENCE_EPOCH + $sequence;
+
+		return sprintf( '%sT%sZ', gmdate( 'Ymd', $timestamp ), gmdate( 'His', $timestamp ) );
 	}
 
 	/**

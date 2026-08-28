@@ -1273,19 +1273,25 @@ final class Occurrences {
 	 * and this method is the only thing that ever deletes the occurrence rows
 	 * mirrors used to imply.
 	 *
-	 * Completing that pass also consumes any queued reconciliation for the
-	 * same post, the way `maybe_project()` consumes it on the save path. The
-	 * queue's whole job is to decide, at shutdown, whether the rows still
-	 * match the blob, and this call has just decided it against the blob as it
-	 * stands. The cleanup signal survives the unqueue because it is
-	 * `$cleanup_when_not_recurring = true` here, which is the strongest value
-	 * the queue can carry: a post queued as `true` gets its cleanup, and one
-	 * queued as `false` gets more than it asked for rather than less. Without
-	 * this, `Recurrence\Meta::resolve_pending_revalidation()` calling
-	 * `project()` at `shutdown` priority 15 leaves the priority-20 pass to
-	 * project the same post a second time in one request. A blob write after
-	 * this point re-queues the post, exactly as it does after
-	 * `maybe_project()`.
+	 * A direct projection also consumes any reconciliation this request had
+	 * queued for the same post, the way `maybe_project()` consumes it on the
+	 * save path. The queue exists for writers that never project (see
+	 * `$pending_projection`); a caller that projects deliberately, the save path
+	 * and `Splitter::write_rule()` alike, has just consumed the blob as it
+	 * stands, so a `shutdown` re-projection would re-derive identical rows for
+	 * nothing. Without this,
+	 * `Recurrence\Meta::resolve_pending_revalidation()` calling `project()` at
+	 * `shutdown` priority 15 leaves the priority-20 pass to project the same
+	 * post a second time in one request.
+	 *
+	 * The cleanup signal survives the unqueue because this call passes
+	 * `$cleanup_when_not_recurring = true`, the strongest value the queue can
+	 * carry: a post queued as `true` gets its cleanup, and one queued as `false`
+	 * gets more than it asked for rather than less. The unqueue is therefore
+	 * unconditional, matching the save path's long-standing behavior on a failed
+	 * write: the projection sweep, not the request's shutdown, is what retries a
+	 * write the database refused. A blob write after this point re-queues the
+	 * post, exactly as it does after `maybe_project()`.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1295,11 +1301,11 @@ final class Occurrences {
 	 *                      `WP_Error` when a database write failed.
 	 */
 	public function project( int $post_id ): int|WP_Error {
-		$result = $this->run_projection( $post_id, true );
+		$written = $this->run_projection( $post_id, true );
 
 		unset( $this->pending_projection[ $post_id ] );
 
-		return $result;
+		return $written;
 	}
 
 	/**
@@ -1343,8 +1349,64 @@ final class Occurrences {
 			fn( DateTimeImmutable $start ) => $this->build_occurrence_row( $start, $span, $timezone ),
 			$occurrences
 		);
+		$rows = $this->discard_sibling_owned( $post_id, $rows );
 
 		return $this->upsert_occurrences( $post_id, $rows );
+	}
+
+	/**
+	 * Drop candidate rows whose identifier a sibling of the same series owns.
+	 *
+	 * The projection-time restatement of `Splitter::verify_partition()`'s
+	 * invariant: no identifier is owned by two posts of one series. The
+	 * reachable violation is a stale rule re-persisted after a forward split.
+	 * The still-open origin editor holds the pre-split rule, one touch of any
+	 * rule control writes it back, and re-projecting it would re-upsert every
+	 * moved identifier under the origin while the forward post still owns
+	 * them. The sibling's ownership wins because the sibling's rows are the
+	 * ones carrying the RSVP terms and answering the permalinks.
+	 *
+	 * An unsplit series pays one memoized membership read and nothing else:
+	 * `Series::resolve_post_ids()` answers `array( $post_id )` without a
+	 * sibling query for every series on a site that has never split anything.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int   $post_id Series post ID being projected.
+	 * @param array $rows    Candidate row values built by `build_occurrence_row()`.
+	 *
+	 * @return array The rows no sibling already owns.
+	 */
+	protected function discard_sibling_owned( int $post_id, array $rows ): array {
+		if ( array() === $rows ) {
+			return $rows;
+		}
+
+		$siblings = array_values(
+			array_diff( Series::get_instance()->resolve_post_ids( $post_id ), array( $post_id ) )
+		);
+
+		if ( array() === $siblings ) {
+			return $rows;
+		}
+
+		$owned = array_map(
+			'strval',
+			wp_list_pluck( $this->select_for_series( $siblings ), 'recurrence_id' )
+		);
+
+		if ( array() === $owned ) {
+			return $rows;
+		}
+
+		return array_values(
+			array_filter(
+				$rows,
+				static function ( array $row ) use ( $owned ): bool {
+					return ! in_array( $row['recurrence_id'], $owned, true );
+				}
+			)
+		);
 	}
 
 	/**
@@ -1961,9 +2023,11 @@ final class Occurrences {
 	 * moved to a sibling post of the same series.
 	 *
 	 * `LIMIT 1` needs an `ORDER BY` to mean anything. Once a forward split makes a series
-	 * span several posts, an identifier can legitimately name a row under more
-	 * than one of them, which happens when two posts of one series are projected
-	 * from rules that meet at the same moment. Without an ordering the row MySQL
+	 * span several posts, an identifier can name a row under more than one of
+	 * them. Projection itself no longer produces that state, because
+	 * `discard_sibling_owned()` skips identifiers a sibling already owns, but
+	 * rows written before that guard existed, or by anything else with table
+	 * access, can still carry the duplicate. Without an ordering the row MySQL
 	 * happens to return is whatever the query plan produces. That choice is not cosmetic:
 	 * the returned `series_post_id` is what every downstream consumer keys the
 	 * RSVP's occurrence term off, so an unstable pick would move a responder's
@@ -2138,6 +2202,12 @@ final class Occurrences {
 	 * `find_in_series()`. `recurrence_id` stays as the last resort for the one
 	 * case it can still separate: a DST fold, where two distinct local times
 	 * under one post map to a single GMT start.
+	 *
+	 * Public because it is the shared bounded read behind every "the one
+	 * occurrence that answers for this series" question: the admin list's
+	 * display row here, and `Rewrite`'s bare-URL redirect target, which
+	 * would otherwise hydrate a whole series' row set to emit one
+	 * `Location` header.
 	 *
 	 * @since 0.36.0
 	 *
