@@ -37,6 +37,7 @@ namespace GatherPress\Core\Event\Recurrence;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use GatherPress\Core\Calendar\Setup as Calendar_Setup;
 use GatherPress\Core\Traits\Singleton;
 use WP;
 use WP_Post;
@@ -366,6 +367,10 @@ final class Rewrite {
 	 * @return void
 	 */
 	protected function maybe_resolve_bare_series( WP $wp ): void {
+		if ( $this->is_ics_request( $wp ) ) {
+			return;
+		}
+
 		$post_id = $this->resolve_post_id_from_query_vars( $wp->query_vars );
 
 		if ( null === $post_id ) {
@@ -377,6 +382,35 @@ final class Rewrite {
 		if ( null !== $recurrence_id ) {
 			$wp->query_vars[ Context::QUERY_VAR ] = $recurrence_id;
 		}
+	}
+
+	/**
+	 * Report whether the request is asking for an iCalendar body.
+	 *
+	 * A bare series URL resolves to the next upcoming occurrence, which is what
+	 * a page render wants and what the single-datetime Google and Yahoo
+	 * redirects want. It is the wrong answer for `.ics`: a series' export is
+	 * **one** component carrying the whole rule, so narrowing it to one date
+	 * here would silently reintroduce the very limitation that shape exists to
+	 * beat. An attendee subscribing to a recurring meetup would get a single
+	 * entry again, just on a different date than before.
+	 *
+	 * A request that names an occurrence explicitly never reaches this method:
+	 * `parse_request()` sends it down the occurrence-segment branch instead, so
+	 * a single-occurrence download still resolves.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP $wp The main WP request object.
+	 *
+	 * @return bool True when the request targets an `.ics` calendar endpoint.
+	 */
+	protected function is_ics_request( WP $wp ): bool {
+		return in_array(
+			(string) ( $wp->query_vars[ Calendar_Setup::QUERY_VAR ] ?? '' ),
+			Calendar_Setup::ICS_SLUGS,
+			true
+		);
 	}
 
 	/**
@@ -486,9 +520,9 @@ final class Rewrite {
 	 * The segment is the occurrence's canonical `recurrence_id`, built by
 	 * `Occurrences::recurrence_id()` and never re-derived here.
 	 *
-	 * There is deliberately no filter over the segment. One shipped in an
-	 * earlier revision of this class as `gatherpress_recurrence_id_format`,
-	 * and it was one-way: the emitted segment was filterable, but
+	 * There is deliberately no filter over the segment. An earlier revision of
+	 * this class carried one, `gatherpress_recurrence_id_format`, and it
+	 * was one-way: the emitted segment was filterable, but
 	 * `add_rewrite_rule_for_post_type()` registers a single fixed
 	 * `RECURRENCE_ID_REGEX` and `parse_request()` matches the raw segment
 	 * against the canonical `recurrence_id` column, so any value the filter

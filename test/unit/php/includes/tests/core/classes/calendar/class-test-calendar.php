@@ -326,7 +326,7 @@ class Test_Calendar extends Base {
 	 *
 	 * @covers ::get_ical_event_string
 	 * @covers ::escape_ical_text
-	 * @covers ::fold_ical_text
+	 * @covers ::fold_content_line
 	 *
 	 * @return void
 	 */
@@ -336,8 +336,8 @@ class Test_Calendar extends Base {
 
 		$this->assertStringStartsWith( 'BEGIN:VEVENT', $vevent );
 		$this->assertStringEndsWith( 'END:VEVENT', $vevent );
-		$this->assertStringContainsString( 'DTSTART:20300615T183000Z', $vevent );
-		$this->assertStringContainsString( 'DTEND:20300615T203000Z', $vevent );
+		$this->assertStringContainsString( 'DTSTART;TZID=America/New_York:20300615T143000', $vevent );
+		$this->assertStringContainsString( 'DTEND;TZID=America/New_York:20300615T163000', $vevent );
 		$this->assertStringContainsString( 'SUMMARY:Sample Event', $vevent );
 
 		// Address has a `;` and `,` which RFC 5545 requires escaped as `\;` `\,`.
@@ -515,26 +515,80 @@ class Test_Calendar extends Base {
 	}
 
 	/**
-	 * Folding wraps text longer than 75 chars across CRLF + space.
+	 * Folding splits a content line on an octet budget and unfolds byte for byte.
 	 *
-	 * @covers ::fold_ical_text
+	 * RFC 5545 section 3.1 counts octets, not characters, and every physical
+	 * line has to fit the same ceiling, which the continuation lines only do
+	 * if the leading space they carry is charged against their own budget.
+	 *
+	 * @covers ::fold_content_line
 	 *
 	 * @return void
 	 */
-	public function test_fold_ical_text_wraps_long_strings(): void {
+	public function test_fold_content_line_respects_the_octet_ceiling(): void {
 		$instance = new Calendar( $this->make_event() );
 
-		$short = Utility::invoke_hidden_method( $instance, 'fold_ical_text', array( 'short text' ) );
-		$this->assertSame( 'short text', $short, 'Short text should pass through unchanged.' );
-
-		$long_text = str_repeat( 'a', 200 );
-		$folded    = Utility::invoke_hidden_method( $instance, 'fold_ical_text', array( $long_text ) );
-
-		$this->assertStringContainsString(
-			"\r\n ",
-			$folded,
-			'Long text should be folded with CRLF + space sequences.'
+		$this->assertSame(
+			'DESCRIPTION:short',
+			Utility::invoke_hidden_method( $instance, 'fold_content_line', array( 'DESCRIPTION:short' ) ),
+			'A line inside the ceiling must pass through untouched.'
 		);
+
+		$line   = 'DESCRIPTION:' . str_repeat( 'a', 200 );
+		$folded = Utility::invoke_hidden_method( $instance, 'fold_content_line', array( $line ) );
+
+		$this->assertStringContainsString( "\r\n ", $folded, 'A line past the ceiling must be folded.' );
+		$this->assertSame(
+			$line,
+			str_replace( "\r\n ", '', $folded ),
+			'Unfolding must return the exact original bytes.'
+		);
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					explode( "\r\n", $folded ),
+					static function ( string $physical ): bool {
+						return strlen( $physical ) > 75;
+					}
+				)
+			),
+			'No physical line may exceed 75 octets, the leading space of a continuation included.'
+		);
+	}
+
+	/**
+	 * A multi-byte character is never split across a fold.
+	 *
+	 * The budget is octets and the unit is characters, which is the whole
+	 * difficulty: splitting a three-octet character leaves two byte sequences
+	 * that are not valid UTF-8 and do not reassemble into the original.
+	 *
+	 * @covers ::fold_content_line
+	 *
+	 * @return void
+	 */
+	public function test_fold_content_line_never_splits_a_multibyte_character(): void {
+		$instance = new Calendar( $this->make_event() );
+		// Three octets each, so the boundary lands mid-character for at least
+		// one fold whatever the prefix length happens to be.
+		$line   = 'SUMMARY:' . str_repeat( '□', 60 );
+		$folded = Utility::invoke_hidden_method( $instance, 'fold_content_line', array( $line ) );
+
+		$this->assertSame(
+			$line,
+			str_replace( "\r\n ", '', $folded ),
+			'Unfolding a multi-byte value must return the original bytes.'
+		);
+
+		foreach ( explode( "\r\n", $folded ) as $physical ) {
+			$this->assertLessThanOrEqual( 75, strlen( $physical ), 'Every physical line stays inside the ceiling.' );
+			$this->assertSame(
+				$physical,
+				(string) mb_convert_encoding( $physical, 'UTF-8', 'UTF-8' ),
+				'Every physical line must remain valid UTF-8 on its own.'
+			);
+		}
 	}
 
 	/**
@@ -687,5 +741,66 @@ class Test_Calendar extends Base {
 
 		$this->assertIsString( $url );
 		$this->assertNotEmpty( $url );
+	}
+
+	/**
+	 * The `.ics` template survives a request whose queried object is not an event.
+	 *
+	 * `Calendar\Setup::get_ics_body()` is what both `ical-feed.php` and
+	 * `ical-download.php` call, and on a non-feed request it builds a
+	 * `Calendar` from `get_queried_object_id()`. When that object is not an
+	 * event, such as a venue or any post that does not support
+	 * `gatherpress-event-date`, `Event::$event` stays null, and
+	 * `get_ical_event_string()` used to read `post_title` straight off it.
+	 * PHP 8 evaluates that to null rather than raising, so the null reached
+	 * `escape_ical_text( string $text )` and threw a `TypeError` that took the
+	 * whole public request down.
+	 *
+	 * Driven through `get_ics_body()` rather than `escape_ical_text()` so the
+	 * assertion covers the path a client actually reaches.
+	 *
+	 * @covers ::get_ical_event_string
+	 *
+	 * @return void
+	 */
+	public function test_ics_body_on_a_non_event_request_renders_instead_of_fataling(): void {
+		$venue_id = $this->mock->post(
+			array(
+				'post_type'   => Venue::POST_TYPE,
+				'post_title'  => 'Orphan Office',
+				'post_name'   => 'orphan-office',
+				'post_status' => 'publish',
+			)
+		)->get()->ID;
+
+		$this->go_to( home_url( '/?p=' . $venue_id . '&post_type=' . Venue::POST_TYPE ) );
+
+		$this->assertSame(
+			$venue_id,
+			get_queried_object_id(),
+			'Failed to assert that the request resolved to the venue post.'
+		);
+		$this->assertFalse(
+			is_feed(),
+			'Failed to assert that the request is the non-feed branch of get_ics_body().'
+		);
+
+		$body = Setup::get_instance()->get_ics_body();
+
+		$this->assertStringStartsWith(
+			'BEGIN:VCALENDAR',
+			$body,
+			'Failed to assert that a non-event request still renders a calendar envelope.'
+		);
+		$this->assertStringNotContainsString(
+			'BEGIN:VEVENT',
+			$body,
+			'Failed to assert that a non-event request emits no VEVENT.'
+		);
+		$this->assertStringNotContainsString(
+			"\r\n\r\n",
+			$body,
+			'A blank content line violates RFC 5545 section 3.1, and a strict client rejects the whole body.'
+		);
 	}
 }

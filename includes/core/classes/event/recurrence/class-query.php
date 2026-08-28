@@ -16,20 +16,26 @@
  * unexpanded, so the temporary table is what expansion costs on top of a sort
  * the list was already paying. That is the accepted trade.
  *
- * Two scope limits are deliberate and worth knowing before extending this:
+ * There are two shapes, and the difference between them is what identity the
+ * result set can carry:
  *
- * - A compact-fields query, `'fields' => 'ids'` or `'id=>parent'`, is never
- *   expanded. `WP_Query` returns before
- *   `the_posts` for either shape, so identity cannot ride along, and the one
- *   production consumer emits one VEVENT per entry from the anchor datetime.
- *   That consumer is `Calendar\Setup::get_ical_list()`, reached through
- *   `Event\Query::get_events_list()`. Expanding it produced duplicate VEVENTs sharing a UID.
- *   Occurrence-aware reads go through `Occurrences::select_upcoming()`.
- * - Only queries carrying an upcoming/past bucket are expanded, because only
- *   those have the events-table join `COALESCE()` falls back to. A plain Query
- *   Loop over an event post type therefore still renders one entry per series,
- *   at its anchor date. That is a known limit of the initial recurrence
- *   release.
+ * - A compact-fields query, `'fields' => 'ids'` or `'id=>parent'`, is
+ *   **folded**, not expanded. `WP_Query` returns before `the_posts` for either
+ *   shape, so identity cannot ride along and an expanded compact list is a
+ *   repeated bare post ID its caller cannot disambiguate. Folding joins the occurrence table for the range and ordering
+ *   predicates and then groups back to one row per post. The live consumer is
+ *   `Calendar\Setup::get_ical_list()`, reached through
+ *   `Event\Query::get_events_list()`, and it still emits exactly one VEVENT per
+ *   series, carrying an `RRULE`, with no two components sharing a UID. Reads that need per-occurrence identity go
+ *   through `Occurrences::select_upcoming()`.
+ * - Everything else is **expanded** into one row per occurrence, with identity
+ *   stamped onto each by `attach_occurrences()`.
+ *
+ * One scope limit is deliberate: only queries carrying an upcoming/past bucket
+ * are touched at all, because only those have the events-table join
+ * `COALESCE()` falls back to. A plain Query Loop over an event post type
+ * therefore still renders one entry per series, at its anchor date. That is a known
+ * limit of the initial recurrence release.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -234,6 +240,7 @@ final class Query {
 		add_action( 'updated_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
 		add_action( 'deleted_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
 		add_action( 'import_end', array( $this, 'refresh_has_recurring_events' ) );
+		add_action( 'gatherpress_occurrences_changed', array( $this, 'invalidate_post_query_cache' ) );
 		// Priority 11, strictly after Event\Query's own priority-10 clause
 		// filters, so the events table is already joined and its ordering and
 		// range predicates are there to be rewritten.
@@ -330,6 +337,32 @@ final class Query {
 	}
 
 	/**
+	 * Invalidate cached `WP_Query` result sets after an occurrence write.
+	 *
+	 * Once the clauses below consult the occurrence table, an event query's
+	 * result set depends on rows `WP_Query`'s own cache knows nothing about.
+	 * That cache is keyed on the `posts` group's `last_changed` value, which
+	 * core bumps from `clean_post_cache()`, which is a post write. An occurrence write
+	 * touches no post, so nothing bumps it, and a site with a persistent object
+	 * cache keeps serving the pre-cancellation post list until some unrelated
+	 * edit happens to move it. Bumping the value strands every cached result set
+	 * at once, which is the same shape of invalidation `Calendar\Cache` performs
+	 * for the rendered bodies and cheaper than reasoning about which queries an
+	 * occurrence appeared in.
+	 *
+	 * Measured, not assumed: without this, canceling every occurrence of a
+	 * series and re-running the identical query returns the series from cache
+	 * while the same SQL run directly does not.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function invalidate_post_query_cache(): void {
+		wp_cache_set_last_changed( 'posts' );
+	}
+
+	/**
 	 * Join the occurrence table into an event query's clauses.
 	 *
 	 * Filters `posts_clauses` at priority 11, after `Event\Query`'s own
@@ -380,38 +413,20 @@ final class Query {
 		// Arm 1: a site that never authors a recurring event runs
 		// byte-identical SQL and pays nothing.
 		//
-		// Arm 2 exempts both compact field shapes, `'ids'` and `'id=>parent'`,
-		// from expansion entirely, not merely from the SELECT alias.
-		// `WP_Query` returns before `the_posts` for either shape, so
-		// occurrence identity cannot travel with the rows, and an expanded
-		// compact list is a repeated bare post ID its caller
-		// cannot disambiguate. `Calendar\Setup::get_ical_list()` is the live
-		// consumer of `Event\Query::get_events_list()`: it emits one VEVENT per
-		// entry, read from the post's *anchor* datetime, so expanding that
-		// query yields duplicate VEVENTs sharing one UID, which RFC 5545
-		// forbids, and burns the `posts_per_page` budget on them. The
-		// occurrence-aware read API for GatherPress's own lists is the
-		// additive `Occurrences::select_upcoming()`, which returns
-		// `Occurrence_Ref[]` and carries identity on the object.
+		// Arm 2 exempts admin queries: `edit.php` is a post-management screen.
+		// Its rows carry Edit/Trash/View actions and bulk-action checkboxes
+		// keyed by post ID, and `Event\Admin_List` renders its columns from the
+		// post. Expanding it would emit one indistinguishable row per
+		// occurrence, roughly fifty for a weekly series projected to the
+		// twelve-month horizon, pushing every other event off the screen and
+		// making a bulk action on "a row" act on the whole series.
+		// Per-occurrence management belongs to a dedicated series screen, not
+		// to the generic post list. `admin-ajax.php` is carved back out:
+		// `is_admin()` is true for every admin-ajax request, but those serve
+		// front-end reads, including logged-out ones, which have no rows to
+		// manage and must see the same expanded list a page load renders.
 		//
-		// Arm 3 exempts admin queries for the same reason as arm 2, one layer
-		// up: `edit.php` is a post-management screen. Its rows carry
-		// Edit/Trash/View actions and bulk-action checkboxes keyed by post ID,
-		// and `Event\Admin_List` renders its columns from the post. Expanding
-		// it would emit one indistinguishable row per occurrence, roughly
-		// fifty for a weekly series projected to the twelve-month horizon,
-		// pushing every other event off the screen and making a bulk action on
-		// "a row" act on the whole series. Per-occurrence management belongs to
-		// a dedicated series screen, not to the generic post list.
-		// `admin-ajax.php` is carved back out: `is_admin()` is true for every
-		// admin-ajax request, but those serve front-end reads, including
-		// logged-out ones, which have no rows to manage and must see the same
-		// expanded list a page load renders.
-		//
-		// Arms 2 and 3 are one rule: expand only where occurrence identity can
-		// travel with the row.
-		//
-		// Arm 4 scopes the filter to queries `Event\Query` has already joined
+		// Arm 3 scopes the filter to queries `Event\Query` has already joined
 		// the events table onto, the only case with an anchor column for
 		// `COALESCE()` to fall back to. A plain Query Loop over an event post
 		// type sets no upcoming/past bucket, so it gets no events join and is
@@ -419,7 +434,7 @@ final class Query {
 		// date. That is a known limit of the initial recurrence release, not
 		// an oversight.
 		//
-		// Arm 5 is the multisite contract, and it has to be a positive check
+		// Arm 4 is the multisite contract, and it has to be a positive check
 		// rather than error handling downstream. `$wpdb` swallows a
 		// missing-table error and `get_results()` returns `array()`, never
 		// `null`, so there is no failure value for a caller to branch on. The
@@ -434,7 +449,6 @@ final class Query {
 		// byte-identical SQL is unaffected.
 		if (
 			! self::site_has_recurring_events()
-			|| in_array( $query->get( 'fields' ), array( 'ids', 'id=>parent' ), true )
 			|| ( is_admin() && ! wp_doing_ajax() )
 			|| ! str_contains( (string) $pieces['join'], $events_table )
 			|| ! Occurrences::get_instance()->table_exists()
@@ -442,19 +456,20 @@ final class Query {
 			return $pieces;
 		}
 
-		$alias             = self::OCCURRENCE_ALIAS;
-		$rows_alias        = $alias . '_rows';
-		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		// A compact result set, `'ids'` or `'id=>parent'`, is folded rather
+		// than expanded. `WP_Query` returns before `the_posts` for either
+		// field shape, so occurrence identity cannot travel with the rows and
+		// an expanded compact list is a repeated bare post ID its caller
+		// cannot disambiguate. Folding gives both shapes the occurrence
+		// table's answer to *which posts belong in the bucket* while keeping
+		// one row per post, so the two shapes cannot diverge.
+		if ( in_array( $query->get( 'fields' ), array( 'ids', 'id=>parent' ), true ) ) {
+			return $this->fold_event_clauses( $pieces );
+		}
 
-		$pieces['join'] .= $wpdb->prepare(
-			' LEFT JOIN %i AS %i ON %i.ID = %i.series_post_id AND %i.status = %s',
-			$occurrences_table,
-			$alias,
-			$wpdb->posts,
-			$alias,
-			$alias,
-			Occurrences::STATUS_SCHEDULED
-		);
+		$alias = self::OCCURRENCE_ALIAS;
+
+		$pieces['join'] .= $this->occurrence_join();
 
 		$pieces['orderby'] = $this->coalesce_event_columns( (string) $pieces['orderby'], $events_table, $alias );
 
@@ -486,15 +501,7 @@ final class Query {
 		}
 
 		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table, $alias )
-			. $wpdb->prepare(
-				' AND ( %i.series_post_id IS NOT NULL OR NOT EXISTS ('
-				. ' SELECT 1 FROM %i AS %i WHERE %i.series_post_id = %i.ID ) )',
-				$alias,
-				$occurrences_table,
-				$rows_alias,
-				$rows_alias,
-				$wpdb->posts
-			);
+			. $this->occurrence_scope_predicate();
 
 		// WordPress groups on the post ID whenever a tax_query or meta_query
 		// can duplicate rows. Collapsing on the post ID alone would collapse
@@ -666,6 +673,269 @@ final class Query {
 
 	/**
 	 * List both renderings one anchor datetime column can appear under.
+	 * Fold an `'ids'` event query onto the occurrence table without multiplying rows.
+	 *
+	 * A recurring series must appear in the aggregate site-wide, archive,
+	 * venue and taxonomy feeds. Those feeds are built by
+	 * `Calendar\Setup::get_ical_list()` from `Event\Query::get_events_list()`,
+	 * which asks for `'fields' => 'ids'`. Left unexpanded, its
+	 * `upcoming` bucket is selected from each series' *anchor*. A series whose
+	 * anchor has passed is therefore in no aggregate feed at all, which is every
+	 * recurring series from its second date onward.
+	 *
+	 * Folding rather than expanding is the whole point, and it is the opposite
+	 * operation. The join is the same one `expand_event_clauses()` adds, and the
+	 * same range and ordering rewrites apply, so the bucket is decided by the
+	 * series' scheduled occurrences; the `GROUP BY` on the post ID then
+	 * collapses the result back to one row per post. That matters beyond
+	 * tidiness: a series shares one `UID` across its whole recurrence set (RFC
+	 * 5545 section 3.8.4.4), so one component per occurrence would repeat that
+	 * identifier once per date with nothing but `RECURRENCE-ID` to tell the
+	 * copies apart, producing a feed that overrides every instance of a rule it
+	 * also carries. One component carrying an `RRULE` is how a series is representable
+	 * at all.
+	 *
+	 * Ordering is aggregated for the same reason it is grouped. See
+	 * `aggregate_orderby()`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $pieces Query clauses keyed as `WP_Query` supplies them.
+	 *
+	 * @return array The clauses, folded onto the occurrence table.
+	 */
+	private function fold_event_clauses( array $pieces ): array {
+		global $wpdb;
+
+		$events_table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+
+		$pieces['join'] .= $this->occurrence_join();
+
+		$pieces['where'] = $this->coalesce_event_columns(
+			(string) $pieces['where'],
+			$events_table,
+			self::OCCURRENCE_ALIAS
+		) . $this->occurrence_scope_predicate();
+
+		$pieces['orderby'] = $this->aggregate_orderby(
+			$this->coalesce_event_columns( (string) $pieces['orderby'], $events_table, self::OCCURRENCE_ALIAS )
+		);
+
+		// WordPress already groups on the post ID whenever a tax_query or
+		// meta_query can duplicate rows, which the venue and taxonomy feeds do.
+		// Where it has not, the join above is what duplicates them, so the
+		// grouping is added here. Either way the group key is the post ID and
+		// the result is one row per series.
+		if ( '' === (string) $pieces['groupby'] ) {
+			$pieces['groupby'] = $wpdb->prepare( '%i.ID', $wpdb->posts );
+		}
+
+		return $pieces;
+	}
+
+	/**
+	 * Wrap a grouped query's ordering expression in an aggregate.
+	 *
+	 * A folded query orders by a column belonging to the joined occurrence rows
+	 * while grouping them away, so without an aggregate the value MySQL sorts on
+	 * is whichever row of the group it happened to read. That is stable within a
+	 * statement, arbitrary between them, and enough to move an entry between
+	 * pages of a paginated feed. `MIN()` on an ascending sort picks the series'
+	 * *next* occurrence and `MAX()` on a descending one picks its most recent,
+	 * which is what each bucket means. Only rows that passed the range predicate
+	 * are in the group, so the aggregate cannot reach outside the bucket.
+	 *
+	 * Left alone when the ordering does not reference the occurrence table:
+	 * `RAND()`, the post ID, and the post title are all functionally dependent
+	 * on the group key or deliberately unordered, and aggregating them would
+	 * either change nothing or defeat them.
+	 *
+	 * The aggregate alone is not a total order, which is the same defect the
+	 * expanded path solves with the canonical list key. Two series whose next
+	 * scheduled occurrence falls at the same instant tie on the aggregate, MySQL
+	 * does not sort stably, and a tied pair can be ordered one way for
+	 * `LIMIT 0, 10` and the other for `LIMIT 10, 10`, which repeats one series
+	 * across two pages of a feed and drops the other from both. The group key is
+	 * unique per row of a folded result and is what breaks the tie; nothing
+	 * finer is needed, because folding has already collapsed the occurrences.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $orderby The `orderby` clause, already `COALESCE()`-rewritten.
+	 *
+	 * @return string The clause, aggregated when it needs to be.
+	 */
+	private function aggregate_orderby( string $orderby ): string {
+		global $wpdb;
+
+		if ( ! str_contains( $orderby, 'COALESCE(' ) ) {
+			return $orderby;
+		}
+
+		// Key by key, never the clause as a whole: an integration can append a
+		// tie-breaker between the event rewrite and this fold, and wrapping
+		// both keys in one aggregate is `MIN( <key> ASC, <key> )`, a syntax
+		// error that empties every aggregate feed. Only the keys the fold
+		// rewrote reference the grouped-away occurrence rows; the rest are
+		// functionally dependent on the group key and pass through unchanged,
+		// which also keeps the clause valid under `ONLY_FULL_GROUP_BY`.
+		$keys = array_map(
+			array( $this, 'aggregate_orderby_key' ),
+			$this->split_orderby( $orderby )
+		);
+
+		return implode( ', ', $keys ) . $wpdb->prepare( ', %i.ID ASC', $wpdb->posts );
+	}
+
+	/**
+	 * Aggregate one ordering key when it references the occurrence columns.
+	 *
+	 * `MIN()` on an ascending key picks the series' next occurrence and
+	 * `MAX()` on a descending one its most recent, which is what each bucket
+	 * means. A key without the fold's `COALESCE()` marker orders by a value
+	 * functionally dependent on the group key and needs no aggregate.
+	 *
+	 * @since 0.36.0
+	 *
+	 * PHPMD reads this as an unused private method. It is called once, as
+	 * `array( $this, 'aggregate_orderby_key' )` handed to `array_map()` in the
+	 * folded ordering rewrite, and PHPMD does not resolve a method named inside
+	 * a callable array.
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
+	 *
+	 * @param string $key One ordering key, e.g. `<expression> ASC`.
+	 *
+	 * @return string The key, aggregated when it needs to be.
+	 */
+	private function aggregate_orderby_key( string $key ): string {
+		$key = trim( $key );
+
+		if ( ! str_contains( $key, 'COALESCE(' ) ) {
+			return $key;
+		}
+
+		$expression = trim( (string) preg_replace( '/\s+(ASC|DESC)\s*$/i', '', $key ) );
+		$descending = (bool) preg_match( '/\s+DESC\s*$/i', $key );
+
+		return sprintf(
+			'%s( %s ) %s',
+			$descending ? 'MAX' : 'MIN',
+			$expression,
+			$descending ? 'DESC' : 'ASC'
+		);
+	}
+
+	/**
+	 * Split an `ORDER BY` clause into keys on its top-level commas.
+	 *
+	 * The commas inside `COALESCE( a, b )` separate arguments, not keys, so a
+	 * plain explode would cut the fold's own rewrite in half. Parenthesis
+	 * depth is what tells the two apart.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $orderby The full ordering clause.
+	 *
+	 * @return string[] The individual keys, in order.
+	 */
+	private function split_orderby( string $orderby ): array {
+		$keys    = array();
+		$current = '';
+		$depth   = 0;
+
+		foreach ( str_split( $orderby ) as $character ) {
+			if ( ',' === $character && 0 === $depth ) {
+				$keys[]  = $current;
+				$current = '';
+
+				continue;
+			}
+
+			if ( '(' === $character ) {
+				++$depth;
+			} elseif ( ')' === $character ) {
+				$depth = max( 0, $depth - 1 );
+			}
+
+			$current .= $character;
+		}
+
+		$keys[] = $current;
+
+		return $keys;
+	}
+
+	/**
+	 * The `LEFT JOIN` bringing a series' scheduled occurrences onto its post row.
+	 *
+	 * Never an `INNER JOIN`, and `status` lives in the join condition rather
+	 * than the `WHERE`: either shape deletes every non-recurring event from
+	 * every list, and moving `status` to the `WHERE` additionally lets a
+	 * fully-canceled series fall through the `NULL` branch and reappear at its
+	 * anchor date.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string The join fragment, with a leading space.
+	 */
+	private function occurrence_join(): string {
+		global $wpdb;
+
+		return $wpdb->prepare(
+			' LEFT JOIN %i AS %i ON %i.ID = %i.series_post_id AND %i.status = %s',
+			sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+			self::OCCURRENCE_ALIAS,
+			$wpdb->posts,
+			self::OCCURRENCE_ALIAS,
+			self::OCCURRENCE_ALIAS,
+			Occurrences::STATUS_SCHEDULED
+		);
+	}
+
+	/**
+	 * The predicate scoping the join's `NULL` fallback to posts with no occurrence rows.
+	 *
+	 * A series whose occurrences are all canceled matches no join row, falls
+	 * through with `NULL` occurrence columns, and would reappear at its anchor
+	 * date as an ordinary event. This scopes that fallback to posts with **no
+	 * occurrence rows at all**, so a series with rows contributes only its
+	 * scheduled ones while a non-recurring post contributes its single anchor
+	 * row.
+	 *
+	 * The guard reads the occurrence table, matching
+	 * `Occurrences::select_by_horizon()`, and deliberately not the rule mirror.
+	 * Keying on the mirror instead asks "does this post have a rule", which is
+	 * `true` for a post whose rule has not projected any rows yet, or whose rule
+	 * legitimately produces none, such as an `until` that precedes the anchor,
+	 * reachable by editing either end of that pair. Such a post would match no
+	 * join row *and* be denied the `NULL` fallback, disappearing from every
+	 * list, the archive, and the admin screen while still being a published
+	 * event. Hiding a real event is strictly worse than showing it at its anchor
+	 * date, so the fallback keys on rows. It is a `NOT EXISTS` semi-join rather
+	 * than a `LEFT JOIN` because a join can multiply rows where a semi-join
+	 * cannot.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string The predicate fragment, with a leading ` AND `.
+	 */
+	private function occurrence_scope_predicate(): string {
+		global $wpdb;
+
+		return $wpdb->prepare(
+			' AND ( %i.series_post_id IS NOT NULL OR NOT EXISTS ('
+			. ' SELECT 1 FROM %i AS %i WHERE %i.series_post_id = %i.ID ) )',
+			self::OCCURRENCE_ALIAS,
+			sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix ),
+			self::OCCURRENCE_ALIAS . '_rows',
+			self::OCCURRENCE_ALIAS . '_rows',
+			$wpdb->posts
+		);
+	}
+
+	/**
+	 * Rewrite the anchor datetime columns of one clause as `COALESCE()` fallbacks.
 	 *
 	 * `Event\Query` writes the ORDER BY column unquoted and the WHERE column
 	 * back-quoted, because the latter goes through `$wpdb->prepare()`'s `%i`

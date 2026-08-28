@@ -78,6 +78,197 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A move with nothing to move writes nothing and announces nothing.
+	 *
+	 * Both guards matter to the caller a forward split will be. An empty
+	 * identifier list would build `IN ( )`, which is a syntax error rather than
+	 * a no-op; a source equal to the destination would announce two changes and
+	 * invalidate every cached feed on the site for an update that moved nothing.
+	 *
+	 * @covers ::move_to_post
+	 *
+	 * @return void
+	 */
+	public function test_move_to_post_is_a_no_op_without_work_to_do(): void {
+		$post_id     = $this->create_and_project();
+		$destination = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+		$announced   = 0;
+
+		add_action(
+			'gatherpress_occurrences_changed',
+			static function () use ( &$announced ): void {
+				++$announced;
+			}
+		);
+
+		$this->assertSame(
+			0,
+			Occurrences::get_instance()->move_to_post( $post_id, (int) $destination, array() ),
+			'An empty identifier list must not reach the database.'
+		);
+		$this->assertSame(
+			0,
+			Occurrences::get_instance()->move_to_post( $post_id, $post_id, array( '20260903T180000' ) ),
+			'A move onto the post that already owns the rows is not a move.'
+		);
+		$this->assertSame( 0, $announced, 'Neither no-op may invalidate a cache.' );
+	}
+
+	/**
+	 * A move that matches no row changes nothing and announces nothing.
+	 *
+	 * The scope is the composite `(series_post_id, recurrence_id)` key, so an
+	 * identifier that belongs to another series matches nothing here, and the
+	 * announcement is gated on rows actually having moved rather than on the
+	 * statement having run.
+	 *
+	 * @covers ::move_to_post
+	 *
+	 * @return void
+	 */
+	public function test_move_to_post_announces_nothing_when_no_row_matches(): void {
+		$post_id     = $this->create_and_project();
+		$destination = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+		$announced   = 0;
+
+		add_action(
+			'gatherpress_occurrences_changed',
+			static function () use ( &$announced ): void {
+				++$announced;
+			}
+		);
+
+		$this->assertSame(
+			0,
+			Occurrences::get_instance()->move_to_post( $post_id, (int) $destination, array( '20991231T000000' ) ),
+			'An identifier this series does not carry must move nothing.'
+		);
+		$this->assertSame( 0, $announced, 'A statement that moved nothing has nothing to announce.' );
+	}
+
+	/**
+	 * The preview reports what a candidate rule would produce, and writes nothing.
+	 *
+	 * The organizer is shown how many RSVPs a rule change would strand
+	 * *before* it is applied, which means answering "what
+	 * would this rule produce?" without the upsert or the stale-row delete
+	 * `project()` performs.
+	 *
+	 * @covers ::preview_recurrence_ids
+	 *
+	 * @return void
+	 */
+	public function test_preview_recurrence_ids_reports_a_candidate_without_writing(): void {
+		$post_id = $this->create_and_project();
+		$stored  = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		$preview = Occurrences::get_instance()->preview_recurrence_ids(
+			$post_id,
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+
+		$this->assertSame(
+			array( '20260903T180000', '20260904T180000', '20260905T180000' ),
+			$preview,
+			'The preview must expand the candidate rule against the series anchor.'
+		);
+		$this->assertSame(
+			$stored,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'A preview is read-only: the stored rows must be byte-identical afterwards.'
+		);
+	}
+
+	/**
+	 * A post with no anchor previews nothing rather than warning.
+	 *
+	 * @covers ::preview_recurrence_ids
+	 *
+	 * @return void
+	 */
+	public function test_preview_recurrence_ids_returns_nothing_without_an_anchor(): void {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->preview_recurrence_ids(
+				(int) $post_id,
+				Rule::from_array(
+					array(
+						'frequency' => 'daily',
+						'interval'  => 1,
+						'end_type'  => 'count',
+						'count'     => 3,
+					)
+				)
+			),
+			'An event with no datetime has nothing for a candidate rule to expand from.'
+		);
+	}
+
+	/**
+	 * A series the expander rejects previews nothing rather than throwing.
+	 *
+	 * The same live scenario `expand_or_clear()`'s catch exists for: the
+	 * `gatherpress_timezone` filter runs after GatherPress's own validation and
+	 * can hand back a fixed offset, which `Expander::expand()` refuses on its
+	 * first line. The preview runs on organizer input from a REST route, so
+	 * that has to come back as "this produces no dates" rather than as a fatal.
+	 *
+	 * @covers ::preview_recurrence_ids
+	 *
+	 * @return void
+	 */
+	public function test_preview_recurrence_ids_swallows_an_unexpandable_series(): void {
+		$post_id = $this->create_and_project();
+		$filter  = static fn() => '+05:30';
+
+		add_filter( 'gatherpress_timezone', $filter );
+
+		$preview = Occurrences::get_instance()->preview_recurrence_ids(
+			$post_id,
+			Rule::from_array(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 3,
+				)
+			)
+		);
+
+		remove_filter( 'gatherpress_timezone', $filter );
+
+		$this->assertSame(
+			array(),
+			$preview,
+			'A series whose timezone cannot carry a rule must preview as empty rather than fatal.'
+		);
+	}
+
+	/**
 	 * Coverage for `__construct` and `setup_hooks`.
 	 *
 	 * @covers ::__construct
@@ -620,17 +811,16 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Saving an ordinary, never-recurring event through the
-	 * real save-path hooks must issue zero queries against the occurrence
-	 * table, which is the "a site with no recurring events pays nothing"
-	 * guarantee. Checking only project()'s return value (the test above) is
-	 * not enough to guard this: the fix for orphaned rows made the
+	 * Saving an ordinary, never-recurring event through the real save-path
+	 * hooks must issue zero queries against the occurrence table, which is the
+	 * "a site with no recurring events pays nothing" guarantee. Checking only
+	 * project()'s return value (the test above) is not enough to guard this: a
 	 * deferred no-blob path (maybe_project() -> resolve_pending_projection())
-	 * silently adds a DELETE query to this
-	 * exact, most-common save path. Such a regression passes a return-value-only
-	 * assertion; it only shows up in the query log, which is why this test
-	 * drives the real `wp_after_insert_post` / `shutdown` hooks rather than
-	 * calling project() directly.
+	 * that cleans up unconditionally silently adds a DELETE query to this
+	 * exact, most-common save path, and that shows up only in the query log,
+	 * never in a return value. Driving the real `wp_after_insert_post` /
+	 * `shutdown` hooks rather than calling project() directly is what catches
+	 * it.
 	 *
 	 * @covers ::maybe_project
 	 * @covers ::resolve_pending_projection
@@ -1338,6 +1528,48 @@ class Test_Occurrences extends Base {
 		$this->assertSame(
 			Occurrences::STATUS_CANCELED,
 			$instance->get( $post_id, '20260903T180000' )['status']
+		);
+	}
+
+	/**
+	 * A status write that changes nothing announces nothing.
+	 *
+	 * Re-canceling an already canceled date is a write on paper only: the row
+	 * is byte-identical after it. Announcing it advances the series' SEQUENCE
+	 * and invalidates every calendar response cache on the site for a change
+	 * no client can observe, so subscribers re-ingest an unchanged component.
+	 * The gate follows `move_to_post()`: announce on evidence of change,
+	 * never on the statement having run.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_setting_an_unchanged_status_announces_nothing(): void {
+		$post_id   = $this->create_and_project();
+		$instance  = Occurrences::get_instance();
+		$announced = 0;
+
+		$this->assertTrue(
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
+			'Failed to cancel the date, so the repeat below would not be a repeat.'
+		);
+
+		add_action(
+			'gatherpress_occurrences_changed',
+			static function () use ( &$announced ): void {
+				++$announced;
+			}
+		);
+
+		$this->assertTrue(
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
+			'The composite key still matches, so the caller is still told so.'
+		);
+		$this->assertSame(
+			0,
+			$announced,
+			'A write that changed nothing must not invalidate every calendar on the site.'
 		);
 	}
 

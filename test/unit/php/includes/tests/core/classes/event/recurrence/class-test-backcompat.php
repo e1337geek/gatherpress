@@ -40,6 +40,8 @@ use WP_Query;
  */
 class Test_Backcompat extends Base {
 
+	use Rewrite_State;
+
 	/**
 	 * The reference daily rule: five consecutive daily occurrences.
 	 *
@@ -65,6 +67,19 @@ class Test_Backcompat extends Base {
 		gatherpress_reset_custom_tables();
 
 		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+
+		$this->snapshot_rewrite_state();
+	}
+
+	/**
+	 * Put the rewrite state back the way this file found it.
+	 *
+	 * @return void
+	 */
+	public function tearDown(): void {
+		$this->restore_rewrite_state();
+
+		parent::tearDown();
 	}
 
 	/**

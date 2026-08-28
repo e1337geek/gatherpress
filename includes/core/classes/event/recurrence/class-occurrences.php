@@ -1645,6 +1645,8 @@ final class Occurrences {
 			return $this->write_error( $post_id );
 		}
 
+		$this->announce_change( $post_id );
+
 		return count( $rows );
 	}
 
@@ -2281,14 +2283,21 @@ final class Occurrences {
 	 * also reports zero, so only that case pays a follow-up existence read:
 	 * row present means a no-op success, row gone means gone.
 	 *
+	 * The announcement is gated on the row having changed, matching
+	 * `move_to_post()`: writing the status a row already has is a write on
+	 * paper only, and announcing it advances the series' `SEQUENCE` and
+	 * invalidates every calendar response cache for a change no client can
+	 * observe.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
 	 * @param string $status        One of the `STATUS_*` constants.
 	 *
-	 * @return bool True when the row holds the status; false when the composite
-	 *              key matched nothing or the status is not one of the constants.
+	 * @return bool True when the composite key matched a row, whether or not the
+	 *              value changed; false when it matched nothing or the status is
+	 *              not one of the constants.
 	 */
 	public function set_status( int $post_id, string $recurrence_id, string $status ): bool {
 		global $wpdb;
@@ -2321,6 +2330,7 @@ final class Occurrences {
 		}
 
 		if ( $updated > 0 ) {
+			$this->announce_change( $post_id );
 			return true;
 		}
 
@@ -2340,6 +2350,152 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
 		return $exists;
+	}
+
+	/**
+	 * Move occurrence rows from one post of a series to another.
+	 *
+	 * Recycles occurrence records across a split. The row is **moved**, never
+	 * deleted and regenerated: it keeps its `recurrence_id`, its datetimes and
+	 * its `status`, so a canceled occurrence stays canceled across the split,
+	 * and its permalink segment still resolves under the new owner. Identity
+	 * is `(series_post_id, recurrence_id)` and the first half **changes**:
+	 * a consumer keyed by the full tuple no longer points at the moved row,
+	 * and must be migrated by the split coordinator.
+	 *
+	 * Scopes by both `series_post_id` and `recurrence_id`, never by
+	 * `recurrence_id` alone.
+	 *
+	 * A move is a write on **two** series, so both are announced: the source
+	 * loses rows from its feed and its aggregate bucket, the destination gains
+	 * them, and a subscriber revalidating either one against an unmoved
+	 * `Last-Modified` is told `304` for a body that no longer describes it. The
+	 * resolved-context memo is dropped for the same reason. It maps an
+	 * occurrence to the post that owned it, and that is precisely what changed.
+	 *
+	 * The RSVP comments carried by a moved row survive the row itself, but their
+	 * taxonomy term slug embeds the owning post ID, so a caller moving rows must
+	 * rename the terms in the same operation. That coordination belongs to the
+	 * split, not here; this method moves rows and announces the consequences.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $from_post_id   Post the rows currently belong to.
+	 * @param int      $to_post_id     Post they move to.
+	 * @param string[] $recurrence_ids Occurrence identifiers to move.
+	 *
+	 * @return int Rows moved.
+	 */
+	public function move_to_post( int $from_post_id, int $to_post_id, array $recurrence_ids ): int {
+		global $wpdb;
+
+		if ( array() === $recurrence_ids || $from_post_id === $to_post_id ) {
+			return 0;
+		}
+
+		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+		$placeholders = implode( ', ', array_fill( 0, count( $recurrence_ids ), '%s' ) );
+		$sql          = 'UPDATE %i SET series_post_id = %d WHERE series_post_id = %d'
+			. " AND recurrence_id IN ( {$placeholders} )";
+		$values       = array_merge(
+			array( $table, $to_post_id, $from_post_id ),
+			array_values( $recurrence_ids )
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
+		$moved = (int) $wpdb->query( $wpdb->prepare( $sql, $values ) );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		if ( 0 < $moved ) {
+			Context::flush_resolved();
+			$this->announce_change( $from_post_id );
+			$this->announce_change( $to_post_id );
+		}
+
+		return $moved;
+	}
+
+	/**
+	 * Report the occurrence identifiers a candidate rule would produce for a post.
+	 *
+	 * Read-only, and deliberately so: the organizer must be **shown** how many
+	 * RSVPs a rule change would strand before the change is applied, which
+	 * means answering "what would this rule produce?" without writing anything.
+	 * Everything `project()` does after the expansion is absent here, both the
+	 * upsert and the stale-row delete.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int  $post_id Series post ID whose anchor and timezone the rule is expanded against.
+	 * @param Rule $rule    Candidate rule.
+	 *
+	 * @return string[] The identifiers the rule would produce, ordered ascending.
+	 */
+	public function preview_recurrence_ids( int $post_id, Rule $rule ): array {
+		$anchor = $this->resolve_anchor( $post_id );
+
+		if ( null === $anchor ) {
+			return array();
+		}
+
+		[ $anchor_start, , $timezone ] = $anchor;
+
+		try {
+			$occurrences = ( new Expander() )->expand(
+				$rule,
+				$anchor_start,
+				$timezone,
+				$this->resolve_horizon( $anchor_start, $timezone )
+			);
+		} catch ( InvalidArgumentException ) {
+			return array();
+		}
+
+		return array_map(
+			static fn( DateTimeImmutable $start ) => self::recurrence_id( $start ),
+			$occurrences
+		);
+	}
+
+	/**
+	 * Announce that a series' occurrence rows changed.
+	 *
+	 * Occurrence rows are read while an `.ics` response is built. The aggregate
+	 * feeds select their bucket from them, and a canceled row becomes an
+	 * `EXDATE`. Yet they are written by bare `$wpdb` statements that touch
+	 * no post row, no meta row and no term relationship. None of the hooks
+	 * `Calendar\Cache` watches fires for them, so without this the response
+	 * cache keeps serving bodies that predate the change, and `Last-Modified`
+	 * keeps reporting a moment that has not moved. That second half is the one
+	 * that bites: a subscriber revalidating with `If-Modified-Since` and no
+	 * stored entity tag is told `304` for as long as the stamp stays put, so a
+	 * canceled date may never reach it at all.
+	 *
+	 * Fired from every write that can alter emitted output rather than from the
+	 * one that prompted it: the projection upsert, a status change, and a
+	 * per-post delete.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $post_id Series post ID whose occurrence rows changed.
+	 *
+	 * @return void
+	 */
+	private function announce_change( int $post_id ): void {
+		/**
+		 * Fires after a series' occurrence rows are written, updated or removed.
+		 *
+		 * Occurrence writes bypass the post, meta and term hooks entirely, so
+		 * anything caching a rendering that reads occurrence rows needs this to
+		 * know it went stale, calendar feeds above all.
+		 *
+		 * @since 0.36.0
+		 *
+		 * @param int $post_id Series post ID whose occurrence rows changed.
+		 */
+		do_action( 'gatherpress_occurrences_changed', $post_id );
 	}
 
 	/**
@@ -2366,9 +2522,16 @@ final class Occurrences {
 		// `int|false`, not `int`: `(int) false` is `0`, which is
 		// indistinguishable from a successful delete of a post that had no
 		// rows. The two answers mean opposite things to a caller deciding
-		// whether the table still holds state for this post.
-		return $this->execute_write(
+		// whether the table still holds state for this post, and only one of
+		// them should announce a change.
+		$deleted = $this->execute_write(
 			$wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id )
 		);
+
+		if ( false !== $deleted && 0 < $deleted ) {
+			$this->announce_change( $post_id );
+		}
+
+		return $deleted;
 	}
 }

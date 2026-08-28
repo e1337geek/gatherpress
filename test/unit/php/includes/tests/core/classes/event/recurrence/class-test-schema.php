@@ -649,6 +649,12 @@ class Test_Schema extends Base {
 				'callback' => array( $instance, 'refresh_has_recurring_events' ),
 			),
 			array(
+				'type'     => 'action',
+				'name'     => 'gatherpress_occurrences_changed',
+				'priority' => 10,
+				'callback' => array( $instance, 'invalidate_post_query_cache' ),
+			),
+			array(
 				'type'     => 'filter',
 				'name'     => 'posts_clauses',
 				'priority' => 11,
