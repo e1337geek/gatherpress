@@ -20,7 +20,10 @@ namespace GatherPress\Core\Event\Recurrence;
 // Exit if accessed directly.
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
+use GatherPress\Core\Rsvp\Query as Rsvp_Query;
 use GatherPress\Core\Traits\Singleton;
+use WP_Error;
+use WP_Term;
 
 /**
  * Class Rsvp_Occurrence.
@@ -438,6 +441,342 @@ final class Rsvp_Occurrence {
 				'field'    => 'slug',
 				'terms'    => array( self::term_slug( $post_id, $recurrence_id ) ),
 			),
+		);
+	}
+
+	/**
+	 * Move every trace of an occurrence's RSVP ownership onto another post.
+	 *
+	 * **The authoritative owner of an occurrence-scoped RSVP is the occurrence
+	 * row's `series_post_id`, and `comment_post_ID` must equal it.** The two
+	 * halves are conjoined in production reads: `Rsvp\Storage` narrows by
+	 * `post_id` *and* by the occurrence term, so a comment whose post and term
+	 * name different posts is readable through neither, from either side. That
+	 * is the state a rename-only split left behind, and it stranded a real
+	 * roster rather than merely mislabeling one.
+	 *
+	 * `comment_post_ID` is also what WordPress itself keys on for capability
+	 * checks, moderation, the trash cascade, and `new Rsvp( $post_id )`, so
+	 * the comment follows the row rather than the row following the comment.
+	 *
+	 * The whole migration is atomic: a term that cannot be renamed or a comment
+	 * that cannot be moved undoes everything this call already did and reports
+	 * a `WP_Error`, so a caller never has to reason about a half-moved roster.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $from_post_id   Post the occurrences currently belong to.
+	 * @param int      $to_post_id     Post they move to.
+	 * @param string[] $recurrence_ids Occurrence identifiers to move.
+	 *
+	 * @return array{terms: int, comments: int[]}|WP_Error What moved, or the first failure.
+	 */
+	public function migrate_owner( int $from_post_id, int $to_post_id, array $recurrence_ids ) {
+		$migrated = array(
+			'terms'    => 0,
+			'comments' => array(),
+		);
+
+		if ( $from_post_id === $to_post_id || array() === $recurrence_ids ) {
+			return $migrated;
+		}
+
+		$done = array();
+
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$term = get_term_by(
+				'slug',
+				self::term_slug( $from_post_id, (string) $recurrence_id ),
+				self::TAXONOMY
+			);
+
+			// An occurrence nobody has RSVPd to has no term to move.
+			if ( ! $term instanceof WP_Term ) {
+				continue;
+			}
+
+			// Read the membership before the rename: `term_relationships` keys
+			// on `term_taxonomy_id`, which the rename leaves alone, but reading
+			// first keeps the comment set and the term in one snapshot.
+			$comment_ids = get_objects_in_term( array( (int) $term->term_id ), self::TAXONOMY );
+			$comment_ids = is_wp_error( $comment_ids ) ? array() : array_map( 'intval', $comment_ids );
+
+			$slug    = self::term_slug( $to_post_id, (string) $recurrence_id );
+			$updated = wp_update_term(
+				(int) $term->term_id,
+				self::TAXONOMY,
+				array(
+					'name' => $slug,
+					'slug' => $slug,
+				)
+			);
+
+			// A destination slug that already exists means two occurrences would
+			// merge their RSVPs into one term. That is data loss, not a
+			// skippable edge, so the caller is told rather than left with a
+			// silently partial move.
+			if ( is_wp_error( $updated ) ) {
+				$this->revert_migration( $to_post_id, $from_post_id, $done );
+
+				return new WP_Error(
+					'gatherpress_rsvp_term_not_renamed',
+					__( 'An RSVP occurrence term could not be moved to the new event.', 'gatherpress' ),
+					array( 'status' => 500 )
+				);
+			}
+
+			$done[] = (string) $recurrence_id;
+
+			foreach ( $comment_ids as $comment_id ) {
+				$moved = wp_update_comment(
+					array(
+						'comment_ID'      => $comment_id,
+						'comment_post_ID' => $to_post_id,
+					),
+					true
+				);
+
+				if ( is_wp_error( $moved ) ) {
+					$this->revert_migration( $to_post_id, $from_post_id, $done );
+
+					return new WP_Error(
+						'gatherpress_rsvp_comment_not_moved',
+						__( 'An RSVP could not be moved to the new event.', 'gatherpress' ),
+						array( 'status' => 500 )
+					);
+				}
+
+				$migrated['comments'][] = (int) $comment_id;
+			}
+		}
+
+		$migrated['terms'] = count( $done );
+
+		return $migrated;
+	}
+
+	/**
+	 * Undo the part of a migration that had already landed.
+	 *
+	 * Deliberately not `migrate_owner()` itself. The failure being undone is
+	 * very often a store that is failing for every write, so a self-call would
+	 * fail again, undo again, and recurse without bound. This does the same two
+	 * writes in reverse and reports nothing, because there is nothing a caller
+	 * could do with a failure to undo a failure.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $from_post_id   Post the partial migration moved things to.
+	 * @param int      $to_post_id     Post they belong back on.
+	 * @param string[] $recurrence_ids Identifiers the partial migration reached.
+	 *
+	 * @return void
+	 */
+	private function revert_migration( int $from_post_id, int $to_post_id, array $recurrence_ids ): void {
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$term = get_term_by(
+				'slug',
+				self::term_slug( $from_post_id, (string) $recurrence_id ),
+				self::TAXONOMY
+			);
+
+			if ( ! $term instanceof WP_Term ) {
+				continue;
+			}
+
+			$comment_ids = get_objects_in_term( array( (int) $term->term_id ), self::TAXONOMY );
+			$slug        = self::term_slug( $to_post_id, (string) $recurrence_id );
+
+			wp_update_term(
+				(int) $term->term_id,
+				self::TAXONOMY,
+				array(
+					'name' => $slug,
+					'slug' => $slug,
+				)
+			);
+
+			foreach ( is_wp_error( $comment_ids ) ? array() : $comment_ids as $comment_id ) {
+				wp_update_comment(
+					array(
+						'comment_ID'      => (int) $comment_id,
+						'comment_post_ID' => $to_post_id,
+					)
+				);
+			}
+		}
+	}
+
+	/**
+	 * Read every RSVP comment attached to a post's occurrence terms.
+	 *
+	 * The snapshot a rollback needs: deleting a term deletes its
+	 * `term_relationships` rows, so a demotion that drops occurrence scoping
+	 * has to be able to say which comments carried which occurrence before it
+	 * ran.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $post_id        Series post ID the terms name.
+	 * @param string[] $recurrence_ids Occurrence identifiers to read.
+	 *
+	 * @return array<string, int[]> Comment IDs, keyed by recurrence identifier.
+	 */
+	public function memberships( int $post_id, array $recurrence_ids ): array {
+		$memberships = array();
+
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$term = get_term_by( 'slug', self::term_slug( $post_id, (string) $recurrence_id ), self::TAXONOMY );
+
+			if ( ! $term instanceof WP_Term ) {
+				continue;
+			}
+
+			$comment_ids = get_objects_in_term( array( (int) $term->term_id ), self::TAXONOMY );
+
+			if ( is_wp_error( $comment_ids ) || empty( $comment_ids ) ) {
+				continue;
+			}
+
+			$memberships[ (string) $recurrence_id ] = array_map( 'intval', $comment_ids );
+		}
+
+		return $memberships;
+	}
+
+	/**
+	 * Re-attach comments to occurrence terms a rollback has to put back.
+	 *
+	 * The inverse of `memberships()`, and deliberately expressed through
+	 * `assign()` so the recreated term carries the slug `term_slug()` produces
+	 * rather than one this method composed itself. The recreated term is a new
+	 * `term_taxonomy_id`, which nothing observable depends on: every read
+	 * resolves by slug.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int                  $post_id     Series post ID the terms name.
+	 * @param array<string, int[]> $memberships Comment IDs, keyed by recurrence identifier.
+	 *
+	 * @return void
+	 */
+	public function restore_memberships( int $post_id, array $memberships ): void {
+		foreach ( $memberships as $recurrence_id => $comment_ids ) {
+			foreach ( $comment_ids as $comment_id ) {
+				$this->assign( (int) $comment_id, $post_id, (string) $recurrence_id );
+			}
+		}
+	}
+
+	/**
+	 * Drop the occurrence terms naming a post's occurrences.
+	 *
+	 * Used when a side of a split is demoted to a plain non-recurring event.
+	 * Deleting the term removes its `term_relationships` rows, which is exactly
+	 * what is wanted: the RSVPs stay on the same comments, on the same post, for
+	 * the same date, and become readable series-wide again, which on a
+	 * single-date event *is* the date. Nothing is migrated and nothing is
+	 * deleted; only the scoping that no longer has anything to scope goes away.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $post_id        Series post ID the terms name.
+	 * @param string[] $recurrence_ids Occurrence identifiers to unscope.
+	 *
+	 * @return int Terms deleted.
+	 */
+	public function detach_series( int $post_id, array $recurrence_ids ): int {
+		$deleted = 0;
+
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$term = get_term_by( 'slug', self::term_slug( $post_id, (string) $recurrence_id ), self::TAXONOMY );
+
+			// An occurrence nobody has RSVPd to has no term to drop.
+			if ( ! $term instanceof WP_Term ) {
+				continue;
+			}
+
+			wp_delete_term( $term->term_id, self::TAXONOMY );
+
+			++$deleted;
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * Count the RSVPs attached to a set of a post's occurrences.
+	 *
+	 * When a rule change would move or remove occurrences carrying RSVPs, the
+	 * organizer is **shown how many RSVPs are affected** before committing, and
+	 * the RSVPs are not silently migrated. This is the number that gets shown:
+	 * the approved RSVPs on the dates the candidate rule would remove.
+	 *
+	 * Counts comments rather than `term_taxonomy.count`, because that column
+	 * counts relationship rows and would include RSVPs whose comment has since
+	 * been trashed. An organizer told "4 RSVPs affected" when two of them are in
+	 * the trash has been told the wrong thing.
+	 *
+	 * `'status' => 'approve'` narrows it one step further, and does work the
+	 * trashed case does not: `WP_Comment_Query` reads an absent status as `all`,
+	 * which is `comment_approved IN ( '0', '1' )`. Trash and spam are already
+	 * out, but a **pending** RSVP is in. Guest responses arrive pending by
+	 * design (`Rsvp\Form::prepare_comment_data()` inserts them with
+	 * `comment_approved => 0`), so without this the count would include
+	 * responses the organizer has not accepted.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int      $post_id        Series post ID the terms name.
+	 * @param string[] $recurrence_ids Occurrence identifiers to count across.
+	 *
+	 * @return int The number of approved RSVPs on those occurrences.
+	 */
+	public function count_rsvps( int $post_id, array $recurrence_ids ): int {
+		$slugs = array();
+
+		foreach ( $recurrence_ids as $recurrence_id ) {
+			$slugs[] = self::term_slug( $post_id, (string) $recurrence_id );
+		}
+
+		if ( array() === $slugs ) {
+			return 0;
+		}
+
+		// One `get_terms()` for the whole candidate set rather than one
+		// `get_term_by()` per identifier. The editor calls this on every change
+		// to a rule, and a maximum-count reduction can remove hundreds of
+		// occurrences at once, so the per-identifier form made the cost of
+		// previewing a change proportional to how much the change removed.
+		$term_ids = get_terms(
+			array(
+				'taxonomy'   => self::TAXONOMY,
+				'slug'       => $slugs,
+				'fields'     => 'ids',
+				'hide_empty' => false,
+			)
+		);
+
+		if ( is_wp_error( $term_ids ) || empty( $term_ids ) ) {
+			return 0;
+		}
+
+		$comment_ids = get_objects_in_term( array_map( 'intval', $term_ids ), self::TAXONOMY );
+
+		if ( is_wp_error( $comment_ids ) || empty( $comment_ids ) ) {
+			return 0;
+		}
+
+		// The occurrence terms are the scope rather than `post_id`. Every slug
+		// `term_slug()` produces already names exactly one post, and a split
+		// moves `comment_post_ID` and the occurrence term together, so a post
+		// filter here would be redundant rather than corrective.
+		return (int) Rsvp_Query::get_instance()->get_rsvps(
+			array(
+				'comment__in' => array_map( 'intval', $comment_ids ),
+				'count'       => true,
+				'status'      => 'approve',
+			)
 		);
 	}
 }

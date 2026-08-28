@@ -260,4 +260,52 @@ trait Occurrence_Fixtures {
 			),
 		);
 	}
+
+	/**
+	 * Make the nth occurrence-table insert of the request fail at the database.
+	 *
+	 * The insert is redirected to a table name that does not exist, so
+	 * `$wpdb->query()` genuinely returns `false` the way a missing table, a
+	 * `max_allowed_packet` overflow or a read-only replica makes it return
+	 * `false` in production. No DDL is involved, so the surrounding
+	 * transaction is never committed and no fixture leaks into the rest of
+	 * the run.
+	 *
+	 * Counting the matching statements is what lets a caller choose *which*
+	 * projection of a multi-projection operation to break: a forward split
+	 * projects the forward post's rule first and the capped origin's second,
+	 * and its rollback projects the origin again third.
+	 *
+	 * The real table is left in place, so `maybe_install_missing_table()`
+	 * finds it present, declines to heal, and the failure propagates instead
+	 * of being retried.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $nth Which matching insert to break, counted from 1.
+	 *
+	 * @return callable The filter, for `remove_filter( 'query', ... )`.
+	 */
+	public function break_nth_occurrence_insert( int $nth ): callable {
+		global $wpdb;
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$filter = static function ( $query ) use ( $table, $nth, &$seen ) {
+			if ( str_starts_with( (string) $query, 'INSERT' ) && str_contains( (string) $query, $table ) ) {
+				++$seen;
+
+				if ( $nth === $seen ) {
+					return str_replace( $table, $table . '_gone', (string) $query );
+				}
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $filter );
+
+		return $filter;
+	}
 }

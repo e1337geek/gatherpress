@@ -1181,4 +1181,55 @@ class Test_Meta extends Base {
 		$this->assertSame( 3, Meta::sanitize_signed_int( '3' ) );
 		$this->assertSame( 0, Meta::sanitize_signed_int( '' ) );
 	}
+
+	/**
+	 * `remove_recurrence()` clears the blob and every mirror, synchronously.
+	 *
+	 * The mirrors are the half that matters: `Rule::from_post()` reads them, not
+	 * the blob, so a post whose blob is gone while its mirrors survive keeps
+	 * expanding a rule it no longer has.
+	 *
+	 * @covers ::remove_recurrence
+	 *
+	 * @return void
+	 */
+	public function test_remove_recurrence_clears_the_blob_and_the_mirrors(): void {
+		$post_id = $this->create_recurring_event(
+			array(
+				'frequency' => 'weekly',
+				'interval'  => 2,
+				'weekdays'  => array( 2, 4 ),
+				'end_type'  => 'count',
+				'count'     => 5,
+			)
+		);
+
+		Meta::get_instance()->set_recurrence( $post_id );
+
+		$this->assertInstanceOf(
+			Rule::class,
+			Rule::from_post( $post_id ),
+			'Failed to assert the fixture is recurring before the removal.'
+		);
+
+		Meta::get_instance()->remove_recurrence( $post_id );
+
+		$this->assertSame(
+			'',
+			(string) get_post_meta( $post_id, Meta::META_KEY, true ),
+			'Failed to assert the recurrence blob was deleted.'
+		);
+		$this->assertNull(
+			Rule::from_post( $post_id ),
+			'Failed to assert the mirrors were cleared. A surviving mirror keeps the deleted rule alive.'
+		);
+
+		foreach ( Meta::DERIVED_META_KEYS as $meta_key ) {
+			$this->assertSame(
+				'',
+				(string) get_post_meta( $post_id, $meta_key, true ),
+				sprintf( 'Failed to assert the %s mirror was cleared.', $meta_key )
+			);
+		}
+	}
 }

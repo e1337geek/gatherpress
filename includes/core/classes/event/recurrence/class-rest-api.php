@@ -26,6 +26,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Validate;
 use WP_Error;
+use WP_Post;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
@@ -116,6 +117,84 @@ final class Rest_Api {
 		return array(
 			$this->occurrences_route(),
 			$this->occurrence_status_route(),
+			$this->split_series_route(),
+			$this->recurrence_impact_route(),
+		);
+	}
+
+	/**
+	 * Get the forward-split route definition.
+	 *
+	 * Backs the "apply going forward" workflow. The permission callback
+	 * authorizes the post the request names, which is necessary and not
+	 * sufficient: the split resolves the occurrence across the whole series,
+	 * so the post it caps, moves rows off and rewrites can be a sibling the
+	 * caller was never checked against. The callback therefore resolves the
+	 * occurrence identity first and authorizes that exact owner before anything
+	 * is written.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array The route definition, including its `args` and `permission_callback`.
+	 */
+	protected function split_series_route(): array {
+		return array(
+			'route' => 'split-series',
+			'args'  => array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'callback'            => array( $this, 'split_series' ),
+				'permission_callback' => array( $this, 'has_edit_permission' ),
+				'args'                => array(
+					'post_id'       => array(
+						'required'          => true,
+						'type'              => 'integer',
+						'validate_callback' => array( Validate::class, 'event_post_id' ),
+					),
+					'recurrence_id' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'validate_callback' => static function ( $param ): bool {
+							return 1 === preg_match( '/^\d{8}T\d{6}$/', (string) $param );
+						},
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+			),
+		);
+	}
+
+	/**
+	 * Get the rule-impact route definition.
+	 *
+	 * Telling an organizer what a rule change would cost is a product
+	 * requirement, not an implementation detail: an organizer whose rule change
+	 * would strand RSVPs is told how many **before** they commit, and the RSVPs
+	 * are not migrated. This route answers that question without writing anything.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array The route definition, including its `args` and `permission_callback`.
+	 */
+	protected function recurrence_impact_route(): array {
+		return array(
+			'route' => 'recurrence-impact',
+			'args'  => array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'get_recurrence_impact' ),
+				'permission_callback' => array( $this, 'has_edit_permission' ),
+				'args'                => array(
+					'post_id'    => array(
+						'required'          => true,
+						'type'              => 'integer',
+						'validate_callback' => array( Validate::class, 'event_post_id' ),
+					),
+					'recurrence' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_text_field',
+					),
+				),
+			),
 		);
 	}
 
@@ -371,6 +450,127 @@ final class Rest_Api {
 					return current_user_can( 'edit_post', (int) $series_post_id );
 				}
 			)
+		);
+	}
+
+	/**
+	 * Split a series forward at one occurrence.
+	 *
+	 * Guarded by `Query::site_has_recurring_events()` ahead of the
+	 * splitter's own occurrence lookup, so a request against a site that has
+	 * never authored a recurring event is refused without querying the
+	 * occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_REST_Request $request Request carrying `post_id` and `recurrence_id`.
+	 *
+	 * @return WP_REST_Response|WP_Error The split result, or an error when nothing can be split.
+	 */
+	public function split_series( WP_REST_Request $request ) {
+		if ( ! Query::site_has_recurring_events() ) {
+			return new WP_Error(
+				'gatherpress_not_recurring',
+				__( 'This event does not carry a recurrence rule to split.', 'gatherpress' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$identity = Occurrence_Identity::resolve(
+			(int) $request->get_param( 'post_id' ),
+			(string) $request->get_param( 'recurrence_id' )
+		);
+
+		if ( null === $identity ) {
+			return new WP_Error(
+				'gatherpress_occurrence_not_found',
+				__( 'No occurrence matches the given post and recurrence ID.', 'gatherpress' ),
+				array( 'status' => 404 )
+			);
+		}
+
+		$refusal = $this->refuse_unauthorized_split( $identity->owner_post_id );
+
+		if ( null !== $refusal ) {
+			return $refusal;
+		}
+
+		$result = Splitter::get_instance()->split_identity( $identity );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return new WP_REST_Response( $result );
+	}
+
+	/**
+	 * Refuse a split the caller is not authorized to perform on the owning post.
+	 *
+	 * Three capabilities, because a split does three things. It edits the post
+	 * that owns the occurrence, which may be a sibling the request never named.
+	 * It creates a second post of the same type. And it creates that post at the
+	 * origin's own status, so an author who may not publish must not be able to
+	 * bring a published duplicate into existence.
+	 *
+	 * One message and one status for every refusal, so a caller who can edit one
+	 * fragment cannot learn from the wording whether an unauthorized sibling
+	 * exists.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $owner_post_id Post that actually owns the occurrence being split.
+	 *
+	 * @return WP_Error|null The refusal, or null when every capability is held.
+	 */
+	protected function refuse_unauthorized_split( int $owner_post_id ): ?WP_Error {
+		$owner_post = get_post( $owner_post_id );
+		$post_type  = $owner_post instanceof WP_Post ? get_post_type_object( $owner_post->post_type ) : null;
+		$allowed    = null !== $post_type
+			&& current_user_can( 'edit_post', $owner_post_id )
+			&& current_user_can( $post_type->cap->create_posts )
+			&& ( 'publish' !== $owner_post->post_status || current_user_can( $post_type->cap->publish_posts ) );
+
+		return $allowed ? null : new WP_Error(
+			'gatherpress_split_forbidden',
+			__( 'You are not allowed to split this event.', 'gatherpress' ),
+			array( 'status' => 403 )
+		);
+	}
+
+	/**
+	 * Report how many RSVPs a candidate rule would strand.
+	 *
+	 * Read-only. A candidate rule that does not decode into a valid `Rule` is
+	 * reported as affecting nothing rather than as an error: the editor calls
+	 * this while the organizer is mid-edit, and a rule that is momentarily
+	 * incomplete is not a failure to surface.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_REST_Request $request Request carrying `post_id` and the candidate `recurrence` blob.
+	 *
+	 * @return WP_REST_Response The stranded occurrence identifiers and their RSVP count.
+	 */
+	public function get_recurrence_impact( WP_REST_Request $request ): WP_REST_Response {
+		$empty = array(
+			'removed'    => array(),
+			'rsvp_count' => 0,
+		);
+
+		if ( ! Query::site_has_recurring_events() ) {
+			return new WP_REST_Response( $empty );
+		}
+
+		$values = json_decode( (string) $request->get_param( 'recurrence' ), true );
+		$rule   = is_array( $values ) ? Rule::from_array( $values ) : null;
+
+		if ( ! $rule instanceof Rule ) {
+			return new WP_REST_Response( $empty );
+		}
+
+		return new WP_REST_Response(
+			Splitter::get_instance()->rsvp_impact( (int) $request->get_param( 'post_id' ), $rule )
 		);
 	}
 

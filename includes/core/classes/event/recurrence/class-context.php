@@ -306,9 +306,11 @@ final class Context {
 	 * The memo answers "which post of this series owns this date", so anything
 	 * that changes that answer inside a request has to drop it.
 	 * `Occurrences::move_to_post()` is the write that changes it, and it calls
-	 * this. That method has no production caller on this branch, so the only
-	 * callers today are test processes, which project and re-project
-	 * occurrences inside one PHP lifetime and need the same escape hatch.
+	 * this. A forward split is what reaches that write in production, and
+	 * `Splitter` also calls this directly from both ends of the split: when it
+	 * settles caches after one lands, and again when it rolls a failed one
+	 * back. A test process additionally projects and re-projects occurrences
+	 * inside one PHP lifetime and needs the same escape hatch.
 	 *
 	 * @since 0.36.0
 	 *

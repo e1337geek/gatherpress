@@ -5561,46 +5561,250 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Collect the statements this request issued against the occurrence table.
+	 * `select_for_series()` orders its rows chronologically rather than trusting
+	 * the query plan.
 	 *
-	 * @since 0.36.0
+	 * More consequential than the same guarantee on `find_in_series()`, because
+	 * this ordering is what `Splitter::split_owned_series()` derives `$index`
+	 * from, and `$index` decides which occurrences stay behind, how the origin
+	 * rule is capped, and whether either side demotes to a plain event. An
+	 * unstable order here does not return the wrong row; it partitions the
+	 * series at the wrong date.
 	 *
-	 * @param int $offset Index into `$wpdb->queries` to start reading from.
+	 * The behavioral half cannot fail on InnoDB today and is not pretended
+	 * otherwise: the table's clustered primary key is
+	 * `(series_post_id, recurrence_id)`, and a `Ymd\THis` identifier sorts
+	 * lexically in chronological order, so a primary-key scan happens to answer
+	 * correctly with the clause deleted (measured, not assumed). The ordering is
+	 * a guarantee against a future query plan rather than against today's
+	 * observed one, so the statement itself is pinned. Otherwise the guarantee
+	 * is verified by nothing.
 	 *
-	 * @return array<int, string> The matching statements, in the order they ran.
+	 * @covers ::select_for_series
+	 *
+	 * @return void
 	 */
-	protected function occurrence_statements_since( int $offset ): array {
-		global $wpdb;
+	public function test_select_for_series_orders_by_start_rather_than_by_query_plan(): void {
+		$post_id = $this->create_and_project();
 
-		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$statements = array();
+		$capture    = static function ( string $query ) use ( &$statements ): string {
+			$statements[] = $query;
 
-		return array_values(
-			array_map(
-				static fn( array $query ): string => (string) $query[0],
-				array_filter(
-					array_slice( $wpdb->queries, $offset ),
-					static fn( array $query ): bool => str_contains( (string) $query[0], $table )
-				)
-			)
+			return $query;
+		};
+
+		add_filter( 'query', $capture );
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+
+		remove_filter( 'query', $capture );
+
+		$starts = array_map( 'strval', wp_list_pluck( $rows, 'datetime_start_gmt' ) );
+		$sorted = $starts;
+		sort( $sorted );
+
+		$this->assertNotEmpty( $starts, 'Failed to arrange a projected series to read back.' );
+		$this->assertSame(
+			$sorted,
+			$starts,
+			'Failed to assert the rows come back in ascending start order.'
+		);
+		$this->assertNotEmpty(
+			array_filter(
+				$statements,
+				static function ( string $query ): bool {
+					return str_contains( $query, 'ORDER BY datetime_start_gmt ASC' );
+				}
+			),
+			'Failed to assert select_for_series() orders its rows rather than trusting the query plan.'
 		);
 	}
 
 	/**
-	 * Count the statements of one kind among a set of collected statements.
+	 * Direct coverage for the empty-candidate bail of `discard_sibling_owned()`.
 	 *
-	 * @since 0.36.0
+	 * The helper's four return paths are invoked directly because xdebug does
+	 * not trace a protected helper called through a short same-class delegation
+	 * from `run_projection()` (see the "Extracted same-class helpers" rule in
+	 * `AGENTS.md`), even though the stale-re-persist regression in
+	 * `Test_Splitter` drives the filtering path through a real save.
 	 *
-	 * @param array<int, string> $statements Statements to count within.
-	 * @param string             $keyword    Leading SQL keyword to count.
+	 * @covers ::discard_sibling_owned
 	 *
-	 * @return int How many statements start with the keyword.
+	 * @return void
 	 */
-	protected function count_statements( array $statements, string $keyword ): int {
-		return count(
-			array_filter(
-				$statements,
-				static fn( string $sql ): bool => str_starts_with( ltrim( $sql ), $keyword )
+	public function test_discard_sibling_owned_returns_empty_candidates_unchanged(): void {
+		$this->assertSame(
+			array(),
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'discard_sibling_owned',
+				array( 123, array() )
+			),
+			'An empty candidate set must come back empty without a membership read.'
+		);
+	}
+
+	/**
+	 * A single-post series pays no sibling query and loses no rows.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_is_a_no_op_for_a_single_post_series(): void {
+		$post_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$rows    = array( array( 'recurrence_id' => '20260903T180000' ) );
+
+		$this->assertSame(
+			$rows,
+			Utility::invoke_hidden_method(
+				Occurrences::get_instance(),
+				'discard_sibling_owned',
+				array( $post_id, $rows )
+			),
+			'A series of one post has no sibling that could own anything.'
+		);
+	}
+
+	/**
+	 * A sibling that owns no rows removes nothing.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_is_a_no_op_when_the_sibling_owns_nothing(): void {
+		$post_id    = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$sibling_id = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$rows       = array( array( 'recurrence_id' => '20260903T180000' ) );
+		$widen      = static function () use ( $post_id, $sibling_id ) {
+			return array( $post_id, $sibling_id );
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $widen );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'discard_sibling_owned',
+			array( $post_id, $rows )
+		);
+
+		remove_filter( 'gatherpress_series_post_ids', $widen );
+
+		$this->assertSame(
+			$rows,
+			$result,
+			'A sibling owning no occurrence rows must not cost the projection anything.'
+		);
+	}
+
+	/**
+	 * Only the rows a sibling owns are dropped; every other candidate survives.
+	 *
+	 * @covers ::discard_sibling_owned
+	 *
+	 * @return void
+	 */
+	public function test_discard_sibling_owned_drops_only_the_rows_a_sibling_owns(): void {
+		$sibling_id = $this->create_recurring_event( self::WEEKLY_RULE );
+
+		Meta::get_instance()->set_recurrence( $sibling_id );
+		Occurrences::get_instance()->project( $sibling_id );
+
+		$owned = Occurrences::get_instance()->select_for_series( array( $sibling_id ) );
+
+		$this->assertNotEmpty( $owned, 'Fixture setup: the sibling must own projected rows.' );
+
+		$post_id  = $this->factory->post->create( array( 'post_type' => Event::POST_TYPE ) );
+		$taken    = (string) $owned[0]['recurrence_id'];
+		$free     = '19990101T000000';
+		$rows     = array(
+			array( 'recurrence_id' => $taken ),
+			array( 'recurrence_id' => $free ),
+		);
+		$expected = array( array( 'recurrence_id' => $free ) );
+		$widen    = static function () use ( $post_id, $sibling_id ) {
+			return array( $post_id, $sibling_id );
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $widen );
+
+		$result = Utility::invoke_hidden_method(
+			Occurrences::get_instance(),
+			'discard_sibling_owned',
+			array( $post_id, $rows )
+		);
+
+		remove_filter( 'gatherpress_series_post_ids', $widen );
+
+		$this->assertSame(
+			$expected,
+			$result,
+			'Exactly the sibling-owned identifier must be dropped, and nothing else.'
+		);
+	}
+	/**
+	 * Consuming the queue entry must not consume the cleanup it carries.
+	 *
+	 * `resolve_pending_projection()` hands `run_projection()` the
+	 * `$was_recurring` flag captured at queue time, and that flag is what
+	 * drives the removal-cleanup arm for a blob deleted by a writer that never
+	 * fires the save hook. Dropping the entry would lose that signal if the
+	 * pass that drops it did less. It does not: `project()` runs with
+	 * `$cleanup_when_not_recurring` hard-coded to `true`, the strongest value
+	 * the queue can hold, so the rows of a series whose blob is deleted in the
+	 * same request as a datetime write are still cleared, in one delete rather
+	 * than two.
+	 *
+	 * @covers ::project
+	 * @covers ::maybe_queue_projection
+	 * @covers ::resolve_pending_projection
+	 *
+	 * @return void
+	 */
+	public function test_blob_deleted_beside_a_datetime_write_still_clears_its_rows(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		$this->assertCount( 5, Occurrences::get_instance()->select_for_series( array( $post_id ) ) );
+
+		$offset = count( $wpdb->queries );
+
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => 'America/Chicago',
+				)
 			)
+		);
+		delete_post_meta( $post_id, Meta::META_KEY );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
+
+		$statements = $this->occurrence_statements_since( $offset );
+
+		$this->assertCount(
+			0,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that the removed rule left no orphaned occurrence rows.'
+		);
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'DELETE' ),
+			'Failed to assert that the cleanup ran once rather than once per shutdown pass.'
+		);
+		$this->assertSame(
+			0,
+			$this->count_statements( $statements, 'INSERT' ),
+			'Failed to assert that a series with no rule wrote no occurrence rows.'
 		);
 	}
 
@@ -5672,65 +5876,46 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
-	 * Consuming the queue entry must not consume the cleanup it carries.
+	 * Count the statements of one kind among a set of collected statements.
 	 *
-	 * `resolve_pending_projection()` hands `run_projection()` the
-	 * `$was_recurring` flag captured at queue time, and that flag is what
-	 * drives the removal-cleanup arm for a blob deleted by a writer that never
-	 * fires the save hook. Dropping the entry would lose that signal if the
-	 * pass that drops it did less. It does not: `project()` runs with
-	 * `$cleanup_when_not_recurring` hard-coded to `true`, the strongest value
-	 * the queue can hold, so the rows of a series whose blob is deleted in the
-	 * same request as a datetime write are still cleared, in one delete rather
-	 * than two.
+	 * @since 0.36.0
 	 *
-	 * @covers ::project
-	 * @covers ::maybe_queue_projection
-	 * @covers ::resolve_pending_projection
+	 * @param array<int, string> $statements Statements to count within.
+	 * @param string             $keyword    Leading SQL keyword to count.
 	 *
-	 * @return void
+	 * @return int How many statements start with the keyword.
 	 */
-	public function test_blob_deleted_beside_a_datetime_write_still_clears_its_rows(): void {
-		global $wpdb;
-
-		$post_id = $this->create_and_project();
-
-		$this->assertCount( 5, Occurrences::get_instance()->select_for_series( array( $post_id ) ) );
-
-		$offset = count( $wpdb->queries );
-
-		update_post_meta(
-			$post_id,
-			'gatherpress_datetime',
-			wp_json_encode(
-				array(
-					'dateTimeStart' => $this->reference_anchor_start,
-					'dateTimeEnd'   => $this->reference_anchor_end,
-					'timezone'      => 'America/Chicago',
-				)
+	protected function count_statements( array $statements, string $keyword ): int {
+		return count(
+			array_filter(
+				$statements,
+				static fn( string $sql ): bool => str_starts_with( ltrim( $sql ), $keyword )
 			)
 		);
-		delete_post_meta( $post_id, Meta::META_KEY );
+	}
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
-		do_action( 'shutdown' );
+	/**
+	 * Collect the statements this request issued against the occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $offset Index into `$wpdb->queries` to start reading from.
+	 *
+	 * @return array<int, string> The matching statements, in the order they ran.
+	 */
+	protected function occurrence_statements_since( int $offset ): array {
+		global $wpdb;
 
-		$statements = $this->occurrence_statements_since( $offset );
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
 
-		$this->assertCount(
-			0,
-			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
-			'Failed to assert that the removed rule left no orphaned occurrence rows.'
-		);
-		$this->assertSame(
-			1,
-			$this->count_statements( $statements, 'DELETE' ),
-			'Failed to assert that the cleanup ran once rather than once per shutdown pass.'
-		);
-		$this->assertSame(
-			0,
-			$this->count_statements( $statements, 'INSERT' ),
-			'Failed to assert that a series with no rule wrote no occurrence rows.'
+		return array_values(
+			array_map(
+				static fn( array $query ): string => (string) $query[0],
+				array_filter(
+					array_slice( $wpdb->queries, $offset ),
+					static fn( array $query ): bool => str_contains( (string) $query[0], $table )
+				)
+			)
 		);
 	}
 	/**
