@@ -23,6 +23,7 @@ defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use Exception;
 use GatherPress\Core\Event;
+use GatherPress\Core\Event\Recurrence\Context;
 
 /**
  * Per-event calendar wrapper.
@@ -378,7 +379,17 @@ final class Calendar {
 			);
 		}
 
-		$post_url = get_permalink( $post );
+		// Read the *series* permalink rather than the filtered one. The
+		// endpoint URL is a path segment appended to the post's permalink, and
+		// `Context::permalink()` answers with the occurrence's URL whenever one
+		// is in play, both during a loop iteration and on an occurrence's own
+		// page. Appending `ical/` to that produces
+		// `/event/my-series/20260903T180000/ical/`, which matches no rewrite
+		// rule and 404s (measured). The endpoint serves the series today;
+		// giving each occurrence its own export is a separate piece of work,
+		// and when it lands it belongs in the rewrite rule rather than in a
+		// concatenation here.
+		$post_url = (string) Context::get_instance()->series_permalink( $post->ID );
 
 		// `get_permalink()` returns a query-string permalink either when the
 		// site has no permalink structure at all, or when the rewrite rules
