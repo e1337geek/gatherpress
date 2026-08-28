@@ -1,0 +1,332 @@
+<?php
+/**
+ * Occurrence integration with `WP_Query`.
+ *
+ * Short-circuits entirely when the site has no recurring events: an existing
+ * site that never authors a recurring event must produce byte-identical SQL and
+ * the same query count as before.
+ *
+ * The join is a `LEFT JOIN`, never an `INNER JOIN`. A non-recurring event has
+ * no occurrence row, so an inner join would delete it from every list. The
+ * `status = 'scheduled'` predicate lives in the join condition rather than the
+ * `WHERE`, and ordering and range predicates use
+ * `COALESCE( o.datetime_start_gmt, {events}.datetime_start_gmt )`, which is not
+ * sargable and will filesort. That is the accepted trade.
+ *
+ * @package GatherPress\Core\Event\Recurrence
+ * @since 0.36.0
+ */
+
+namespace GatherPress\Core\Event\Recurrence;
+
+// Exit if accessed directly.
+defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
+
+use GatherPress\Core\Traits\Singleton;
+use WP_Post;
+use WP_Query;
+
+/**
+ * Class Query.
+ *
+ * Singleton owning the occurrence-aware clause and result filters.
+ *
+ * @since 0.36.0
+ */
+final class Query {
+
+	/**
+	 * Enforces a single instance of this class.
+	 */
+	use Singleton;
+
+	/**
+	 * Autoloaded option recording whether the site has any recurring events.
+	 *
+	 * Recomputed authoritatively from storage on every lifecycle event. Never a
+	 * query on the read path, and never an incrementing counter.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const HAS_RECURRING_OPTION = 'gatherpress_has_recurring_events';
+
+	/**
+	 * Read-only derived mirror meta key holding a rule's frequency.
+	 *
+	 * `refresh_has_recurring_events()` reads this key rather than the canonical
+	 * `Meta::META_KEY` blob, because this mirror is written by the rule-meta
+	 * derivation in `Meta::set_recurrence()` (via `Meta::write_mirrors()` in
+	 * `class-meta.php`), which runs only after the canonical blob has landed
+	 * and decoded into a valid, expandable rule. The lifecycle hooks below
+	 * watch both keys for exactly this reason: a write to the canonical key
+	 * alone can fire before this mirror exists.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const FREQUENCY_META_KEY = 'gatherpress_recurrence_frequency';
+
+	/**
+	 * Post statuses that never count as a live recurring event.
+	 *
+	 * WordPress retains post meta on trash, so a status-blind recompute keeps
+	 * counting a trashed series and the sweep never learns the last recurrence
+	 * is gone. Trash and auto-draft are excluded because neither is a live
+	 * authoring state. Every other status, drafts and custom statuses
+	 * included, deliberately stays active: their projections are still
+	 * maintained by the sweep, and the read path applies its own `publish`
+	 * filter separately.
+	 *
+	 * Shared with `Occurrences::select_series_needing_top_up()`, so the flag
+	 * recompute and the top-up candidate selector always agree on what counts
+	 * as live.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	const INACTIVE_POST_STATUSES = array( 'trash', 'auto-draft' );
+
+	/**
+	 * Class constructor.
+	 *
+	 * This method initializes the object and sets up necessary hooks.
+	 *
+	 * @since 0.36.0
+	 */
+	protected function __construct() {
+		$this->setup_hooks();
+	}
+
+	/**
+	 * Set up hooks for various purposes.
+	 *
+	 * Every lifecycle path that can change whether any post carries a
+	 * recurrence rule recomputes the `HAS_RECURRING_OPTION` flag from storage.
+	 * `transition_post_status` and `deleted_post` are scoped to posts whose
+	 * post type declares `gatherpress-event-date` support, so a WXR import or
+	 * an editor save does not pay a `wp_postmeta` query for every attachment,
+	 * revision, and unrelated post type it touches. `import_end` already
+	 * sweeps once per import for the bulk case. The three meta hooks watch
+	 * both `Meta::META_KEY` and `FREQUENCY_META_KEY`, because the two are
+	 * written by separate statements: the save request stores the canonical
+	 * blob, and `Meta::set_recurrence()` then derives the mirror from it.
+	 * Either write can be the one that completes a not-yet-recurring or
+	 * no-longer-recurring transition.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function setup_hooks(): void {
+		add_action(
+			'transition_post_status',
+			array( $this, 'maybe_refresh_has_recurring_events_for_transition' ),
+			10,
+			3
+		);
+		add_action( 'deleted_post', array( $this, 'maybe_refresh_has_recurring_events_for_deleted_post' ), 10, 2 );
+		add_action( 'added_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
+		add_action( 'updated_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
+		add_action( 'deleted_post_meta', array( $this, 'maybe_refresh_has_recurring_events_for_meta' ), 10, 3 );
+		add_action( 'import_end', array( $this, 'refresh_has_recurring_events' ) );
+	}
+
+	/**
+	 * Refresh the has-recurring-events flag when a supported post's status changes.
+	 *
+	 * Covers publish, trash, untrash and draft transitions in one hook. Scoped
+	 * to post types declaring `gatherpress-event-date` support, so attachments,
+	 * revisions, and unrelated post types never trigger the recompute query.
+	 *
+	 * `$new_status` and `$old_status` are required by WordPress'
+	 * `transition_post_status` signature and are deliberately unread: the flag
+	 * is recomputed from the database, so which way the status moved does not
+	 * change the answer.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 *
+	 * @param string  $new_status New post status.
+	 * @param string  $old_status Old post status.
+	 * @param WP_Post $post       Post whose status changed.
+	 *
+	 * @return void
+	 */
+	public function maybe_refresh_has_recurring_events_for_transition( $new_status, $old_status, WP_Post $post ): void {
+		if ( post_type_supports( $post->post_type, 'gatherpress-event-date' ) ) {
+			self::refresh_has_recurring_events();
+		}
+	}
+
+	/**
+	 * Refresh the has-recurring-events flag when a supported post is hard-deleted.
+	 *
+	 * Scoped the same way as `maybe_refresh_has_recurring_events_for_transition()`.
+	 *
+	 * `$post_id` is required by WordPress' `deleted_post` signature and is
+	 * deliberately unread: the row is already gone by the time this runs, so
+	 * the flag is recomputed rather than adjusted for one post.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 *
+	 * @param int     $post_id Post ID that was deleted.
+	 * @param WP_Post $post    The deleted post.
+	 *
+	 * @return void
+	 */
+	public function maybe_refresh_has_recurring_events_for_deleted_post( $post_id, WP_Post $post ): void {
+		if ( post_type_supports( $post->post_type, 'gatherpress-event-date' ) ) {
+			self::refresh_has_recurring_events();
+		}
+	}
+
+	/**
+	 * Refresh the has-recurring-events flag when the recurrence rule meta changes.
+	 *
+	 * Filters `added_post_meta`, `updated_post_meta` and `deleted_post_meta` down
+	 * to the canonical `Meta::META_KEY` blob and the `FREQUENCY_META_KEY` mirror,
+	 * so writes to unrelated meta never trigger the recompute query, and a write
+	 * to either half of the pair still catches a transition the other half's
+	 * write alone could miss.
+	 *
+	 * `$meta_id` and `$post_id` are required by WordPress' `added_post_meta`,
+	 * `updated_post_meta` and `deleted_post_meta` signatures and are
+	 * deliberately unread: the flag is a site-wide recompute, so the key that
+	 * changed decides whether to run and the post it belongs to does not.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 *
+	 * @param int|int[] $meta_id  Meta ID, or an array of meta IDs for `deleted_post_meta`.
+	 * @param int       $post_id  Post ID the meta belongs to.
+	 * @param string    $meta_key Meta key that changed.
+	 *
+	 * @return void
+	 */
+	public function maybe_refresh_has_recurring_events_for_meta( $meta_id, $post_id, $meta_key = '' ): void {
+		if ( in_array( $meta_key, array( Meta::META_KEY, self::FREQUENCY_META_KEY ), true ) ) {
+			self::refresh_has_recurring_events();
+		}
+	}
+
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
+	/**
+	 * Join the occurrence table into an event query's clauses.
+	 *
+	 * A frozen-contract stub: it returns the clauses untouched
+	 * unconditionally, and nothing registers it yet. The implementing stack
+	 * part will register it on `posts_clauses` at priority 11, after
+	 * `Event\Query`'s own priority-10 filters, and will return the clauses
+	 * untouched when the site has no recurring events.
+	 *
+	 * `$query` is supplied by WordPress' `posts_clauses` filter signature and is
+	 * unread while the stub hands the clauses straight back.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 *
+	 * @param array    $pieces Query clauses keyed as `WP_Query` supplies them.
+	 * @param WP_Query $query  Query being filtered.
+	 *
+	 * @return array The clauses, unmodified by this stub.
+	 */
+	public function expand_event_clauses( array $pieces, WP_Query $query ): array {
+		return $pieces;
+	}
+	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
+
+	// phpcs:disable Generic.CodeAnalysis.UnusedFunctionParameter -- Unimplemented stub; delete with the body.
+	/**
+	 * Stamp occurrence identity onto a query's results.
+	 *
+	 * A frozen-contract stub: it returns the results untouched, and nothing
+	 * registers it yet. The implementing stack part will register it on
+	 * `the_posts` at priority 10 and will handle both a `'fields' => 'ids'`
+	 * result set and a full `WP_Post` result set, because the plugin's own
+	 * read API requests IDs.
+	 *
+	 * `$query` is supplied by WordPress' `the_posts` filter signature and is
+	 * unread while the stub hands the results straight back.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+	 *
+	 * @param array    $posts Results, either integers or `WP_Post` objects.
+	 * @param WP_Query $query Query being filtered.
+	 *
+	 * @return array The results, unmodified by this stub.
+	 */
+	public function attach_occurrences( array $posts, WP_Query $query ): array {
+		return $posts;
+	}
+	// phpcs:enable Generic.CodeAnalysis.UnusedFunctionParameter
+
+	/**
+	 * Report whether the site has any recurring events.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when at least one event carries a recurrence rule.
+	 */
+	public static function site_has_recurring_events(): bool {
+		return '1' === get_option( self::HAS_RECURRING_OPTION, '0' );
+	}
+
+	/**
+	 * Recompute the has-recurring-events option from storage.
+	 *
+	 * Authoritative rather than incremental: the option is derived from what is
+	 * stored, so a lost or duplicated lifecycle event cannot desynchronize it.
+	 * Reads the rule meta rather than the occurrence table, because the meta is
+	 * written the moment a rule is saved while the occurrence table is
+	 * populated by a separate projection step. Reading the table here could
+	 * observe a rule before its occurrences are projected and write a false
+	 * `'0'`, which would hide every recurring event from every query on the
+	 * site.
+	 *
+	 * The meta count is joined to `wp_posts` and scoped away from
+	 * `INACTIVE_POST_STATUSES`, because WordPress keeps post meta on trash:
+	 * without the join, trashing the site's last recurring event leaves the
+	 * frequency mirror in `wp_postmeta` and the flag stuck at `'1'` forever.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public static function refresh_has_recurring_events(): void {
+		global $wpdb;
+
+		$status_placeholders = implode( ', ', array_fill( 0, count( self::INACTIVE_POST_STATUSES ), '%s' ) );
+
+		$sql = 'SELECT 1 FROM %i frequency_meta'
+			. ' INNER JOIN %i live_post ON live_post.ID = frequency_meta.post_id'
+			. " WHERE frequency_meta.meta_key = %s AND frequency_meta.meta_value != ''"
+			. " AND live_post.post_status NOT IN ( {$status_placeholders} )"
+			. ' LIMIT 1';
+
+		// A lifecycle-triggered recompute, not a read path query; caching it
+		// would only cache the flag it is itself in the process of producing.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from %i/%s placeholders only.
+		$has = (bool) $wpdb->get_var(
+			$wpdb->prepare(
+				$sql,
+				array_merge(
+					array( $wpdb->postmeta, $wpdb->posts, self::FREQUENCY_META_KEY ),
+					self::INACTIVE_POST_STATUSES
+				)
+			)
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		update_option( self::HAS_RECURRING_OPTION, $has ? '1' : '0', true );
+	}
+}
