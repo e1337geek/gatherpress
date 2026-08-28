@@ -224,6 +224,22 @@ final class Occurrences {
 	protected bool $table_heal_attempted = false;
 
 	/**
+	 * Whether the occurrence table exists, memoized per fully-qualified table name.
+	 *
+	 * Keyed by the resolved table name rather than held in a single slot, so
+	 * `switch_to_blog()` re-decides for the blog it switched to instead of
+	 * carrying the previous blog's answer across with it. The memo is
+	 * request-scoped on purpose: a persistent cache would have to be
+	 * invalidated from every path that can create the table, including ones
+	 * outside this plugin, and a stale `true` reintroduces exactly the failure
+	 * it exists to prevent.
+	 *
+	 * @since 0.36.0
+	 * @var array<string, bool>
+	 */
+	protected array $table_exists = array();
+
+	/**
 	 * Class constructor.
 	 *
 	 * Bootstraps `Projection_Cron` here rather than from `Recurrence\Setup`:
@@ -579,7 +595,11 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
 
-		$refs = array_map( array( $this, 'row_to_ref' ), null === $rows ? array() : $rows );
+		// No `null` guard: `get_results()` with `ARRAY_A` returns an array on
+		// every path that runs a query, including a failed one. The only
+		// `null` it can produce is for an empty query string. A guard here
+		// would be a branch claiming to handle a failure it cannot observe.
+		$refs = array_map( array( $this, 'row_to_ref' ), $rows );
 
 		// Lazy repair only runs off an upcoming-events read. A past-only
 		// read has nothing forward-looking to repair, and gating
@@ -1704,7 +1724,84 @@ final class Occurrences {
 	}
 
 	/**
+	 * Report whether the occurrence table exists on the current blog.
+	 *
+	 * Table creation is lazy per blog: `Setup::create_tables()` runs on
+	 * network activation and on `wp_initialize_site`, and otherwise only via
+	 * `check_plugin_version()` on `admin_init` for the current site. An
+	 * existing network upgrading in place therefore has subsites whose
+	 * occurrence table does not exist until someone visits their wp-admin.
+	 *
+	 * This has to be asked before the SQL is built rather than handled after
+	 * it runs, because there is nothing to handle: `$wpdb` swallows a
+	 * missing-table error rather than throwing, and `get_results()` returns
+	 * `array()` rather than `null`, so a failed statement is indistinguishable
+	 * from an empty result at every call site.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return bool True when the current blog has the occurrence table.
+	 */
+	public function table_exists(): bool {
+		global $wpdb;
+
+		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+
+		if ( ! isset( $this->table_exists[ $table ] ) ) {
+			// A schema probe, not a read-path data query; there is no object
+			// cache entry that could answer it and no row for one to hold.
+			//
+			// `esc_like()` and the strict comparison are both load-bearing, and
+			// this table name is the worst case for leaving them out: every
+			// `_` in `{prefix}gatherpress_event_occurrences` is a
+			// single-character `LIKE` wildcard, so an unescaped pattern is
+			// satisfied by any lookalike table. The probe would memoize `true`,
+			// the occurrence join would run against a table that does not
+			// exist, and ordinary published events would disappear. That is the
+			// exact degradation this method exists to prevent. Escaping alone is not
+			// enough on principle: `SHOW TABLES` returns the matched *name*, so
+			// the answer is only trustworthy once that name is compared with
+			// the one asked about.
+			// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$found = $wpdb->get_var(
+				$wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) )
+			);
+			// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+			$this->table_exists[ $table ] = ( $table === $found );
+		}
+
+		return $this->table_exists[ $table ];
+	}
+
+	/**
+	 * Discard the memoized table-existence answers.
+	 *
+	 * Called by `Setup::create_tables()`, which is the one path that can turn
+	 * a `false` into a `true` inside a single request.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function forget_table_exists(): void {
+		$this->table_exists = array();
+	}
+
+	/**
 	 * Read one occurrence row by its composite key.
+	 *
+	 * A blog whose table has not been created yet answers "no such row", which
+	 * is the same answer the statement would produce and the one every caller
+	 * already handles: `Rewrite::parse_request()` 404s on it, and
+	 * `Context::set()` leaves the request without occurrence context. Both are
+	 * gated on the site-wide recurring-events flag, which says nothing about
+	 * whether this blog's table exists, so the probe is what keeps a
+	 * lazily-created table from writing a database error into the log, and into
+	 * the page wherever `WP_DEBUG_DISPLAY` is on, once per request carrying an
+	 * occurrence segment. The probe is the same memoized one
+	 * `Query::expand_event_clauses()` guards the list path with, so a request
+	 * that renders both pays for it once.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1715,6 +1812,10 @@ final class Occurrences {
 	 */
 	public function get( int $post_id, string $recurrence_id ): ?array {
 		global $wpdb;
+
+		if ( ! $this->table_exists() ) {
+			return null;
+		}
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
@@ -1766,7 +1867,11 @@ final class Occurrences {
 	public function select_for_series( array $post_ids, array $args = array() ): array {
 		global $wpdb;
 
-		if ( array() === $post_ids ) {
+		// The empty result a missing table already degrades to, reached without
+		// the statement that writes a database error on the way there. See
+		// `get()` for why the flag the request paths gate on is not an answer to
+		// this question.
+		if ( array() === $post_ids || ! $this->table_exists() ) {
 			return array();
 		}
 
@@ -1807,7 +1912,10 @@ final class Occurrences {
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 
-		return null === $rows ? array() : $rows;
+		// See `select_by_horizon()`: `get_results()` with `ARRAY_A` never
+		// returns `null` for a non-empty query, so there is no failure value
+		// to branch on here either.
+		return $rows;
 	}
 
 	/**

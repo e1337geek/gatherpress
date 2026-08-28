@@ -648,6 +648,18 @@ class Test_Schema extends Base {
 				'priority' => 10,
 				'callback' => array( $instance, 'refresh_has_recurring_events' ),
 			),
+			array(
+				'type'     => 'filter',
+				'name'     => 'posts_clauses',
+				'priority' => 11,
+				'callback' => array( $instance, 'expand_event_clauses' ),
+			),
+			array(
+				'type'     => 'filter',
+				'name'     => 'the_posts',
+				'priority' => 10,
+				'callback' => array( $instance, 'attach_occurrences' ),
+			),
 		);
 
 		$this->assert_hooks( $hooks, $instance );

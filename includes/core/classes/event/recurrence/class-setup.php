@@ -65,6 +65,7 @@ final class Setup {
 		Occurrences::get_instance();
 		Query::get_instance();
 		Rest_Api::get_instance();
+		Rewrite::get_instance();
 		Rsvp_Occurrence::get_instance();
 		Series::get_instance();
 	}
