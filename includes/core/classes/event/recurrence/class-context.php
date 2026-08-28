@@ -303,10 +303,12 @@ final class Context {
 	/**
 	 * Discard the request-scoped resolution memo.
 	 *
-	 * Production never needs this, since the memo lives and dies with the
-	 * request. A test process projects and re-projects occurrences inside one
-	 * PHP lifetime, so it needs a way to tell the memo that storage moved under
-	 * it.
+	 * The memo answers "which post of this series owns this date", so anything
+	 * that changes that answer inside a request has to drop it.
+	 * `Occurrences::move_to_post()` is the write that changes it, and it calls
+	 * this. That method has no production caller on this branch, so the only
+	 * callers today are test processes, which project and re-project
+	 * occurrences inside one PHP lifetime and need the same escape hatch.
 	 *
 	 * @since 0.36.0
 	 *

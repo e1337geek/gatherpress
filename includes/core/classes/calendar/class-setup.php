@@ -21,6 +21,7 @@ namespace GatherPress\Core\Calendar;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use GatherPress\Core\Event\Query;
+use GatherPress\Core\Event\Recurrence\Context;
 use GatherPress\Core\Shadow_Source;
 use GatherPress\Core\Traits\Singleton;
 use GatherPress\Core\Utility;
@@ -48,6 +49,22 @@ final class Setup {
 
 	const QUERY_VAR = 'gatherpress_calendar';
 	const ICAL_SLUG = 'ical'; // Hardcoded ical slug — must not be translated or renamed.
+
+	/**
+	 * Endpoint slugs that serve an iCalendar body rather than an off-site redirect.
+	 *
+	 * The single source of truth for "this request is asking for `.ics`", read
+	 * both here and by `Recurrence\Rewrite::maybe_resolve_bare_series()`, which
+	 * must not narrow a series export to one date. The Google and Yahoo
+	 * redirects are deliberately absent: they are single-datetime query strings
+	 * that cannot express recurrence, and they are accepted carrying whatever
+	 * occurrence the request resolved to.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @var string[]
+	 */
+	const ICS_SLUGS = array( self::ICAL_SLUG, 'outlook' );
 
 	/**
 	 * Class constructor.
@@ -141,12 +158,18 @@ final class Setup {
 			self::QUERY_VAR,
 			$post_type
 		) )->init();
+		$ics_templates = array_map(
+			fn( string $slug ): Template => new Template( $slug, array( $this, 'get_ical_file_template' ) ),
+			self::ICS_SLUGS
+		);
+
 		( new Post_Type_Single(
-			array(
-				new Template( self::ICAL_SLUG, array( $this, 'get_ical_file_template' ) ),
-				new Template( 'outlook', array( $this, 'get_ical_file_template' ) ),
-				new Redirect( 'google-calendar', array( $this, 'queried_event_google_url' ) ),
-				new Redirect( 'yahoo-calendar', array( $this, 'queried_event_yahoo_url' ) ),
+			array_merge(
+				$ics_templates,
+				array(
+					new Redirect( 'google-calendar', array( $this, 'queried_event_google_url' ) ),
+					new Redirect( 'yahoo-calendar', array( $this, 'queried_event_yahoo_url' ) ),
+				)
 			),
 			self::QUERY_VAR,
 			$post_type
@@ -639,17 +662,30 @@ final class Setup {
 	 * Wrap iCal `BEGIN:VEVENT` blocks in a `BEGIN:VCALENDAR` envelope.
 	 *
 	 * Generates the `BEGIN:VCALENDAR` / `END:VCALENDAR` lines, the `VERSION`
-	 * header, and the `PRODID` header (which includes the blog title and the
-	 * current locale for proper calendar identification).
+	 * header, the `PRODID` header (which includes the blog title and the
+	 * current locale for proper calendar identification), and a `VTIMEZONE`
+	 * for every named timezone the components reference.
+	 *
+	 * The timezone definitions are not decoration. GatherPress emits
+	 * `DTSTART;TZID=...` wherever an event carries a named timezone, and
+	 * RFC 5545 section 3.2.19 requires that such a parameter refer to a
+	 * `VTIMEZONE` in the same `VCALENDAR`, so the definitions are what keep
+	 * the timezone-qualified start valid. They are derived from the assembled
+	 * component text rather than from the events, so a `TZID` cannot be emitted
+	 * without its definition following it. A fixed-offset event contributes no
+	 * `TZID` and therefore no definition.
 	 *
 	 * @since 0.34.0
+	 *
+	 * @since 0.36.0 Emits a `VTIMEZONE` per distinct referenced timezone.
 	 *
 	 * @param string $calendar_data The events to be included in the iCal file.
 	 *
 	 * @return string               The complete iCal data wrapped in the VCALENDAR format.
 	 */
 	public function get_ical_wrap( string $calendar_data ): string {
-		$args = array(
+		$timezones = Timezone_Component::get_instance()->render_for_body( $calendar_data );
+		$args      = array(
 			'BEGIN:VCALENDAR',
 			'VERSION:2.0',
 			sprintf(
@@ -658,9 +694,21 @@ final class Setup {
 				// Prepare 2-digit lang code.
 				strtoupper( substr( get_locale(), 0, 2 ) )
 			),
-			$calendar_data,
-			'END:VCALENDAR',
 		);
+
+		if ( '' !== $timezones ) {
+			$args[] = $timezones;
+		}
+
+		// Only when there is something to wrap: an empty element becomes a
+		// blank content line, which RFC 5545 section 3.1 does not allow, and
+		// the deliberately empty calendar a non-event request renders would
+		// then be rejected by exactly the strict clients it exists to serve.
+		if ( '' !== $calendar_data ) {
+			$args[] = $calendar_data;
+		}
+
+		$args[] = 'END:VCALENDAR';
 
 		return implode( "\r\n", $args );
 	}
@@ -856,11 +904,16 @@ final class Setup {
 	 */
 	public function get_ics_cache_key(): string {
 		$queried_object = get_queried_object();
+		$occurrence     = Context::get_instance()->current();
 		$scope          = array(
-			'feed'   => is_feed() ? 1 : 0,
-			'paged'  => (int) get_query_var( 'paged' ),
-			'object' => 0,
-			'type'   => '',
+			'feed'       => is_feed() ? 1 : 0,
+			'paged'      => (int) get_query_var( 'paged' ),
+			'object'     => 0,
+			'type'       => '',
+			// A single-occurrence download and its series' own export share a
+			// queried object, so without this the first of the two requested
+			// would be served for the other.
+			'occurrence' => (string) ( $occurrence['recurrence_id'] ?? '' ),
 		);
 
 		if ( $queried_object instanceof WP_Post ) {

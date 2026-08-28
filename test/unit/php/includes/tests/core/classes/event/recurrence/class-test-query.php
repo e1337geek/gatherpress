@@ -447,8 +447,8 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for the regression an earlier revision shipped: an inner join
-	 * deletes every non-recurring event from every list.
+	 * Coverage for the regression an inner join causes: it deletes every
+	 * non-recurring event from every list.
 	 *
 	 * @covers ::expand_event_clauses
 	 * @covers ::attach_occurrences
@@ -660,23 +660,34 @@ class Test_Query extends Base {
 	}
 
 	/**
-	 * Coverage for the requirement that `'fields' => 'ids'` is never expanded.
+	 * Coverage for the requirement that `'fields' => 'ids'` is folded, not expanded.
 	 *
-	 * `WP_Query` returns before `the_posts` for an ids result set, so occurrence
-	 * identity cannot travel with the rows. Expanding it would hand every
-	 * caller of `Event\Query::get_events_list()` a repeated bare post ID it has
-	 * no way to disambiguate, which is what produced duplicate iCal VEVENTs.
-	 * The requirement is therefore one entry per event post, unexpanded, with
-	 * no occurrence join in the SQL at all.
+	 * Two requirements at once, and the fixture separates them. The scenario's
+	 * series is anchored an hour behind now with its remaining occurrences ahead
+	 * of it, which is the steady state of any live series, so selecting the
+	 * bucket from the anchor drops it out of the list entirely, which is what kept
+	 * recurring series out of every aggregate iCal feed. And `WP_Query` returns
+	 * before `the_posts` for an ids result set, so occurrence identity cannot
+	 * travel with the rows: expanding would hand the caller a repeated bare post
+	 * ID it has no way to disambiguate, which is what produced duplicate iCal
+	 * VEVENTs sharing a UID.
+	 *
+	 * The ordering assertion is what tells the two apart. The series' next
+	 * scheduled occurrence falls between the two plain upcoming events, so its
+	 * position in the list is a value neither of the two failure modes can
+	 * produce: selecting on the anchor would sort it first, and omitting it
+	 * would leave it out.
 	 *
 	 * `get_events_list()` also sets `no_found_rows`, so this pins the
 	 * no-pagination path: `found_posts` stays zero.
 	 *
 	 * @covers ::expand_event_clauses
+	 * @covers ::fold_event_clauses
+	 * @covers ::aggregate_orderby
 	 *
 	 * @return void
 	 */
-	public function test_get_events_list_is_never_expanded_over_occurrences(): void {
+	public function test_get_events_list_is_folded_to_one_entry_per_series(): void {
 		$scenario = $this->build_scenario();
 
 		$request = '';
@@ -690,10 +701,10 @@ class Test_Query extends Base {
 		$query = Event_Query::get_instance()->get_events_list( 'upcoming', 20 );
 		remove_filter( 'posts_request', $capture );
 
-		$this->assertStringNotContainsString(
+		$this->assertStringContainsString(
 			Query::OCCURRENCE_ALIAS,
 			$request,
-			'Failed to assert an ids query joins no occurrence table.'
+			'Failed to assert an ids query consults the occurrence table for its bucket.'
 		);
 		$this->assertSame(
 			array_fill( 0, count( $query->posts ), 'integer' ),
@@ -701,9 +712,9 @@ class Test_Query extends Base {
 			'Failed to assert the ids result set is still a list of integers.'
 		);
 		$this->assertSame(
-			array( (int) $scenario['early'], (int) $scenario['mid'] ),
-			array_values( array_unique( $query->posts ) ),
-			'Failed to assert the ids result set holds the upcoming event posts.'
+			array( (int) $scenario['early'], (int) $scenario['series'], (int) $scenario['mid'] ),
+			$query->posts,
+			'Failed to assert the series appears once, ordered by its next occurrence rather than its anchor.'
 		);
 		$this->assertSame(
 			$query->posts,
@@ -724,8 +735,10 @@ class Test_Query extends Base {
 	 * occurrence identity cannot travel with either. An expanded id=>parent
 	 * result set is therefore a repeated, identity-less series ID that burns
 	 * `posts_per_page`, and it diverges from what the same query returns as
-	 * ids. The requirement is that both compact shapes return the same
-	 * unexpanded post list, with no occurrence join in the SQL.
+	 * ids. Both compact shapes are folded instead: the occurrence join decides
+	 * bucket membership, the grouping keeps one row per post, and no
+	 * per-occurrence identity column is selected. The requirement is that both
+	 * compact shapes return the same one-row-per-post list.
 	 *
 	 * @covers ::expand_event_clauses
 	 *
@@ -755,19 +768,333 @@ class Test_Query extends Base {
 		);
 
 		$this->assertStringNotContainsString(
-			Query::OCCURRENCE_ALIAS,
+			Query::SELECT_ALIAS,
 			$request,
-			'Failed to assert an id=>parent query joins no occurrence table.'
+			'Failed to assert an id=>parent query selects no per-occurrence identity column.'
 		);
 		$this->assertSame(
 			$ids,
 			$pairs,
-			'Failed to assert both compact field shapes return the same unexpanded post list.'
+			'Failed to assert both compact field shapes return the same one-row-per-post list.'
 		);
 		$this->assertSame(
 			$pairs,
 			array_values( array_unique( $pairs ) ),
 			'Failed to assert no post ID repeats in an id=>parent result set.'
+		);
+	}
+
+	/**
+	 * A fully canceled series stays out of a folded ids list too.
+	 *
+	 * The `NOT EXISTS` guard is what stops a series with rows but no *scheduled*
+	 * rows falling through the join's `NULL` branch and reappearing at its
+	 * anchor date. It is asserted for the expanded shape elsewhere; the folded
+	 * shape carries it for the same reason and needs its own case, because
+	 * dropping it there fails nothing else.
+	 *
+	 * The canceled series is anchored **ahead** of now, unlike the shared
+	 * scenario's. That is the whole test: a series anchored behind now is kept
+	 * out of the upcoming bucket by the range predicate whether or not the
+	 * guard exists, so the two answers coincide and the guard could be deleted
+	 * with the assertion still green. Only a fully canceled series
+	 * whose anchor would otherwise qualify can tell them apart.
+	 *
+	 * @covers ::fold_event_clauses
+	 * @covers ::occurrence_scope_predicate
+	 *
+	 * @return void
+	 */
+	public function test_a_fully_canceled_series_is_absent_from_a_folded_ids_list(): void {
+		$now      = $this->now();
+		$anchor   = $now->modify( '+6 hours' );
+		$series   = $this->create_series_at( $anchor, $now->modify( '+7 hours' ) );
+		$upcoming = $this->create_event_at( $now->modify( '+12 hours' ), $now->modify( '+13 hours' ) );
+
+		$this->assertContains(
+			(int) $series,
+			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
+			'Failed to assert the fixture series is in the bucket before anything is canceled.'
+		);
+
+		for ( $index = 0; $index < 5; $index++ ) {
+			$this->assertTrue(
+				Occurrences::get_instance()->set_status(
+					$series,
+					$this->occurrence_id( $anchor, $index ),
+					Occurrences::STATUS_CANCELED
+				),
+				'Failed to cancel every occurrence; the assertion below would pass for the wrong reason.'
+			);
+		}
+
+		$this->assertSame(
+			array(),
+			Occurrences::get_instance()->select_for_series(
+				array( $series ),
+				array( 'status' => Occurrences::STATUS_SCHEDULED )
+			),
+			'Failed to assert the series has no scheduled occurrence rows left.'
+		);
+		$this->assertSame(
+			array( (int) $upcoming ),
+			Event_Query::get_instance()->get_events_list( 'upcoming', 20 )->posts,
+			'Failed to assert a fully canceled series does not reappear at its anchor date in an ids list.'
+		);
+	}
+
+	/**
+	 * A folded ids query is totally ordered, so two series tied on their
+	 * selected aggregate date cannot swap between pages.
+	 *
+	 * The two fixtures share an anchor to the second, so `MIN( COALESCE(...) )`
+	 * returns the same value for both groups and the aggregate alone cannot
+	 * separate them. MySQL's sort is not stable, which is what lets a tied pair
+	 * come back one way for the first page and the other way for the second,
+	 * putting one series on both pages of an aggregate feed and the other on
+	 * neither.
+	 *
+	 * Asserts the emitted `ORDER BY` as well as the pages. Whether an untied
+	 * sort *happens* to be consistent on a given plan is not something a test
+	 * can pin down; that the clause names a unique column is.
+	 *
+	 * @covers ::fold_event_clauses
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_folded_ids_pagination_is_stable_when_two_series_tie(): void {
+		global $wpdb;
+
+		$now    = $this->now();
+		$anchor = $now->modify( '+1 hour' );
+		$first  = $this->create_series_at( $anchor, $anchor->modify( '+1 hour' ) );
+		$second = $this->create_series_at( $anchor, $anchor->modify( '+1 hour' ) );
+
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		$page_one = new WP_Query(
+			$this->event_query_args(
+				'upcoming',
+				array(
+					'fields'         => 'ids',
+					'posts_per_page' => 1,
+					'paged'          => 1,
+				)
+			)
+		);
+		$page_two = new WP_Query(
+			$this->event_query_args(
+				'upcoming',
+				array(
+					'fields'         => 'ids',
+					'posts_per_page' => 1,
+					'paged'          => 2,
+				)
+			)
+		);
+
+		$this->assertStringContainsString(
+			', `' . $wpdb->posts . '`.ID ASC',
+			(string) $page_one->request,
+			'A folded ordering must name a column unique to the grouped row, or tied series have no order at all.'
+		);
+		$this->assertSame(
+			array( min( $first, $second ) ),
+			array_map( 'intval', $page_one->posts ),
+			'The first page of a tied pair must be the one the tie-break puts first.'
+		);
+		$this->assertSame(
+			array( max( $first, $second ) ),
+			array_map( 'intval', $page_two->posts ),
+			'The second page must be the other series, never a repeat of the first.'
+		);
+	}
+
+	/**
+	 * Direct coverage for `aggregate_orderby()`'s two paths.
+	 *
+	 * Xdebug does not trace a private helper reached through a same-class
+	 * delegation, and the untouched path has no production caller today: every
+	 * ordering `Event\Query` produces for a bucketed query references the
+	 * datetime column. It is still the arm that keeps `RAND()` random and an
+	 * `orderby` of `none` unordered, so it gets a case of its own.
+	 *
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_aggregate_orderby_direct_invoke_covers_both_paths(): void {
+		global $wpdb;
+
+		$instance = Query::get_instance();
+		// Spelled out rather than built with `prepare()`, so the expectation
+		// states the SQL the tie-break has to be rather than repeating the call
+		// that produces it.
+		$tie_break = ', `' . $wpdb->posts . '`.ID ASC';
+
+		$this->assertSame(
+			'MIN( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) ASC' . $tie_break,
+			Utility::invoke_hidden_method(
+				$instance,
+				'aggregate_orderby',
+				array( 'COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ASC' )
+			),
+			'An ascending sort takes the earliest occurrence in the group.'
+		);
+		$this->assertSame(
+			'MAX( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) DESC' . $tie_break,
+			Utility::invoke_hidden_method(
+				$instance,
+				'aggregate_orderby',
+				array( 'COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) DESC' )
+			),
+			'A descending sort takes the latest, which is what the past bucket means.'
+		);
+		$this->assertSame(
+			'RAND()',
+			Utility::invoke_hidden_method( $instance, 'aggregate_orderby', array( 'RAND()' ) ),
+			'An ordering that does not reference the occurrence table is left alone.'
+		);
+		$this->assertSame(
+			'',
+			Utility::invoke_hidden_method( $instance, 'aggregate_orderby', array( '' ) ),
+			'An unordered query must not acquire an ORDER BY it never had.'
+		);
+	}
+
+	/**
+	 * A second sort key is aggregated around, never swallowed into the wrap.
+	 *
+	 * Any plugin can append a tie-breaker through `posts_orderby`, and a future
+	 * `Event\Query` change can add one of its own. Wrapping the whole clause
+	 * in one aggregate turns that into `MIN( <key> ASC, <key> )`, a syntax
+	 * error that empties every aggregate feed on the site. Only the keys the
+	 * fold rewrote reference the occurrence rows; the others are functionally
+	 * dependent on the group key and pass through as they are, which is also
+	 * what keeps the clause valid under `ONLY_FULL_GROUP_BY`.
+	 *
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_aggregate_orderby_wraps_each_key_not_the_clause(): void {
+		global $wpdb;
+
+		$this->assertSame(
+			'MIN( COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ) ASC, '
+				. $wpdb->posts . '.post_title ASC, `' . $wpdb->posts . '`.ID ASC',
+			Utility::invoke_hidden_method(
+				Query::get_instance(),
+				'aggregate_orderby',
+				array(
+					'COALESCE( o.datetime_start_gmt, e.datetime_start_gmt ) ASC, '
+						. $wpdb->posts . '.post_title ASC',
+				)
+			),
+			'The occurrence key takes the aggregate; a tie-breaker survives beside it rather than inside it.'
+		);
+	}
+
+	/**
+	 * Direct coverage for the per-key ordering helpers.
+	 *
+	 * Invoked directly because xdebug does not trace private helpers reached
+	 * through a same-class call, and each branch needs a case of its own.
+	 *
+	 * @covers ::aggregate_orderby_key
+	 * @covers ::split_orderby
+	 *
+	 * @return void
+	 */
+	public function test_the_ordering_helpers_split_and_wrap_key_by_key(): void {
+		$instance = Query::get_instance();
+
+		$this->assertSame(
+			array( 'COALESCE( a, b ) ASC', ' t.c DESC' ),
+			Utility::invoke_hidden_method(
+				$instance,
+				'split_orderby',
+				array( 'COALESCE( a, b ) ASC, t.c DESC' )
+			),
+			'Commas inside a function call separate arguments, not keys.'
+		);
+		$this->assertSame(
+			array( 't.c ASC' ),
+			Utility::invoke_hidden_method( $instance, 'split_orderby', array( 't.c ASC' ) ),
+			'A single key is one key.'
+		);
+		$this->assertSame(
+			array( 'a )', ' b' ),
+			Utility::invoke_hidden_method( $instance, 'split_orderby', array( 'a ), b' ) ),
+			'An unbalanced closing parenthesis cannot drive the depth negative and swallow the split.'
+		);
+		$this->assertSame(
+			'MAX( COALESCE( a, b ) ) DESC',
+			Utility::invoke_hidden_method(
+				$instance,
+				'aggregate_orderby_key',
+				array( 'COALESCE( a, b ) DESC' )
+			),
+			'A descending occurrence key takes the greatest value in the group.'
+		);
+		$this->assertSame(
+			't.c DESC',
+			Utility::invoke_hidden_method( $instance, 'aggregate_orderby_key', array( ' t.c DESC ' ) ),
+			'A key without the fold marker passes through, trimmed.'
+		);
+	}
+
+	/**
+	 * A plugin tie-breaker degrades the ordering at worst, never the results.
+	 *
+	 * The production path for the case above. `Event\Query` rewrites the
+	 * ordering on `posts_clauses` at priority 10, registered from inside
+	 * `pre_get_posts`, and the fold runs at 11. An integration adjusting
+	 * clauses per query registers the same way, so its filter lands after the
+	 * rewrite and before the fold, and the fold's ordering rewrite receives a
+	 * clause with a second key. A plain `posts_orderby` filter cannot get
+	 * there: the event rewrite overwrites that clause outright.
+	 *
+	 * @covers ::fold_event_clauses
+	 * @covers ::aggregate_orderby
+	 *
+	 * @return void
+	 */
+	public function test_a_plugin_tie_breaker_survives_the_folded_query(): void {
+		global $wpdb;
+
+		$scenario = $this->build_scenario();
+
+		$tie_breaker = static function ( array $pieces ) use ( $wpdb ): array {
+			if ( ! empty( $pieces['orderby'] ) ) {
+				$pieces['orderby'] .= ', ' . $wpdb->posts . '.post_title ASC';
+			}
+
+			return $pieces;
+		};
+		$register    = static function () use ( $tie_breaker ): void {
+			add_filter( 'posts_clauses', $tie_breaker );
+		};
+
+		add_action( 'pre_get_posts', $register, 20 );
+
+		$suppressed = $wpdb->suppress_errors();
+		$query      = Event_Query::get_instance()->get_events_list( 'upcoming', 20 );
+
+		$wpdb->suppress_errors( $suppressed );
+		remove_action( 'pre_get_posts', $register, 20 );
+		remove_filter( 'posts_clauses', $tie_breaker );
+
+		$this->assertSame(
+			'',
+			(string) $wpdb->last_error,
+			'The emitted ordering must be valid SQL.'
+		);
+		$this->assertContains(
+			(int) $scenario['series'],
+			array_map( 'intval', $query->posts ),
+			'A second sort key must not empty the aggregate feeds of every series.'
 		);
 	}
 

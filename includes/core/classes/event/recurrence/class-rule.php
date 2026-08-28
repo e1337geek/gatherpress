@@ -8,8 +8,9 @@
  * string and never in a table of its own. `Rule::from_post()` reconstructs the value object from
  * the mirrors, which is what keeps the blob a pure write-boundary artifact.
  *
- * `to_rrule_string()` is the calendar-export seam. It exists and is unit-tested
- * from day one, and has no production caller yet.
+ * `to_rrule_string()` is the export seam, consumed by
+ * `Calendar\Calendar::get_ical_event_string()` to emit the `RRULE` property of
+ * a recurring series' component.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -21,6 +22,7 @@ namespace GatherPress\Core\Event\Recurrence;
 defined( 'ABSPATH' ) || exit; // @codeCoverageIgnore
 
 use DateTimeImmutable;
+use DateTimeZone;
 
 /**
  * Class Rule.
@@ -648,11 +650,23 @@ final class Rule {
 	/**
 	 * Serialize the rule as an RFC 5545 `RRULE` string.
 	 *
-	 * The calendar-export seam. Unit-tested against a fixture table, with no
-	 * production caller yet. `WKST` is never emitted because
-	 * `WEEK_START` (Monday) is already RFC 5545's default. `UNTIL` is emitted
-	 * as a bare `Ymd` date. The rule carries no time-of-day of its own, so
-	 * that comes from the series anchor at expansion time.
+	 * The export seam. `WKST` is never emitted because `WEEK_START`
+	 * (Monday) is already RFC 5545's default.
+	 *
+	 * `UNTIL` is emitted as a **UTC date-time**, which is why this method needs
+	 * the anchor and the timezone at all. RFC 5545 section 3.3.10: *"The value
+	 * of the UNTIL rule part MUST have the same value type as the 'DTSTART'
+	 * property"*, and the component this rule is attached to emits
+	 * `DTSTART;TZID=...`, which is a `DATE-TIME`. A bare `Ymd` `DATE` is
+	 * therefore invalid there, whatever it may be elsewhere.
+	 *
+	 * The rule carries only an end *date*; the time of day comes from the
+	 * anchor, exactly as it does at expansion time. The offset is resolved on
+	 * the end date rather than on the anchor's, because a series that crosses a
+	 * daylight saving change has two of them and only the end date's is the
+	 * right one. Taking the anchor's shifts the emitted instant by an hour,
+	 * which moves the end date itself whenever the wall clock sits near
+	 * midnight.
 	 *
 	 * The `FREQ=` value is the uppercased frequency, so a yearly rule needs no
 	 * arm of its own here. It emits no `BY*` part at all: RFC 5545 defaults the
@@ -661,9 +675,12 @@ final class Rule {
 	 *
 	 * @since 0.36.0
 	 *
+	 * @param DateTimeImmutable $anchor   Series anchor start, the source of the wall-clock time `UNTIL` carries.
+	 * @param DateTimeZone      $timezone Series timezone, which must be a named identifier.
+	 *
 	 * @return string The `RRULE` value, without the property name.
 	 */
-	public function to_rrule_string(): string {
+	public function to_rrule_string( DateTimeImmutable $anchor, DateTimeZone $timezone ): string {
 		$parts = array( 'FREQ=' . strtoupper( $this->frequency ) );
 
 		if ( $this->interval > 1 ) {
@@ -683,11 +700,51 @@ final class Rule {
 		}
 
 		if ( self::END_TYPE_UNTIL === $this->end_type && $this->until instanceof DateTimeImmutable ) {
-			$parts[] = 'UNTIL=' . $this->until->format( 'Ymd' );
+			$parts[] = 'UNTIL=' . $this->until_as_utc_datetime( $this->until, $anchor, $timezone );
 		} elseif ( self::END_TYPE_COUNT === $this->end_type ) {
 			$parts[] = 'COUNT=' . $this->count;
 		}
 
 		return implode( ';', $parts );
+	}
+
+	/**
+	 * Render the end date as the RFC 5545 UTC date-time form of `UNTIL`.
+	 *
+	 * `setDate()` is what resolves the offset on the *end* date: it keeps the
+	 * anchor's wall clock and re-derives the offset for the resulting local
+	 * datetime, which is the whole point. Building a `DateTimeImmutable` from a
+	 * formatted string would work too, but only by way of a parse that can
+	 * fail, and there is nothing sensible to do on that branch.
+	 *
+	 * The `setTimezone()` ahead of it does something narrower, and is easy to
+	 * mistake for the line above: it normalizes the anchor into the series
+	 * timezone before its wall clock is read. Every call site inside the plugin
+	 * hands in an anchor already constructed there, so it is a no-op for all of
+	 * them. But `to_rrule_string()` is public and takes an arbitrary
+	 * `DateTimeImmutable`, and the same instant typed in another zone carries a
+	 * different wall clock. Dropping the call would silently emit that other
+	 * zone's clock as `UNTIL`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeImmutable $until    The rule's end date.
+	 * @param DateTimeImmutable $anchor   Series anchor start, the source of the wall-clock time.
+	 * @param DateTimeZone      $timezone Series timezone.
+	 *
+	 * @return string The `UNTIL` value in `Ymd\THis\Z` form.
+	 */
+	private function until_as_utc_datetime(
+		DateTimeImmutable $until,
+		DateTimeImmutable $anchor,
+		DateTimeZone $timezone
+	): string {
+		$local = $anchor->setTimezone( $timezone )->setDate(
+			(int) $until->format( 'Y' ),
+			(int) $until->format( 'n' ),
+			(int) $until->format( 'j' )
+		);
+
+		return $local->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Ymd\THis\Z' );
 	}
 }

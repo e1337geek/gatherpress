@@ -1811,4 +1811,59 @@ class Test_Rewrite extends Base {
 			'A request unrelated to any event post type must not set the occurrence query var.'
 		);
 	}
+
+	/**
+	 * A request for an `.ics` calendar endpoint is left alone by the bare-series
+	 * resolution, and every other request is not.
+	 *
+	 * The distinction: a series' iCal export is one component
+	 * carrying the whole rule, so narrowing it to the next upcoming occurrence
+	 * would put a single date back in a subscriber's calendar. The Google and
+	 * Yahoo redirects are single-datetime by nature and keep the occurrence.
+	 *
+	 * Driven by direct invoke as well as through a real request, because
+	 * xdebug does not trace a protected helper reached through a same-class
+	 * delegation from `parse_request()`.
+	 *
+	 * @covers ::is_ics_request
+	 * @covers ::maybe_resolve_bare_series
+	 *
+	 * @return void
+	 */
+	public function test_ics_requests_are_exempt_from_bare_series_resolution(): void {
+		list( $post_id ) = $this->create_relative_daily_series( 5, 7, 3 );
+
+		$instance = Rewrite::get_instance();
+		$slug     = get_post( $post_id )->post_name;
+		$cases    = array(
+			'ical'            => true,
+			'outlook'         => true,
+			'google-calendar' => false,
+			'yahoo-calendar'  => false,
+			''                => false,
+		);
+
+		foreach ( $cases as $calendar_slug => $is_ics ) {
+			$wp                                     = new WP();
+			$wp->query_vars                         = array( 'gatherpress_event' => $slug );
+			$wp->query_vars['gatherpress_calendar'] = $calendar_slug;
+
+			$this->assertSame(
+				$is_ics,
+				Utility::invoke_hidden_method( $instance, 'is_ics_request', array( $wp ) ),
+				sprintf( 'The "%s" endpoint slug was classified wrongly.', $calendar_slug )
+			);
+
+			Utility::invoke_hidden_method( $instance, 'maybe_resolve_bare_series', array( $wp ) );
+
+			$this->assertSame(
+				$is_ics,
+				! isset( $wp->query_vars[ Context::QUERY_VAR ] ),
+				sprintf(
+					'The "%s" endpoint slug resolved an occurrence when it should not have, or the reverse.',
+					$calendar_slug
+				)
+			);
+		}
+	}
 }
