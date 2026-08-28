@@ -3,16 +3,15 @@
  * Class handles unit tests for venue inheritance: an occurrence inherits its
  * series' venue, and occurrence-aware event queries stay filterable by venue.
  *
- * `Recurrence\Context` (see `class-context.php`) is an unwired skeleton in
- * this baseline. `set()`, `clear()`, `current()`, `metadata()`, and
- * `occurrence_url()` are all unwired no-op stubs, so there is no frozen
- * `Context` read API to test venue resolution against. Venue rendering is
- * exercised through actual page requests instead: `Rewrite::parse_request()`
- * resolves every occurrence URL of a series to the same series post
- * (`Series::resolve_post_ids()` is `array( $post_id )` in this POC), so the
- * venue association is read identically regardless of which occurrence URL a
- * visitor lands on. It is stored as a `_gatherpress_venue` taxonomy term on
- * that one post.
+ * Venue resolution is deliberately exercised through actual page requests
+ * rather than through `Recurrence\Context`'s read API. The venue association
+ * is not per-occurrence state at all: it is a `_gatherpress_venue` taxonomy
+ * term on the series post, and `Rewrite::parse_request()` resolves every
+ * occurrence URL of a series to a post of that series
+ * (`Series::resolve_post_ids()` returns `array( $post_id )` until a forward
+ * split widens it). Driving the request is therefore the only way to prove the
+ * property that matters, that a visitor landing on any occurrence page sees
+ * the series' venue, rather than proving that a term lookup works.
  *
  * @package GatherPress\Core\Event\Recurrence
  * @since 0.36.0
@@ -20,6 +19,8 @@
 
 namespace GatherPress\Tests\Core\Event\Recurrence;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Query as Event_Query;
 use GatherPress\Core\Event\Recurrence\Meta;
@@ -68,6 +69,37 @@ class Test_Venue_Inheritance extends Base {
 	}
 
 	/**
+	 * Build "now" in UTC.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable Current time in UTC.
+	 */
+	protected function now(): DateTimeImmutable {
+		return new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+	}
+
+	/**
+	 * The anchor start every fixture in this file is built from.
+	 *
+	 * Relative to now rather than a literal calendar date, and far enough ahead
+	 * that all five daily occurrences are upcoming:
+	 * `test_venue_filtered_query_returns_occurrences_of_matching_series()`
+	 * counts them out of an `upcoming` bucket, so a pinned anchor would shed
+	 * one occurrence per day once the date passed, counting 5, then 4, then 3,
+	 * and report a venue-filtering regression rather than a stale fixture.
+	 * `test_the_fixture_series_is_never_in_the_past()` fails by name if this is
+	 * ever re-pinned.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return DateTimeImmutable The fixture anchor start in UTC.
+	 */
+	protected function anchor(): DateTimeImmutable {
+		return $this->now()->modify( '+2 hours' );
+	}
+
+	/**
 	 * Create a venue post and its `_gatherpress_venue` taxonomy term.
 	 *
 	 * @since 0.36.0
@@ -109,6 +141,9 @@ class Test_Venue_Inheritance extends Base {
 	 * @return int The created series post ID.
 	 */
 	protected function create_series_with_venue( string $post_name, string $venue_slug ): int {
+		$start = $this->anchor();
+		$end   = $start->modify( '+2 hours' );
+
 		$post_id = $this->factory->post->create(
 			array(
 				'post_type'   => Event::POST_TYPE,
@@ -122,8 +157,8 @@ class Test_Venue_Inheritance extends Base {
 			'gatherpress_datetime',
 			wp_json_encode(
 				array(
-					'dateTimeStart' => '2026-09-03 18:00:00',
-					'dateTimeEnd'   => '2026-09-03 20:00:00',
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
 					'timezone'      => 'UTC',
 				)
 			)
@@ -286,6 +321,42 @@ class Test_Venue_Inheritance extends Base {
 			5,
 			$query->found_posts,
 			'Failed to assert found_posts counts the matching series occurrences, not the series count.'
+		);
+	}
+
+	/**
+	 * The date-bomb guard for this file, and it fails by name.
+	 *
+	 * If you are reading this because it failed, someone re-pinned `anchor()`
+	 * to a literal date. Make it relative to `now()` again.
+	 *
+	 * @return void
+	 */
+	public function test_the_fixture_series_is_never_in_the_past(): void {
+		$this->assertGreaterThan(
+			$this->now()->getTimestamp(),
+			$this->anchor()->getTimestamp(),
+			'Failed to assert this file\'s shared fixture anchor is still ahead of the clock. Someone re-pinned'
+				. ' anchor() to a literal date; make it relative to now() again.'
+		);
+
+		$this->create_venue( 'guard-hall' );
+
+		$series = $this->create_series_with_venue( 'guard-series', 'guard-hall' );
+		$query  = new WP_Query(
+			array(
+				'post_type'                    => Event::POST_TYPE,
+				Event_Query::EVENT_QUERY_PARAM => 'upcoming',
+				'posts_per_page'               => 20,
+				'post__in'                     => array( $series ),
+			)
+		);
+
+		$this->assertCount(
+			5,
+			$query->posts,
+			'Failed to assert all five occurrences of the shared fixture series are still upcoming. Someone'
+				. ' re-pinned anchor() to a literal date; make it relative to now() again.'
 		);
 	}
 }

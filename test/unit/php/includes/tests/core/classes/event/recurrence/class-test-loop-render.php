@@ -28,6 +28,8 @@ use GatherPress\Core\Event\Recurrence\Meta;
 use GatherPress\Core\Event\Recurrence\Occurrences;
 use GatherPress\Core\Event\Recurrence\Query;
 use GatherPress\Core\Event\Recurrence\Rewrite;
+use GatherPress\Core\Event\Recurrence\Rsvp_Occurrence;
+use GatherPress\Core\Rsvp;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Setup;
 use GatherPress\Tests\Base;
@@ -104,12 +106,17 @@ class Test_Loop_Render extends Base {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param DateTimeImmutable $start Event start in UTC.
-	 * @param DateTimeImmutable $end   Event end in UTC.
+	 * @param DateTimeImmutable $start    Event start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Event end, in `$timezone`.
+	 * @param string            $timezone Series timezone name.
 	 *
 	 * @return int The created post ID.
 	 */
-	protected function create_event_at( DateTimeImmutable $start, DateTimeImmutable $end ): int {
+	protected function create_event_at(
+		DateTimeImmutable $start,
+		DateTimeImmutable $end,
+		string $timezone = 'UTC'
+	): int {
 		$post_id = $this->factory->post->create(
 			array(
 				'post_type'   => Event::POST_TYPE,
@@ -124,7 +131,7 @@ class Test_Loop_Render extends Base {
 				array(
 					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
 					'dateTimeEnd'   => $end->format( 'Y-m-d H:i:s' ),
-					'timezone'      => 'UTC',
+					'timezone'      => $timezone,
 				)
 			)
 		);
@@ -143,18 +150,20 @@ class Test_Loop_Render extends Base {
 	 *
 	 * @since 0.36.0
 	 *
-	 * @param DateTimeImmutable $start Anchor start in UTC.
-	 * @param DateTimeImmutable $end   Anchor end in UTC.
-	 * @param array             $rule  Recurrence rule values.
+	 * @param DateTimeImmutable $start    Anchor start, in `$timezone`.
+	 * @param DateTimeImmutable $end      Anchor end, in `$timezone`.
+	 * @param array             $rule     Recurrence rule values.
+	 * @param string            $timezone Series timezone name.
 	 *
 	 * @return int The created post ID.
 	 */
 	protected function create_series_at(
 		DateTimeImmutable $start,
 		DateTimeImmutable $end,
-		array $rule = self::DAILY_RULE
+		array $rule = self::DAILY_RULE,
+		string $timezone = 'UTC'
 	): int {
-		$post_id = $this->create_event_at( $start, $end );
+		$post_id = $this->create_event_at( $start, $end, $timezone );
 
 		add_post_meta( $post_id, Meta::META_KEY, wp_json_encode( $rule ) );
 		Meta::get_instance()->set_recurrence( $post_id );
@@ -245,6 +254,184 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
+	 * Render the RSVP count block the way `core/post-template` renders it.
+	 *
+	 * No `postId` attribute, for the same reason `render_event_date()` supplies
+	 * none: a Query Loop supplies none either, so passing one would route around
+	 * the wiring under test.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $attrs Block attributes.
+	 *
+	 * @return string The rendered block markup.
+	 */
+	protected function render_rsvp_count( array $attrs = array() ): string {
+		return render_block(
+			array(
+				'blockName'    => 'gatherpress/rsvp-count',
+				'attrs'        => $attrs,
+				'innerBlocks'  => array(),
+				'innerHTML'    => '',
+				'innerContent' => array(),
+			)
+		);
+	}
+
+	/**
+	 * Read the interactivity block context out of rendered block markup.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $html Rendered block markup.
+	 *
+	 * @return array The decoded `data-wp-context` payload, or an empty array when the markup carries none.
+	 */
+	protected function block_context_from( string $html ): array {
+		// Both quoting styles, because the five emitters do not agree on one:
+		// the render templates go through `wp_interactivity_data_wp_context()`,
+		// which single-quotes, and the three block classes go through
+		// `WP_HTML_Tag_Processor::set_attribute()`, which double-quotes.
+		if ( ! preg_match( '/data-wp-context=([\'"])(.*?)\1/s', $html, $matches ) ) {
+			return array();
+		}
+
+		$decoded = json_decode( html_entity_decode( $matches[2] ), true );
+
+		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	/**
+	 * Render one block the way `core/post-template` renders it.
+	 *
+	 * No `postId` attribute, for the same reason `render_event_date()` supplies
+	 * none: a Query Loop supplies none either.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $block_name Block type name.
+	 * @param array  $attrs      Block attributes.
+	 * @param string $inner_html Saved markup the block's render filters transform.
+	 *
+	 * @return string The rendered block markup.
+	 */
+	protected function render_named_block(
+		string $block_name,
+		array $attrs = array(),
+		string $inner_html = ''
+	): string {
+		return render_block(
+			array(
+				'blockName'    => $block_name,
+				'attrs'        => $attrs,
+				'innerBlocks'  => array(),
+				'innerHTML'    => $inner_html,
+				'innerContent' => array( $inner_html ),
+			)
+		);
+	}
+
+	/**
+	 * Render every block that publishes an interactivity context, once.
+	 *
+	 * All five emitters, because four of them were guarded by nothing: reverting
+	 * any of `Blocks\Rsvp`, `Blocks\Rsvp_Form`, `Blocks\Rsvp_Response` or the
+	 * online-event-link render template to `array( 'postId' => $post_id )` left
+	 * the whole PHP suite green, since only `gatherpress/rsvp-count` was ever
+	 * rendered here. A partial revert is the dangerous shape. The RSVP button
+	 * keys on the bare post while the counts beside it key on the occurrence, so
+	 * the button collapses across the series and the counts stay right.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array<string, array> The decoded context each emitter published, keyed by block.
+	 */
+	protected function emitter_block_contexts(): array {
+		$serialized = wp_json_encode(
+			array(
+				'no_status' => '<!-- wp:paragraph --><p>RSVP</p><!-- /wp:paragraph -->',
+				'attending' => '<!-- wp:paragraph --><p>Attending</p><!-- /wp:paragraph -->',
+			)
+		);
+
+		return array(
+			'rsvp'              => $this->block_context_from(
+				$this->render_named_block(
+					'gatherpress/rsvp',
+					array( 'serializedInnerBlocks' => $serialized ),
+					'<div class="wp-block-gatherpress-rsvp"></div>'
+				)
+			),
+			'rsvp-form'         => $this->block_context_from(
+				$this->render_named_block(
+					'gatherpress/rsvp-form',
+					array(),
+					'<div class="wp-block-gatherpress-rsvp-form"></div>'
+				)
+			),
+			'rsvp-response'     => $this->block_context_from(
+				$this->render_named_block(
+					'gatherpress/rsvp-response',
+					array(),
+					'<div class="wp-block-gatherpress-rsvp-response"></div>'
+				)
+			),
+			'rsvp-count'        => $this->block_context_from( $this->render_rsvp_count() ),
+			'online-event-link' => $this->block_context_from(
+				$this->render_named_block( 'gatherpress/online-event-link' )
+			),
+		);
+	}
+
+	/**
+	 * Walk a query's loop and render every context emitter once per iteration.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $query Executed query.
+	 *
+	 * @return array<string, array<int, array>> Per-emitter lists of decoded contexts, in loop order.
+	 */
+	protected function loop_emitter_contexts( WP_Query $query ): array {
+		$contexts = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			foreach ( $this->emitter_block_contexts() as $emitter => $context ) {
+				$contexts[ $emitter ][] = $context;
+			}
+		}
+
+		wp_reset_postdata();
+
+		return $contexts;
+	}
+
+	/**
+	 * Walk a query's loop and render the RSVP count block once per iteration.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param WP_Query $query Executed query.
+	 *
+	 * @return array<int, array> One decoded block context per loop iteration.
+	 */
+	protected function loop_block_contexts( WP_Query $query ): array {
+		$contexts = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$contexts[] = $this->block_context_from( $this->render_rsvp_count() );
+		}
+
+		wp_reset_postdata();
+
+		return $contexts;
+	}
+
+	/**
 	 * Build the recurrence identifier of the nth occurrence of a daily series.
 	 *
 	 * @since 0.36.0
@@ -296,24 +483,101 @@ class Test_Loop_Render extends Base {
 		);
 
 		foreach ( array( 1, 2, 3, 4 ) as $offset => $index ) {
-			$expected = $anchor->modify( sprintf( '+%d days', $index ) )->format( 'g:i a' );
-
 			$this->assertStringContainsString(
 				$anchor->modify( sprintf( '+%d days', $index ) )->format( 'F j, Y' ),
 				$html[ $offset ],
 				'Failed to assert row ' . $offset . ' rendered its own occurrence date.'
 			);
-			$this->assertStringContainsString(
-				$expected,
+			$this->assertStringNotContainsString(
+				$anchor->format( 'F j, Y' ),
 				$html[ $offset ],
-				'Failed to assert row ' . $offset . ' rendered the occurrence record\'s own time of day.'
+				'Failed to assert row ' . $offset . ' did not render the series anchor\'s date.'
 			);
 		}
 	}
 
 	/**
-	 * Coverage for the render path's second half: the permalink of a loop row
-	 * is the occurrence URL, not the bare series URL.
+	 * Inside a loop, an occurrence's time of day is read
+	 * from the occurrence record, never computed by applying the anchor's time
+	 * to the occurrence's date.
+	 *
+	 * The discriminating fixture is a direct row update, and it has to be:
+	 * the expander holds the wall-clock time constant
+	 * across every occurrence, including across a DST transition, so for a
+	 * rule-generated series "the record's time" and "the anchor's time applied
+	 * to the record's date" are the *same* local time and no assertion on the
+	 * rendered wall clock can separate them. Rewriting one row's own datetime
+	 * columns is what makes the two answers differ, and
+	 * it is the same technique
+	 * `Test_Context::test_occurrence_time_of_day_comes_from_the_record_not_the_anchor`
+	 * uses on the singular path, and this is its loop counterpart.
+	 *
+	 * @covers ::metadata
+	 * @covers ::occurrence_value
+	 * @covers ::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_a_loop_row_renders_the_records_time_of_day_not_the_anchors(): void {
+		global $wpdb;
+
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$moved     = $this->occurrence_id( $anchor, 2 );
+		$start     = $anchor->modify( '+2 days' )->modify( '-3 hours' );
+		$table     = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				'UPDATE %i SET datetime_start = %s, datetime_start_gmt = %s,'
+					. ' datetime_end = %s, datetime_end_gmt = %s'
+					. ' WHERE series_post_id = %d AND recurrence_id = %s',
+				$table,
+				$start->format( 'Y-m-d H:i:s' ),
+				$start->format( 'Y-m-d H:i:s' ),
+				$start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+				$start->modify( '+2 hours' )->format( 'Y-m-d H:i:s' ),
+				$series_id,
+				$moved
+			)
+		);
+
+		$rendered = $this->render_loop(
+			$this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) ),
+			array(
+				'displayType'     => 'start',
+				'startDateFormat' => 'Y-m-d H:i',
+			)
+		);
+		$html     = wp_list_pluck( $rendered, 'html' );
+
+		$this->assertCount(
+			4,
+			$html,
+			'Failed to assert the loop still expanded the series to its four upcoming occurrences.'
+		);
+
+		$moved_row = $html[1];
+
+		$this->assertStringContainsString(
+			$start->format( 'Y-m-d H:i' ),
+			$moved_row,
+			'Failed to assert the moved occurrence rendered its own record\'s time of day.'
+		);
+		$this->assertStringNotContainsString(
+			$anchor->modify( '+2 days' )->format( 'Y-m-d H:i' ),
+			$moved_row,
+			'Failed to assert the anchor\'s time of day was not applied to the occurrence\'s date. That is'
+				. ' precisely the violation, and it renders a plausible-looking wrong time.'
+		);
+	}
+
+	/**
+	 * The permalink of a loop row is the
+	 * occurrence URL, not the bare series URL.
 	 *
 	 * Asserted through the block's own `isLink` markup rather than by calling
 	 * `get_permalink()` in the test, so the assertion covers what a visitor
@@ -418,6 +682,24 @@ class Test_Loop_Render extends Base {
 	 * placed after a nested loop already read the main query's post in stock
 	 * WordPress. This test therefore renders each outer row before its nested
 	 * loop, which is the arrangement core itself produces.
+	 *
+	 * The limitation that arrangement leaves behind is recorded here because of
+	 * *how it presents*, which is the part that will cost someone a day. An
+	 * outer row rendered **after** a nested loop reads the wrong occurrence.
+	 * Measured, rendering the outer row after the inner loop instead of before:
+	 *
+	 *     before_rows = ["2026-08-18 ...","2026-08-19 ...","2026-08-20 ...","2026-08-21 ..."]
+	 *     after_rows  = ["2026-08-21 ...","2026-08-21 ...","2026-08-21 ...","2026-08-21 ..."]
+	 *
+	 * In stock WordPress this class of bug is *visible*: the post identity
+	 * changes, so the title and the link visibly jump to some other event and
+	 * the reporter says "the wrong post is showing." Here the post ID is
+	 * unchanged, and only which occurrence of it is in play is wrong, so the
+	 * title, the link and the venue all still look right and **only the date is
+	 * wrong**. Nothing in the output announces the failure. There is nothing to
+	 * fix from this class's side: `wp_reset_postdata()` fires no action and
+	 * restores from `$wp_query`, so there is no hook to re-establish the outer
+	 * iteration's occurrence from and nothing to restore it out of.
 	 *
 	 * @covers ::metadata
 	 *
@@ -843,6 +1125,98 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
+	 * Coverage for a loop rendered on a singular occurrence page.
+	 *
+	 * The obvious thing to build for this feature is "other dates in this
+	 * series" on an occurrence's own page, and that was the case the precedence
+	 * in `Context::resolve()` and `Rsvp_Occurrence::current_occurrence()` got
+	 * wrong. Both consulted the *request's* occurrence first and returned it
+	 * for any post in the requested series, so every correctly stamped row
+	 * resolved to the requested date. Measured before the fix, with the request
+	 * on the anchor:
+	 *
+	 *     row 6:  stamp=20260912T180000  rsvp_resolves=20260823T180000
+	 *     row 7:  stamp=20260913T180000  rsvp_resolves=20260823T180000
+	 *
+	 * The datetime collapsed with it, so the page showed one date four times.
+	 *
+	 * The request context is established by `go_to()` rather than by hand, so
+	 * the `wp` action that binds it in production is the thing under test.
+	 * The requested occurrence is the series anchor, which is in
+	 * the past and therefore *not* among the loop's upcoming rows, so the
+	 * right answer and the collapsed answer differ on every row rather than on
+	 * three of four.
+	 *
+	 * @covers ::resolve
+	 * @covers ::loop_occurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::current_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_a_loop_on_a_singular_occurrence_page_keeps_each_rows_own_identity(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$requested = $this->occurrence_id( $anchor, 0 );
+
+		$this->go_to(
+			add_query_arg( Context::QUERY_VAR, $requested, (string) get_permalink( $series_id ) )
+		);
+
+		$this->assertSame(
+			$requested,
+			Rsvp_Occurrence::current_recurrence_id( $series_id ),
+			'Failed to assert the request established the anchor occurrence as the page\'s own. Without that'
+				. ' the fixture proves nothing, because there would be no request occurrence to collapse to.'
+		);
+
+		$query      = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+		$identities = array();
+		$html       = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$identities[] = (string) Rsvp_Occurrence::current_recurrence_id( $series_id );
+			$html[]       = $this->render_event_date(
+				array(
+					'displayType'     => 'start',
+					'startDateFormat' => 'Y-m-d H:i',
+				)
+			);
+		}
+
+		wp_reset_postdata();
+
+		$expected = array();
+
+		foreach ( array( 1, 2, 3, 4 ) as $index ) {
+			$expected[] = $this->occurrence_id( $anchor, $index );
+		}
+
+		$this->assertSame(
+			$expected,
+			$identities,
+			'Failed to assert every row of a loop on an occurrence page resolved its own occurrence for RSVP'
+				. ' scoping. Four copies of the requested identifier is the defect.'
+		);
+
+		foreach ( array( 1, 2, 3, 4 ) as $offset => $index ) {
+			$this->assertStringContainsString(
+				$anchor->modify( sprintf( '+%d days', $index ) )->format( 'Y-m-d H:i' ),
+				$html[ $offset ],
+				'Failed to assert row ' . $offset . ' rendered its own occurrence datetime.'
+			);
+			$this->assertStringNotContainsString(
+				$anchor->format( 'Y-m-d H:i' ),
+				$html[ $offset ],
+				'Failed to assert row ' . $offset . ' did not render the requested occurrence\'s datetime.'
+			);
+		}
+	}
+
+	/**
 	 * Coverage for `permalink()`'s two pass-through return paths.
 	 *
 	 * The first is a value core hands the filter that is not a post at all;
@@ -889,42 +1263,166 @@ class Test_Loop_Render extends Base {
 	}
 
 	/**
-	 * Coverage for `permalink()`'s third pass-through: an occurrence whose post
-	 * has no permalink to compose one on top of.
+	 * Coverage for the isolation rule through a rendered block rather than a
+	 * direct invoke.
 	 *
-	 * `Rewrite::get_occurrence_url()` builds the occurrence URL from the series
-	 * permalink and answers with an empty string when there is none, which is
-	 * what `get_permalink()` returns for a post that is no longer there.
-	 * Returning that to the `post_link` filter publishes `href=""`, which
-	 * resolves to the current page. Reachability is narrow, because a resolved
-	 * occurrence normally implies a live post, but an empty href is a worse
-	 * answer than the permalink core already had.
+	 * `test_loop_occurrence_returns_null_for_another_post()` above pins the same
+	 * rule, but it reaches `loop_occurrence()` through
+	 * `Utility::invoke_hidden_method()`. Dropping
+	 * `|| (int) $post->ID !== $post_id` from that method failed exactly that one
+	 * test out of the file, and no rendered-output test at all, because
+	 * `test_inner_loop_over_a_different_post_does_not_inherit_the_occurrence()`
+	 * moves the *global* post to the inner post before rendering, so the two IDs
+	 * agree and the mismatch arm is never exercised.
 	 *
+	 * A block carrying an explicit `postId` for a different post is the shape
+	 * that does exercise it: `Blocks\Setup::get_post_id()` honors the attribute,
+	 * so the block reads another post's meta while the global post is still the
+	 * occurrence row. Without the ID comparison the other post inherits this
+	 * iteration's occurrence, both its date and its permalink.
+	 *
+	 * @covers ::metadata
 	 * @covers ::permalink
+	 * @covers ::loop_occurrence
 	 *
 	 * @return void
 	 */
-	public function test_permalink_falls_back_when_the_post_has_no_permalink(): void {
+	public function test_a_block_pinned_to_another_post_mid_iteration_renders_that_posts_own_values(): void {
 		$now    = $this->now();
 		$anchor = $now->modify( '-1 hour' );
 
 		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
-		$post      = get_post( $series_id );
+		$other_id  = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
 
-		Context::get_instance()->set( $series_id, $this->occurrence_id( $anchor, 1 ) );
+		$other_link = sprintf( 'href="%s"', get_permalink( $other_id ) );
+		$other_date = $now->modify( '+400 hours' )->format( 'F j, Y' );
 
-		wp_delete_post( $series_id, true );
+		$query      = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+		$own_html   = array();
+		$other_html = array();
 
-		$result = Context::get_instance()->permalink( 'https://example.test/original/', $post );
+		while ( $query->have_posts() ) {
+			$query->the_post();
 
-		Context::get_instance()->clear();
+			$own_html[]   = $this->render_event_date( array( 'isLink' => true ) );
+			$other_html[] = $this->render_event_date(
+				array(
+					'isLink' => true,
+					'postId' => $other_id,
+				)
+			);
+		}
 
+		wp_reset_postdata();
+
+		$this->assertCount(
+			4,
+			array_unique( $own_html ),
+			'Failed to assert every outer occurrence row still rendered its own date and permalink.'
+		);
 		$this->assertSame(
-			'https://example.test/original/',
-			$result,
-			'Failed to assert permalink() degrades to the permalink it was handed rather than to an empty href.'
+			array( $other_html[0] ),
+			array_values( array_unique( $other_html ) ),
+			'Failed to assert the pinned block rendered the same thing on every iteration rather than drifting'
+				. ' with the outer occurrence.'
+		);
+		$this->assertStringContainsString(
+			$other_link,
+			$other_html[0],
+			'Failed to assert a block pinned to another post keeps that post\'s bare permalink mid-iteration.'
+		);
+		$this->assertStringContainsString(
+			$other_date,
+			$other_html[0],
+			'Failed to assert a block pinned to another post renders that post\'s own date mid-iteration.'
 		);
 	}
+
+	/**
+	 * Coverage for the `timezone` column traveling on the result object.
+	 *
+	 * `timezone` is one of the five occurrence columns a result object carries,
+	 * and the subsystem's standing rule is that an occurrence's time of day
+	 * comes from the occurrence record and never from the series anchor. Unlike
+	 * the four datetime columns it has a fallback that normally agrees with it:
+	 * when the
+	 * occurrence row's nullable `timezone` is empty, `occurrence_value()` reads
+	 * the series' own `gatherpress_timezone` meta. Every other fixture in this
+	 * suite gives the series and its occurrences the same timezone, so the
+	 * right answer and the fallback answer coincide and nothing discriminates
+	 * between them. Mutating `stamp_occurrence()` to stamp `null` for this one
+	 * column leaves the whole recurrence suite green.
+	 *
+	 * This fixture makes the two differ: the occurrence
+	 * rows are projected in `America/New_York`, then the *series'* own timezone
+	 * meta is poisoned to `Asia/Tokyo` afterwards. Inside a loop iteration the
+	 * read must produce the occurrence record's zone; outside it, the series'.
+	 *
+	 * @covers ::metadata
+	 * @covers ::occurrence_value
+	 * @covers ::get_datetime
+	 * @covers \GatherPress\Core\Event\Recurrence\Query::expand_event_clauses
+	 *
+	 * @return void
+	 */
+	public function test_a_loop_row_reads_the_occurrence_records_timezone_not_the_series_meta(): void {
+		$zone   = new DateTimeZone( 'America/New_York' );
+		$now    = new DateTimeImmutable( 'now', $zone );
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at(
+			$anchor,
+			$now->modify( '-30 minutes' ),
+			self::DAILY_RULE,
+			'America/New_York'
+		);
+
+		update_post_meta( $series_id, 'gatherpress_timezone', 'Asia/Tokyo' );
+
+		$this->assertSame(
+			'Asia/Tokyo',
+			get_post_meta( $series_id, 'gatherpress_timezone', true ),
+			'Failed to assert the fixture poisoned the series\' own timezone meta, so the occurrence rows and'
+				. ' the series genuinely disagree.'
+		);
+
+		$query     = $this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) );
+		$from_meta = array();
+		$from_api  = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$from_meta[] = get_post_meta( $series_id, 'gatherpress_timezone', true );
+			$from_api[]  = Context::get_instance()->get_datetime( $series_id )['timezone'];
+		}
+
+		wp_reset_postdata();
+
+		// `wp_reset_postdata()` restores from the *main* query, which has no
+		// post in this harness, so the last stamped loop row would otherwise
+		// still be the global post and the read below would prove nothing.
+		$this->go_to( home_url( '/' ) );
+
+		$this->assertSame(
+			array_fill( 0, 4, 'America/New_York' ),
+			$from_meta,
+			'Failed to assert every loop iteration read the occurrence record\'s own timezone through the'
+				. ' get_post_metadata filter, rather than falling back to the series\' meta.'
+		);
+		$this->assertSame(
+			array_fill( 0, 4, 'America/New_York' ),
+			$from_api,
+			'Failed to assert Context::get_datetime() reports the occurrence record\'s own timezone in a loop.'
+		);
+		$this->assertSame(
+			'Asia/Tokyo',
+			get_post_meta( $series_id, 'gatherpress_timezone', true ),
+			'Failed to assert the series\' own timezone is read again once the loop is over. Without this the'
+				. ' fixture would prove nothing, since a substitution that never lifted would look the same.'
+		);
+	}
+
 
 	/**
 	 * Coverage for `Occurrences::table_exists()` on both memo arms.
@@ -1039,6 +1537,393 @@ class Test_Loop_Render extends Base {
 		$this->assertTrue(
 			$occurrences->table_exists(),
 			'Failed to assert the real table still answers true once the prefix is restored.'
+		);
+	}
+
+	/**
+	 * Coverage for per-occurrence RSVP state inside a loop.
+	 *
+	 * The archive and Query Loop are the surfaces where this breaks: reading
+	 * only `Context::current()` in `Rsvp_Occurrence::current_occurrence()`
+	 * yields the *request's* occurrence. A loop
+	 * has no request occurrence, so it answers null on every row and every
+	 * row reads the same series-wide RSVP state, so an attendee on the first
+	 * date appears to be attending all fourteen.
+	 *
+	 * The fixture makes the right answer and the wrong answer differ:
+	 * exactly one occurrence carries an RSVP, so a
+	 * series-wide read shows attending on every row while a correctly scoped
+	 * read shows it on one. Asserting the whole per-row vector rather than a
+	 * single row is what makes that distinction visible.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::current_occurrence
+	 * @covers \GatherPress\Core\Event\Recurrence\Context::loop_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_rsvp_state_in_a_loop_is_scoped_to_each_row_occurrence(): void {
+		$anchor  = $this->now()->modify( '+2 days' );
+		$post_id = $this->create_series_at( $anchor, $anchor->modify( '+2 hours' ) );
+		$user_id = $this->factory->user->create();
+
+		$rows = Occurrences::get_instance()->select_for_series( array( $post_id ) );
+		$this->assertGreaterThan( 2, count( $rows ), 'Failed to assert the fixture projected several occurrences.' );
+
+		$target = (string) $rows[0]['recurrence_id'];
+
+		// Write the RSVP through the same context the request path establishes,
+		// so the stored comment carries exactly one occurrence term.
+		Context::get_instance()->set( $post_id, $target );
+		$rsvp = new Rsvp( $post_id );
+		$rsvp->save( $user_id, 'attending' );
+		Context::get_instance()->clear();
+
+		$query     = $this->run_upcoming_query();
+		$attending = array();
+
+		while ( $query->have_posts() ) {
+			$query->the_post();
+
+			$occurrence = Rsvp_Occurrence::current_occurrence( $post_id );
+			$responses  = ( new Rsvp( $post_id ) )->responses();
+
+			$attending[ (string) ( $occurrence['recurrence_id'] ?? 'none' ) ] =
+				(int) ( $responses['attending']['count'] ?? -1 );
+		}
+
+		wp_reset_postdata();
+
+		$this->assertArrayHasKey(
+			$target,
+			$attending,
+			'Failed to assert each loop row resolved its own occurrence identifier.'
+		);
+		$this->assertSame(
+			1,
+			$attending[ $target ],
+			'Failed to assert the occurrence holding the RSVP reports one attendee.'
+		);
+
+		unset( $attending[ $target ] );
+
+		$this->assertNotEmpty(
+			$attending,
+			'Failed to assert the loop produced sibling occurrences to compare against.'
+		);
+		$this->assertSame(
+			array( 0 ),
+			array_values( array_unique( $attending ) ),
+			'Failed to assert every other occurrence reports zero attendees rather than inheriting the series count.'
+		);
+	}
+
+	/**
+	 * Coverage for the per-row occurrence identity reaching the browser.
+	 *
+	 * The server half of this landed already: every row resolves its own
+	 * occurrence and renders its own counts. None of that survives the trip to
+	 * the client, because the interactivity block context each row emits carries
+	 * `postId` alone. One post rendered many times therefore collapses to a
+	 * single entry in `state.posts`, and RSVPing to one occurrence visually
+	 * applies to every row of the series.
+	 *
+	 * The assertion is on the whole per-row vector of emitted identities rather
+	 * than on one row: a single-row assertion passes
+	 * just as well when every row emits the same thing, which is precisely the
+	 * defect. The expected vector is the series' own occurrence identifiers, in
+	 * loop order, so the only mechanism that can produce it is the real one.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::current_recurrence_id
+	 *
+	 * @return void
+	 */
+	public function test_each_loop_row_emits_its_own_occurrence_in_the_block_context(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+
+		$contexts = $this->loop_block_contexts(
+			$this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) )
+		);
+
+		$this->assertCount(
+			4,
+			$contexts,
+			'Failed to assert the loop expanded the series to its four upcoming occurrences.'
+		);
+
+		$expected = array();
+
+		foreach ( array( 1, 2, 3, 4 ) as $index ) {
+			$expected[] = array(
+				'postId'       => $series_id,
+				'recurrenceId' => $this->occurrence_id( $anchor, $index ),
+			);
+		}
+
+		$this->assertSame(
+			$expected,
+			$contexts,
+			'Failed to assert every row published its own occurrence identity to the client. Four contexts'
+				. ' carrying the same post ID and no occurrence is the defect a browser measured: the client'
+				. ' store keys on the post alone, so all four rows share one RSVP state.'
+		);
+	}
+
+	/**
+	 * Coverage for every one of the five block-context emitters, not just one.
+	 *
+	 * `test_each_loop_row_emits_its_own_occurrence_in_the_block_context()` above
+	 * renders `gatherpress/rsvp-count` alone, so reverting any of the other four
+	 * emitters to `array( 'postId' => $post_id )` left the whole PHP suite
+	 * green. The partial revert is the dangerous shape: the RSVP button keys on
+	 * `42` while the counts beside it key on `42:20260823T180000`, so the button
+	 * collapses across the series, the counts stay right, and nothing notices.
+	 * The online-event-link emitter is the highest-consequence of the four.
+	 * That block reveals a private meeting URL.
+	 *
+	 * Every emitter renders inside the same loop iteration, so the vector each
+	 * one publishes is compared against the same loop order.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_every_block_context_emitter_publishes_its_own_row_occurrence(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+
+		$contexts = $this->loop_emitter_contexts(
+			$this->run_upcoming_query( array( 'post__in' => array( $series_id ) ) )
+		);
+
+		$this->assertSame(
+			array( 'rsvp', 'rsvp-form', 'rsvp-response', 'rsvp-count', 'online-event-link' ),
+			array_keys( $contexts ),
+			'Failed to assert all five emitters rendered a context on every iteration. An emitter that renders'
+				. ' nothing here is an emitter this test cannot guard.'
+		);
+
+		$expected = array();
+
+		foreach ( array( 1, 2, 3, 4 ) as $index ) {
+			$expected[] = array(
+				'postId'       => $series_id,
+				'recurrenceId' => $this->occurrence_id( $anchor, $index ),
+			);
+		}
+
+		foreach ( $contexts as $emitter => $rows ) {
+			$this->assertSame(
+				$expected,
+				array_map( array( $this, 'identity_only' ), $rows ),
+				sprintf(
+					'Failed to assert the %s block published its own occurrence identity on every row.',
+					$emitter
+				)
+			);
+		}
+	}
+
+	/**
+	 * Reduce a published block context to the identity keys.
+	 *
+	 * The online-event-link block merges its own `linkText` into the payload,
+	 * so the comparison is scoped to the two keys every emitter shares. Key
+	 * order is `block_context()`'s own, which is what the assertion pins.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array $context A decoded `data-wp-context` payload.
+	 *
+	 * @return array The `postId` and `recurrenceId` entries the payload carries.
+	 */
+	public function identity_only( array $context ): array {
+		return array_intersect_key( $context, array_flip( array( 'postId', 'recurrenceId' ) ) );
+	}
+
+	/**
+	 * Coverage for the non-recurring arm of the emitted block context.
+	 *
+	 * An ordinary event must publish exactly what it published before this
+	 * existed, which is `postId` and nothing else, so its state key stays the
+	 * bare post ID and its request bodies stay byte-identical.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_a_plain_event_row_emits_a_post_id_only_block_context(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+
+		$plain_id = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
+
+		$contexts = $this->loop_block_contexts( $this->run_upcoming_query() );
+		$last     = end( $contexts );
+
+		$this->assertSame(
+			array( 'postId' => $plain_id ),
+			$last,
+			'Failed to assert a non-recurring row emits the post ID alone, with no occurrence key, even while'
+				. ' sharing a loop with a recurring series.'
+		);
+	}
+
+	/**
+	 * Coverage for the no-recurring-events guard on the block-context entry point this adds.
+	 *
+	 * Named after the loop it drives rather than after the resolver, because a
+	 * "performs no writes" test that drives the body of the work and never the
+	 * entry point passes while the guard is missing at the entry point.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_block_context_touches_no_occurrence_table_without_recurring_events(): void {
+		global $wpdb;
+
+		$now      = $this->now();
+		$plain_id = $this->create_event_at( $now->modify( '+2 hours' ), $now->modify( '+3 hours' ) );
+
+		$this->assertFalse(
+			Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		// Warm the RSVP response transient the count block has always written,
+		// so the capture below sees only what this render newly writes. Without
+		// it the assertion would be measuring a pre-existing cache fill rather
+		// than anything this test is about.
+		$this->loop_block_contexts( $this->run_upcoming_query() );
+
+		$wpdb->queries      = array();
+		$saved              = $wpdb->save_queries;
+		$wpdb->save_queries = true;
+
+		$contexts = $this->loop_block_contexts( $this->run_upcoming_query() );
+		$captured = $wpdb->queries;
+
+		$wpdb->save_queries = $saved;
+		$wpdb->queries      = array();
+
+		$occurrence_queries = array_values(
+			array_filter(
+				array_column( $captured, 0 ),
+				static function ( string $sql ) use ( $table ): bool {
+					return str_contains( $sql, $table );
+				}
+			)
+		);
+		$option_writes      = array_values(
+			array_filter(
+				array_column( $captured, 0 ),
+				static function ( string $sql ) use ( $wpdb ): bool {
+					return str_contains( $sql, $wpdb->options )
+						&& ( str_contains( $sql, 'INSERT' ) || str_contains( $sql, 'UPDATE' ) );
+				}
+			)
+		);
+
+		$this->assertSame(
+			array(),
+			$occurrence_queries,
+			'Failed to assert emitting the block context on a site with no recurring events never reads the'
+				. ' occurrence table.'
+		);
+		$this->assertSame(
+			array(),
+			$option_writes,
+			'Failed to assert emitting the block context on a site with no recurring events writes no option.'
+		);
+		$this->assertSame(
+			array( array( 'postId' => $plain_id ) ),
+			$contexts,
+			'Failed to assert the ordinary event still emitted its unchanged block context.'
+		);
+	}
+
+	/**
+	 * Coverage for `block_context()` invoked directly, on both of its arms.
+	 *
+	 * Coverage tracing is the reason this exists alongside the rendered-output
+	 * tests above: xdebug does not trace a helper's body reliably when it is
+	 * only ever reached from a block render inside a loop, so each return path
+	 * is driven once through the public method as well.
+	 *
+	 * @covers \GatherPress\Core\Event\Recurrence\Rsvp_Occurrence::block_context
+	 *
+	 * @return void
+	 */
+	public function test_block_context_returns_both_shapes(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$plain_id  = $this->create_event_at( $now->modify( '+400 hours' ), $now->modify( '+401 hours' ) );
+		$requested = $this->occurrence_id( $anchor, 3 );
+
+		$this->assertSame(
+			array( 'postId' => $plain_id ),
+			Rsvp_Occurrence::block_context( $plain_id ),
+			'Failed to assert a post with no occurrence in play gets the post ID alone.'
+		);
+
+		Context::get_instance()->set( $series_id, $requested );
+
+		$this->assertSame(
+			array(
+				'postId'       => $series_id,
+				'recurrenceId' => $requested,
+			),
+			Rsvp_Occurrence::block_context( $series_id ),
+			'Failed to assert a post rendering an occurrence gets that occurrence\'s identifier.'
+		);
+	}
+	/**
+	 * Coverage for `permalink()`'s third pass-through: an occurrence whose post
+	 * has no permalink to compose one on top of.
+	 *
+	 * `Rewrite::get_occurrence_url()` builds the occurrence URL from the series
+	 * permalink and answers with an empty string when there is none, which is
+	 * what `get_permalink()` returns for a post that is no longer there.
+	 * Returning that to the `post_link` filter publishes `href=""`, which
+	 * resolves to the current page. Reachability is narrow, because a resolved
+	 * occurrence normally implies a live post, but an empty href is a worse
+	 * answer than the permalink core already had.
+	 *
+	 * @covers ::permalink
+	 *
+	 * @return void
+	 */
+	public function test_permalink_falls_back_when_the_post_has_no_permalink(): void {
+		$now    = $this->now();
+		$anchor = $now->modify( '-1 hour' );
+
+		$series_id = $this->create_series_at( $anchor, $now->modify( '-30 minutes' ) );
+		$post      = get_post( $series_id );
+
+		Context::get_instance()->set( $series_id, $this->occurrence_id( $anchor, 1 ) );
+
+		wp_delete_post( $series_id, true );
+
+		$result = Context::get_instance()->permalink( 'https://example.test/original/', $post );
+
+		Context::get_instance()->clear();
+
+		$this->assertSame(
+			'https://example.test/original/',
+			$result,
+			'Failed to assert permalink() degrades to the permalink it was handed rather than to an empty href.'
 		);
 	}
 }

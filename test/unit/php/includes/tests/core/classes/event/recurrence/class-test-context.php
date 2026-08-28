@@ -16,6 +16,7 @@ namespace GatherPress\Tests\Core\Event\Recurrence;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use GatherPress\Core\Assets;
 use GatherPress\Core\Calendar\Calendar;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Query as Event_Query;
@@ -1966,6 +1967,201 @@ class Test_Context extends Base {
 			self::ANCHOR_START_GMT,
 			$event->get_datetime()['datetime_start_gmt'],
 			'Failed to assert that the pre-warmed instance returns to the series datetime after clear.'
+		);
+	}
+
+	/**
+	 * `set_for_series()` enters context for an occurrence a request names.
+	 *
+	 * The REST counterpart to `sync()`. A REST request never fires `wp`, because
+	 * core's `rest_api_loaded()` runs on `parse_request` and ends in `die()`.
+	 * Without this, nothing on that surface could ever be occurrence-scoped.
+	 *
+	 * @covers ::set_for_series
+	 * @covers ::resolve_in_series
+	 *
+	 * @return void
+	 */
+	public function test_set_for_series_enters_the_named_occurrence(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertTrue(
+			Context::get_instance()->set_for_series( $post_id, self::SECOND_ID ),
+			'Failed to assert a real occurrence is entered.'
+		);
+		$this->assertSame(
+			self::SECOND_ID,
+			Context::get_instance()->current()['recurrence_id'],
+			'Failed to assert the entered context is the occurrence that was named.'
+		);
+	}
+
+	/**
+	 * Resolving the same occurrence twice costs one query, not two.
+	 *
+	 * A REST dispatch resolves the same `(post_id, recurrence_id)` pair twice:
+	 * once in the permission callback and once on entry. The two stay separate
+	 * deliberately: the permission callback resolves only to authorize the
+	 * occurrence's owner, and entering context there would leave it standing
+	 * on a request that then 403s with no teardown filter registered. The memo
+	 * removes the duplicated query without collapsing that separation.
+	 *
+	 * A miss is memoized too, so a fabricated identifier also costs one query
+	 * per request rather than one per lookup. That is asserted, because
+	 * remembering only hits is the easy half to get wrong.
+	 *
+	 * @covers ::resolve_in_series
+	 * @covers ::flush_resolved
+	 *
+	 * @return void
+	 */
+	public function test_resolve_in_series_memoizes_within_the_request(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+		$table   = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		/**
+		 * Count the occurrence-table queries a callable performs.
+		 *
+		 * @param callable $run The work to measure.
+		 *
+		 * @return int Occurrence-table queries issued.
+		 */
+		$queries_during = static function ( callable $run ) use ( $wpdb, $table ): int {
+			$before = count( $wpdb->queries );
+
+			$run();
+
+			return count(
+				array_filter(
+					array_slice( $wpdb->queries, $before ),
+					static function ( array $query ) use ( $table ): bool {
+						return str_contains( $query[0], $table );
+					}
+				)
+			);
+		};
+
+		Context::flush_resolved();
+
+		$first = $queries_during(
+			static function () use ( $post_id ): void {
+				Context::resolve_in_series( $post_id, self::SECOND_ID );
+			}
+		);
+
+		$second = $queries_during(
+			static function () use ( $post_id ): void {
+				Context::resolve_in_series( $post_id, self::SECOND_ID );
+			}
+		);
+
+		$this->assertSame(
+			1,
+			$first,
+			'Failed to assert the first resolution reaches the occurrence table exactly once.'
+		);
+		$this->assertSame(
+			0,
+			$second,
+			'Failed to assert a repeat resolution of the same pair is served from the memo.'
+		);
+
+		// A miss is remembered as cheaply as a hit.
+		Context::flush_resolved();
+
+		$this->assertSame(
+			1,
+			$queries_during(
+				static function () use ( $post_id ): void {
+					Context::resolve_in_series( $post_id, '20991231T235959' );
+					Context::resolve_in_series( $post_id, '20991231T235959' );
+				}
+			),
+			'Failed to assert an unresolvable identifier is queried once and then remembered.'
+		);
+
+		// And flushing really discards it, or the memo would outlive storage
+		// changes inside a single test process.
+		Context::flush_resolved();
+
+		$this->assertSame(
+			1,
+			$queries_during(
+				static function () use ( $post_id ): void {
+					Context::resolve_in_series( $post_id, self::SECOND_ID );
+				}
+			),
+			'Failed to assert flush_resolved() discards the memo.'
+		);
+	}
+
+	/**
+	 * `set_for_series()` refuses anything that does not resolve to a row.
+	 *
+	 * @covers ::set_for_series
+	 * @covers ::resolve_in_series
+	 *
+	 * @return void
+	 */
+	public function test_set_for_series_refuses_what_does_not_resolve(): void {
+		$post_id = $this->create_and_project();
+
+		$this->assertFalse(
+			Context::get_instance()->set_for_series( $post_id, '20991231T235959' ),
+			'Failed to assert an unknown identifier does not enter context.'
+		);
+		$this->assertFalse(
+			Context::get_instance()->set_for_series( $post_id, '' ),
+			'Failed to assert an empty identifier does not enter context.'
+		);
+		$this->assertFalse(
+			Context::get_instance()->set_for_series( 0, self::SECOND_ID ),
+			'Failed to assert an unusable post ID does not enter context.'
+		);
+		$this->assertNull(
+			Context::get_instance()->current(),
+			'Failed to assert a refused entry leaves no context behind.'
+		);
+	}
+
+	/**
+	 * A site with no recurring events resolves nothing and queries nothing.
+	 *
+	 * @covers ::resolve_in_series
+	 *
+	 * @return void
+	 */
+	public function test_resolve_in_series_short_circuits_off_a_recurring_site(): void {
+		global $wpdb;
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		Query::refresh_has_recurring_events();
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$before            = count( $wpdb->queries );
+		$resolved          = Context::resolve_in_series( $post_id, self::SECOND_ID );
+		$since             = array_slice( $wpdb->queries, $before );
+
+		$this->assertNull( $resolved, 'Failed to assert a non-recurring site resolves no occurrence.' );
+		$this->assertSame(
+			array(),
+			array_values(
+				array_filter(
+					$since,
+					static function ( array $query ) use ( $occurrences_table ): bool {
+						return str_contains( $query[0], $occurrences_table );
+					}
+				)
+			),
+			'Failed to assert a non-recurring site never queries the occurrence table to resolve one.'
 		);
 	}
 	/**
