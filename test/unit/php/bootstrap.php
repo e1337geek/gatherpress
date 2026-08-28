@@ -9,6 +9,11 @@
 
 // phpcs:disable Squiz.Commenting.FileComment.Missing
 
+// Refuse to run against a stale bundle. First statement of the bootstrap on
+// purpose: this has to fail before WordPress loads, not as a puzzling
+// block-render assertion two minutes into the suite.
+require_once __DIR__ . '/build-freshness.php';
+
 // Record every query so the suite's query-capture assertions have something to
 // read. Several tests slice `$wpdb->queries` to prove a code path issues the
 // SQL it claims to. With SAVEQUERIES off that property stays null and those

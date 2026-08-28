@@ -8,10 +8,18 @@
 
 namespace GatherPress\Tests\Core\Event;
 
+use DateTimeImmutable;
+use DateTimeZone;
+use Exception;
 use GatherPress\Core\Event;
 use GatherPress\Core\Event\Admin_List;
+use GatherPress\Core\Event\Recurrence\Context as Recurrence_Context;
+use GatherPress\Core\Event\Recurrence\Meta as Recurrence_Meta;
+use GatherPress\Core\Event\Recurrence\Occurrences;
+use GatherPress\Core\Event\Recurrence\Query as Recurrence_Query;
 use GatherPress\Core\Event\Setup as Event_Setup;
 use GatherPress\Core\Rsvp;
+use GatherPress\Core\Settings;
 use GatherPress\Tests\Base;
 use PMC\Unit_Test\Utility;
 use WP_Query;
@@ -1731,6 +1739,867 @@ class Test_Admin_List extends Base {
 		$this->assertFalse(
 			has_filter( 'posts_orderby', array( $instance, 'rsvp_sorting_orderby' ) ),
 			'No RSVP orderby filter should be added for event-date-only post types.'
+		);
+	}
+
+	/**
+	 * Build the recurring fixture the date-column tests share.
+	 *
+	 * The anchor is deliberately **in the past** and the rule is deliberately
+	 * long enough to still be running. That separation is the whole point of
+	 * the fixture: the series anchor and the occurrence the column is supposed
+	 * to show are provably different dates, so a column that renders the anchor
+	 * and a column that renders the next occurrence cannot produce the same
+	 * string. A fixture anchored on its own next occurrence would pass against
+	 * both the fixed code and the broken code it replaced.
+	 *
+	 * The five-hour offset keeps the chosen occurrence off "right now", so the
+	 * assertion never races the clock across a `LIMIT 1` boundary.
+	 *
+	 * Everything is UTC so an occurrence's local columns and its GMT columns
+	 * read identically and a formatting assertion has one timezone to reason
+	 * about.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $count Number of daily occurrences to project.
+	 *
+	 * @return array<string, mixed> The post ID, the anchor start and the occurrence starts.
+	 */
+	protected function create_daily_series_fixture( int $count ): array {
+		gatherpress_reset_custom_tables();
+
+		$now    = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$anchor = $now->modify( '-40 days +5 hours' );
+
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $anchor->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		add_post_meta(
+			$post_id,
+			Recurrence_Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => $count,
+				)
+			)
+		);
+
+		Recurrence_Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return array(
+			'post_id' => (int) $post_id,
+			'anchor'  => $anchor,
+			// Occurrence 40 of a daily series anchored forty days ago starts
+			// five hours from now, the first one that has not finished.
+			'next'    => $anchor->modify( '+40 days' ),
+			'last'    => $anchor->modify( sprintf( '+%d days', $count - 1 ) ),
+		);
+	}
+
+	/**
+	 * Format a datetime the way the event date column does.
+	 *
+	 * Reads the same two settings `Event::get_display_datetime()` reads, so the
+	 * expectation tracks a site that has changed its date format rather than
+	 * hard-coding one.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeImmutable $datetime Datetime to format, in UTC.
+	 *
+	 * @return string The formatted date and time.
+	 */
+	protected function format_column_datetime( DateTimeImmutable $datetime ): string {
+		$settings = Settings::get_instance();
+
+		return $datetime->format(
+			sprintf( '%s %s', $settings->get( 'date_format' ), $settings->get( 'time_format' ) )
+		);
+	}
+
+	/**
+	 * Create and project a daily series anchored at the given instant.
+	 *
+	 * The same shape `create_daily_series_fixture()` builds, without clearing
+	 * the occurrence table, so a test can stand two series side by side.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param DateTimeImmutable $anchor Anchor start, in UTC.
+	 * @param int               $count  Occurrences to project.
+	 *
+	 * @return int The projected post ID.
+	 */
+	protected function create_series_anchored_at( DateTimeImmutable $anchor, int $count ): int {
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $anchor->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $anchor->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		add_post_meta(
+			$post_id,
+			Recurrence_Meta::META_KEY,
+			wp_json_encode(
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => $count,
+				)
+			)
+		);
+
+		Recurrence_Meta::get_instance()->set_recurrence( $post_id );
+		Occurrences::get_instance()->project( $post_id );
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * Create a plain, non-recurring event with the given datetime bounds.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $start Relative start, e.g. `+1 day`.
+	 * @param string $end   Relative end, e.g. `+1 day +2 hours`.
+	 *
+	 * @return int The created post ID.
+	 */
+	protected function create_plain_event( string $start, string $end ): int {
+		$post_id = $this->mock->post(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		)->get()->ID;
+
+		$event = new Event( $post_id );
+		$event->save_datetimes(
+			array(
+				'datetime_start' => gmdate( 'Y-m-d H:i:s', strtotime( $start ) ),
+				'datetime_end'   => gmdate( 'Y-m-d H:i:s', strtotime( $end ) ),
+				'timezone'       => 'UTC',
+			)
+		);
+
+		return (int) $post_id;
+	}
+
+	/**
+	 * Run one admin Upcoming/Past view query through the production wiring.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $bucket Either `upcoming` or `past`.
+	 *
+	 * @return int[] The result IDs.
+	 */
+	protected function run_admin_view_query( string $bucket ): array {
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query(
+			array(
+				'post_type'               => Event::POST_TYPE,
+				'post_status'             => 'publish',
+				'gatherpress_event_query' => $bucket,
+				'orderby'                 => 'datetime',
+				'order'                   => 'upcoming' === $bucket ? 'ASC' : 'DESC',
+				'posts_per_page'          => -1,
+				'fields'                  => 'ids',
+				'no_found_rows'           => true,
+			)
+		);
+
+		set_current_screen( 'front' );
+
+		return array_map( 'intval', $query->posts );
+	}
+
+	/**
+	 * The view counts bucket a running series by its chosen occurrence.
+	 *
+	 * The date column and the sort read the occurrence the series is next
+	 * doing, so counts still reading the series anchor would advertise an
+	 * Upcoming view that omits an actively recurring series. The fixture's
+	 * series anchor elapsed forty days ago while its next occurrence is five
+	 * hours out, so anchor counting and occurrence counting provably disagree,
+	 * and the two bracketing one-off events prove the plain buckets are
+	 * untouched.
+	 *
+	 * @covers ::get_event_counts
+	 *
+	 * @return void
+	 */
+	public function test_get_event_counts_buckets_a_running_series_by_its_next_occurrence(): void {
+		$instance = Admin_List::get_instance();
+		$this->create_daily_series_fixture( 60 );
+
+		$this->create_plain_event( '+1 day', '+1 day +2 hours' );
+		$this->create_plain_event( '-2 days', '-2 days +2 hours' );
+
+		Utility::set_and_get_hidden_property( $instance, 'event_counts', array() );
+
+		$counts = Utility::invoke_hidden_method( $instance, 'get_event_counts' );
+
+		$this->assertSame(
+			2,
+			$counts['upcoming'],
+			'A running series must count toward Upcoming alongside the plain future event.'
+		);
+		$this->assertSame(
+			1,
+			$counts['past'],
+			'Only the plain past event may count toward Past.'
+		);
+	}
+
+	/**
+	 * The view counts match the rows the corresponding view query returns.
+	 *
+	 * The counts and the list are produced by two different pieces of SQL, and
+	 * a reader treats the count as a promise about the list. Both are driven
+	 * here for the same fixture, so a divergence between the shared derived
+	 * occurrence relation and either consumer fails this test by number.
+	 *
+	 * @covers ::get_event_counts
+	 *
+	 * @return void
+	 */
+	public function test_get_event_counts_match_the_rows_each_view_returns(): void {
+		$instance = Admin_List::get_instance();
+		$fixture  = $this->create_daily_series_fixture( 60 );
+
+		$this->create_plain_event( '+1 day', '+1 day +2 hours' );
+		$this->create_plain_event( '-2 days', '-2 days +2 hours' );
+
+		$upcoming_rows = $this->run_admin_view_query( 'upcoming' );
+		$past_rows     = $this->run_admin_view_query( 'past' );
+
+		Utility::set_and_get_hidden_property( $instance, 'event_counts', array() );
+
+		$counts = Utility::invoke_hidden_method( $instance, 'get_event_counts' );
+
+		$this->assertContains(
+			$fixture['post_id'],
+			$upcoming_rows,
+			'A running series belongs to the Upcoming view rows.'
+		);
+		$this->assertNotContains(
+			$fixture['post_id'],
+			$past_rows,
+			'A running series must not appear in the Past view rows.'
+		);
+		$this->assertSame(
+			count( $upcoming_rows ),
+			$counts['upcoming'],
+			'The Upcoming count must equal the number of rows the Upcoming view returns.'
+		);
+		$this->assertSame(
+			count( $past_rows ),
+			$counts['past'],
+			'The Past count must equal the number of rows the Past view returns.'
+		);
+	}
+
+	/**
+	 * The date a row displays agrees with the view that listed it.
+	 *
+	 * This is the coherence B3 was filed for: a row whose displayed date
+	 * contradicts the filter that selected it is not a shippable state. The
+	 * running series must be listed under Upcoming, and the very date its
+	 * column renders must be the upcoming occurrence that put it there.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_row_displayed_date_agrees_with_the_view_that_lists_it(): void {
+		$fixture = $this->create_daily_series_fixture( 60 );
+
+		$this->assertContains(
+			$fixture['post_id'],
+			$this->run_admin_view_query( 'upcoming' ),
+			'The running series must be listed by the Upcoming view.'
+		);
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['next'] ),
+			$output,
+			'The listed row must display the upcoming occurrence that placed it in the view.'
+		);
+	}
+
+	/**
+	 * A running series dates its row from its next occurrence, not its anchor.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_shows_next_occurrence_for_running_series(): void {
+		$fixture = $this->create_daily_series_fixture( 60 );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['next'] ),
+			$output,
+			'Failed to assert that the column shows the next upcoming occurrence.'
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $fixture['anchor'] ),
+			$output,
+			'Failed to assert that the column no longer shows the series anchor.'
+		);
+		$this->assertStringContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that a recurring series is marked as recurring.'
+		);
+	}
+
+	/**
+	 * A series whose occurrences have all elapsed dates its row from the last one.
+	 *
+	 * The anchor is the *first* occurrence, so showing it for a finished series
+	 * would report a date the series stopped using thirty-six days before it
+	 * ended. The most recent occurrence is what a reader means by "when was
+	 * this".
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_shows_last_occurrence_for_elapsed_series(): void {
+		$fixture = $this->create_daily_series_fixture( 5 );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['last'] ),
+			$output,
+			'Failed to assert that a fully elapsed series shows its most recent occurrence.'
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $fixture['anchor'] ),
+			$output,
+			'Failed to assert that a fully elapsed series does not show its anchor.'
+		);
+		$this->assertStringContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that an elapsed series is still marked as recurring.'
+		);
+	}
+
+	/**
+	 * A series with a rule but no scheduled rows keeps its marker.
+	 *
+	 * Canceling every occurrence leaves the series with nothing to date the
+	 * row from, so the anchor is the only date available. It is still a
+	 * recurring event, and dropping the marker would tell the reader it is a
+	 * one-off.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_marks_series_with_no_scheduled_occurrences(): void {
+		$fixture     = $this->create_daily_series_fixture( 60 );
+		$occurrences = Occurrences::get_instance();
+
+		foreach ( $occurrences->select_for_series( array( $fixture['post_id'] ) ) as $occurrence ) {
+			$occurrences->set_status(
+				$fixture['post_id'],
+				(string) $occurrence['recurrence_id'],
+				Occurrences::STATUS_CANCELED
+			);
+		}
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $fixture['anchor'] ),
+			$output,
+			'Failed to assert that a fully canceled series falls back to its anchor.'
+		);
+		$this->assertStringContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that a fully canceled series is still marked as recurring.'
+		);
+	}
+
+	/**
+	 * A non-recurring event is untouched by any of the above.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_leaves_non_recurring_event_alone(): void {
+		gatherpress_reset_custom_tables();
+
+		$start   = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->modify( '+3 days' );
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $start->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', (int) $post_id );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $start ),
+			$output,
+			'Failed to assert that a non-recurring event still shows its own datetime.'
+		);
+		$this->assertStringNotContainsString(
+			'gatherpress-recurring-badge',
+			$output,
+			'Failed to assert that a non-recurring event is not marked as recurring.'
+		);
+	}
+
+	/**
+	 * An ordinary event's date column issues no occurrence-table queries.
+	 *
+	 * On a site with one recurring series, every other row of the admin list
+	 * is an ordinary event whose occurrence probes cannot match anything: a
+	 * twenty-row page would pay up to forty uncached `LIMIT 1` queries for
+	 * nothing. The rule check is a post-meta-cache read, so the guard costs
+	 * no query of its own.
+	 *
+	 * The fixture deliberately satisfies every *other* guard on the path:
+	 * the recurring series flips the site-level flag on, the table exists,
+	 * and the resolved post ID list is non-empty, so a zero count can only
+	 * come from the per-post rule check.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_custom_columns_datetime_queries_no_occurrences_for_ordinary_event(): void {
+		global $wpdb;
+
+		// A real recurring series elsewhere on the site turns the site flag on.
+		$this->create_daily_series_fixture( 5 );
+
+		$this->assertTrue(
+			Recurrence_Query::site_has_recurring_events(),
+			'Fixture failure: the site-level recurring flag must be on for this guard test to mean anything.'
+		);
+
+		$start   = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )->modify( '+3 days' );
+		$post_id = $this->factory->post->create(
+			array(
+				'post_type'   => Event::POST_TYPE,
+				'post_status' => 'publish',
+			)
+		);
+
+		add_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $start->format( 'Y-m-d H:i:s' ),
+					'dateTimeEnd'   => $start->modify( '+1 hour' )->format( 'Y-m-d H:i:s' ),
+					'timezone'      => 'UTC',
+				)
+			)
+		);
+
+		Event_Setup::get_instance()->set_datetimes( $post_id );
+
+		// Prime the meta cache the way the admin list's main query does, so
+		// the counted window reflects a real page render rather than a cold
+		// cache paying a meta query the list would not.
+		get_post_meta( $post_id );
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$seen  = 0;
+
+		$counter = static function ( string $query ) use ( &$seen, $table ): string {
+			if ( str_contains( $query, $table ) ) {
+				++$seen;
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $counter );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', (int) $post_id );
+		$output = ob_get_clean();
+
+		remove_filter( 'query', $counter );
+
+		$this->assertSame(
+			0,
+			$seen,
+			'An ordinary event with no recurrence rule must not probe the occurrence table at all.'
+		);
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $start ),
+			$output,
+			'The guard must not change what the column renders for an ordinary event.'
+		);
+	}
+
+	/**
+	 * A throw during rendering must not leak this row's occurrence context.
+	 *
+	 * The column enters occurrence context before formatting and restores
+	 * the previous context after. `Event` initialization and
+	 * `get_display_datetime()` are both documented to throw, and a plugin's
+	 * `gatherpress_date_format` filter can throw too; if an outer list-table
+	 * extension catches the exception and continues, the next render would
+	 * inherit this row's context and read the wrong occurrence's values.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_render_datetime_column_restores_context_when_rendering_throws(): void {
+		$fixture = $this->create_daily_series_fixture( 5 );
+		$context = Recurrence_Context::get_instance();
+
+		// A context some other surface established and expects to keep. The
+		// first projected row differs from the display occurrence the column
+		// would enter (the next unfinished one), so a leak is detectable.
+		$standing = Occurrences::get_instance()->select_for_series(
+			array( $fixture['post_id'] )
+		)[0];
+
+		$context->restore( $standing );
+
+		$thrower = static function (): string {
+			throw new Exception( 'plugin formatting failure' );
+		};
+
+		add_filter( 'gatherpress_date_format', $thrower );
+
+		$caught = null;
+
+		ob_start();
+
+		try {
+			Admin_List::get_instance()->custom_columns( 'datetime', $fixture['post_id'] );
+		} catch ( Exception $thrown ) {
+			// An outer list-table extension catching the throw and moving on.
+			$caught = $thrown->getMessage();
+		} finally {
+			ob_end_clean();
+			remove_filter( 'gatherpress_date_format', $thrower );
+		}
+
+		$this->assertSame(
+			'plugin formatting failure',
+			$caught,
+			'Fixture failure: the render must actually throw for this test to mean anything.'
+		);
+		$this->assertSame(
+			$standing,
+			$context->current(),
+			'A throw during rendering must leave the previously standing occurrence context in place.'
+		);
+
+		$context->restore( null );
+	}
+
+	/**
+	 * Each row is dated from its own post, never from a sibling of the series.
+	 *
+	 * N2: the sort and the bucket predicate read a one-row-per-post relation,
+	 * because SQL cannot consult the `gatherpress_series_post_ids` PHP filter
+	 * that defines the sibling set. If the column resolved across the whole
+	 * series it would disagree with both, and every sibling row of a split
+	 * series would print the same date, so the list would stop distinguishing
+	 * them.
+	 *
+	 * Three dates are in play and all three differ, so no two mechanisms can
+	 * produce the same expected value: the sibling owns the earliest upcoming
+	 * occurrence in the series (two hours out), the row's own post owns the
+	 * next one after that (five hours out), and the row's post is anchored two
+	 * days back. A series-wide resolution picks the sibling's row, which
+	 * `Context::resolve()` refuses to serve to a post that does not own it, so
+	 * the column falls back to the anchor: a third value, and the one the
+	 * assertions below rule out.
+	 *
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_render_datetime_column_dates_each_row_from_its_own_post(): void {
+		gatherpress_reset_custom_tables();
+
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$anchor  = $now->modify( '-2 days +5 hours' );
+		$sibling = $this->create_series_anchored_at( $now->modify( '+2 hours' ), 3 );
+		$post_id = $this->create_series_anchored_at( $anchor, 10 );
+
+		$filter = static function ( array $post_ids, int $requested ) use ( $post_id, $sibling ): array {
+			return in_array( $requested, array( $post_id, $sibling ), true )
+				? array( $post_id, $sibling )
+				: $post_ids;
+		};
+
+		add_filter( 'gatherpress_series_post_ids', $filter, 10, 2 );
+
+		ob_start();
+		Admin_List::get_instance()->custom_columns( 'datetime', $post_id );
+		$output = ob_get_clean();
+
+		remove_filter( 'gatherpress_series_post_ids', $filter, 10 );
+
+		$this->assertStringContainsString(
+			$this->format_column_datetime( $now->modify( '+5 hours' ) ),
+			$output,
+			'The row must show the earliest upcoming occurrence its own post owns.'
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $now->modify( '+2 hours' ) ),
+			$output,
+			"The row must not show a sibling post's occurrence, which the sort and the bucket cannot see."
+		);
+		$this->assertStringNotContainsString(
+			$this->format_column_datetime( $anchor ),
+			$output,
+			'The row must not fall back to its anchor, which is what a refused sibling occurrence leaves behind.'
+		);
+	}
+
+	/**
+	 * Drive every SQL-emitting decision the admin events list makes.
+	 *
+	 * The real entry points, not the bodies behind them: the view links (which
+	 * is what calls `get_event_counts()`), both bucketed list queries, and the
+	 * date column render for every row each returns. A capture taken inside
+	 * one filter only observes the queries that already reach that filter,
+	 * which is how a "performs no extra queries" test passes over an unguarded
+	 * entry point.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	protected function drive_admin_list_surface(): void {
+		$instance = Admin_List::get_instance();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		Utility::set_and_get_hidden_property( $instance, 'event_counts', array() );
+		$instance->views_edit( array( 'all' => '<a href="#">All</a>' ) );
+
+		foreach ( array( 'upcoming', 'past' ) as $bucket ) {
+			foreach ( $this->run_admin_view_query( $bucket ) as $post_id ) {
+				set_current_screen( 'edit-' . Event::POST_TYPE );
+
+				ob_start();
+				$instance->custom_columns( 'datetime', $post_id );
+				ob_end_clean();
+			}
+		}
+
+		set_current_screen( 'front' );
+	}
+
+	/**
+	 * Capture the statements one pass over the admin list surface emits.
+	 *
+	 * The surface is driven once before the capture starts, because the first
+	 * run of any request primes the object cache and the second therefore
+	 * issues fewer statements: comparing a cold capture against a warm one
+	 * measures the cache, not the code. The interpolated GMT timestamps are
+	 * normalized away, because two captures taken microseconds apart can
+	 * straddle a second boundary. Nothing else is touched, so an added join,
+	 * an added column or an extra statement still fails the comparison.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return string[] The statements, in execution order.
+	 */
+	protected function capture_admin_list_queries(): array {
+		global $wpdb;
+
+		$this->drive_admin_list_surface();
+
+		$previous_queries   = $wpdb->queries;
+		$previous_save      = $wpdb->save_queries;
+		$wpdb->queries      = array();
+		$wpdb->save_queries = true;
+
+		$this->drive_admin_list_surface();
+
+		$captured = array_map(
+			static function ( array $entry ): string {
+				return (string) preg_replace(
+					'/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/',
+					'{datetime}',
+					(string) $entry[0]
+				);
+			},
+			$wpdb->queries
+		);
+
+		$wpdb->queries      = $previous_queries;
+		$wpdb->save_queries = $previous_save;
+
+		return $captured;
+	}
+
+	/**
+	 * REQ-16: the admin events list is untouched on a site with no recurring events.
+	 *
+	 * Three admin-list decisions now read the occurrence relation: the date
+	 * column, the date ordering, and the Upcoming/Past bucket predicate and
+	 * its counts. Each is a place a site that has never authored a recurring
+	 * event could start paying for a join it has no rows for, and the counts
+	 * are the newest of the three.
+	 *
+	 * Both halves of the requirement are asserted. Nothing in the capture may
+	 * name the occurrence table or the relation's alias, which is what covers
+	 * `get_event_counts()` and the column, neither of which is a hook and so
+	 * neither of which a detach can silence. And the whole capture must be
+	 * byte-identical with the recurrence clause filters detached, which is
+	 * what covers the filter that rewrites the list query itself.
+	 *
+	 * @covers ::get_event_counts
+	 * @covers ::views_edit
+	 * @covers ::custom_columns
+	 * @covers ::render_datetime_column
+	 *
+	 * @return void
+	 */
+	public function test_admin_list_runs_identical_sql_without_recurring_events(): void {
+		global $wpdb;
+
+		gatherpress_reset_custom_tables();
+
+		$this->create_plain_event( '+1 day', '+1 day +2 hours' );
+		$this->create_plain_event( '+3 days', '+3 days +2 hours' );
+		$this->create_plain_event( '-2 days', '-2 days +2 hours' );
+
+		$this->assertFalse(
+			Recurrence_Query::site_has_recurring_events(),
+			'Failed to assert the fixture site has no recurring events.'
+		);
+
+		$with = $this->capture_admin_list_queries();
+
+		$this->assertNotEmpty(
+			$with,
+			'Failed to assert the capture actually observed the admin list surface.'
+		);
+
+		$occurrences_table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		foreach ( $with as $statement ) {
+			$this->assertStringNotContainsString(
+				$occurrences_table,
+				$statement,
+				'A site with no recurring events must never read the occurrence table from the admin list.'
+			);
+			$this->assertStringNotContainsString(
+				Recurrence_Query::ADMIN_SORT_ALIAS,
+				$statement,
+				'A site with no recurring events must never join the occurrence display relation.'
+			);
+		}
+
+		$recurrence = Recurrence_Query::get_instance();
+
+		remove_filter( 'posts_clauses', array( $recurrence, 'adjust_admin_occurrence_sorting' ), 11 );
+		remove_filter( 'posts_clauses', array( $recurrence, 'expand_event_clauses' ), 11 );
+		remove_filter( 'the_posts', array( $recurrence, 'attach_occurrences' ), 10 );
+
+		$without = $this->capture_admin_list_queries();
+
+		add_filter( 'posts_clauses', array( $recurrence, 'adjust_admin_occurrence_sorting' ), 11, 2 );
+		add_filter( 'posts_clauses', array( $recurrence, 'expand_event_clauses' ), 11, 2 );
+		add_filter( 'the_posts', array( $recurrence, 'attach_occurrences' ), 10, 2 );
+
+		$this->assertSame(
+			$without,
+			$with,
+			'Failed to assert a flag-off site runs byte-identical admin list SQL with and without the recurrence'
+				. ' clause filters attached.'
 		);
 	}
 }

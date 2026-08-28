@@ -1380,6 +1380,83 @@ class Test_Occurrences extends Base {
 	}
 
 	/**
+	 * A row vanishing mid-request reads as gone, not as updated.
+	 *
+	 * A concurrent rule save reprojects the series and can delete the very
+	 * row a cancel request is about to update. The `query` filter below
+	 * deletes the row at the last instant before the `UPDATE` executes, the
+	 * narrowest reachable form of that race; reporting `true` for it hands
+	 * the REST route a success it then cannot substantiate with a row.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_set_status_returns_false_when_the_row_vanishes_mid_write(): void {
+		global $wpdb;
+
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+		$done     = false;
+
+		$racer = static function ( string $query ) use ( &$done, $table, $post_id, $wpdb ): string {
+			if ( ! $done && str_starts_with( $query, 'UPDATE' ) && str_contains( $query, $table ) ) {
+				// Fire once: the DELETE below re-enters this filter.
+				$done = true;
+
+				// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->query(
+					$wpdb->prepare( 'DELETE FROM %i WHERE series_post_id = %d', $table, $post_id )
+				);
+				// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			}
+
+			return $query;
+		};
+
+		add_filter( 'query', $racer );
+
+		$result = $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED );
+
+		remove_filter( 'query', $racer );
+
+		$this->assertTrue( $done, 'Fixture failure: the race must actually delete the row before the update.' );
+		$this->assertFalse(
+			$result,
+			'A status write whose row vanished mid-request must report the row as gone, not as updated.'
+		);
+		$this->assertNull( $instance->get( $post_id, '20260903T180000' ) );
+	}
+
+	/**
+	 * Writing the status a row already holds is a success, not a missing row.
+	 *
+	 * Zero affected rows is ambiguous in MySQL: a same-value write and a
+	 * vanished row both report zero. The two must not be conflated, or a
+	 * double-click on Cancel would surface a 404 for an occurrence that is
+	 * sitting right there, already canceled.
+	 *
+	 * @covers ::set_status
+	 *
+	 * @return void
+	 */
+	public function test_set_status_same_value_write_still_reports_success(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+
+		$this->assertTrue( $instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ) );
+		$this->assertTrue(
+			$instance->set_status( $post_id, '20260903T180000', Occurrences::STATUS_CANCELED ),
+			'Re-writing the status a row already holds must still report success.'
+		);
+		$this->assertSame(
+			Occurrences::STATUS_CANCELED,
+			$instance->get( $post_id, '20260903T180000' )['status']
+		);
+	}
+
+	/**
 	 * Coverage for `set_status()` scoping by both `series_post_id` and
 	 * `recurrence_id`. A recurrence_id that belongs to a different series
 	 * must not be mutated through this post's ID, and vice versa.
@@ -4891,5 +4968,586 @@ class Test_Occurrences extends Base {
 			)['series_post_id'],
 			'Failed to assert the resolution is independent of the order the post IDs are passed in.'
 		);
+	}
+
+
+	/**
+	 * The `limit` argument caps the rows and is clamped at both ends.
+	 *
+	 * A `limit` a caller can set to zero would return nothing and one it can
+	 * set past `Rule::MAX_COUNT` would hand back the unbounded read the
+	 * argument exists to prevent, so both are clamped rather than passed
+	 * through.
+	 *
+	 * @covers ::select_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_for_series_limit_is_applied_and_clamped(): void {
+		$post_id  = $this->create_and_project();
+		$instance = Occurrences::get_instance();
+		$all      = $instance->select_for_series( array( $post_id ) );
+
+		$this->assertGreaterThan( 2, count( $all ), 'Failed to arrange more rows than the limit asks for.' );
+
+		$this->assertCount(
+			2,
+			$instance->select_for_series( array( $post_id ), array( 'limit' => 2 ) ),
+			'Failed to assert the limit caps the returned rows.'
+		);
+		$this->assertCount(
+			0,
+			$instance->select_for_series( array( $post_id ), array( 'limit' => 0 ) ),
+			'Failed to assert a zero limit selects nothing rather than falling back to every row.'
+		);
+		$this->assertCount(
+			count( $all ),
+			$instance->select_for_series( array( $post_id ), array( 'limit' => Rule::MAX_COUNT + 500 ) ),
+			'Failed to assert an oversized limit is clamped to the largest projection a rule can produce.'
+		);
+	}
+
+	/**
+	 * Every path of the per-post display pick, guards included.
+	 *
+	 * The PHP twin of `display_occurrence_relation_sql()`, and the one the
+	 * admin list's date column reads, so its answer has to agree with the
+	 * relation's on the same fixture: the earliest unfinished occurrence where
+	 * one exists, the latest finished one where none does. Each of the three
+	 * guard arms is exercised on its own, because they are one statement and
+	 * line coverage would report the guard as covered with two of them never
+	 * evaluated.
+	 *
+	 * @covers ::select_display_for_series
+	 *
+	 * @return void
+	 */
+	public function test_select_display_for_series_covers_every_path(): void {
+		global $wpdb;
+
+		$now      = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$daily    = array(
+			'frequency' => 'daily',
+			'interval'  => 1,
+			'end_type'  => 'count',
+			'count'     => 5,
+		);
+		$instance = Occurrences::get_instance();
+
+		$running = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-2 days +5 hours' ),
+			$now->modify( '-2 days +6 hours' ),
+			'UTC'
+		);
+		$elapsed = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-30 days' ),
+			$now->modify( '-30 days +1 hour' ),
+			'UTC'
+		);
+
+		$this->assertSame(
+			$now->modify( '+5 hours' )->format( 'Y-m-d H:i:s' ),
+			$instance->select_display_for_series( array( $running ) )['datetime_start_gmt'],
+			'Failed to assert a running series resolves to its earliest unfinished occurrence.'
+		);
+		$this->assertSame(
+			$now->modify( '-26 days' )->format( 'Y-m-d H:i:s' ),
+			$instance->select_display_for_series( array( $elapsed ) )['datetime_start_gmt'],
+			'Failed to assert an elapsed series falls back to its latest finished occurrence.'
+		);
+		$this->assertNull(
+			$instance->select_display_for_series( array() ),
+			'Failed to assert an empty post ID list resolves nothing.'
+		);
+
+		update_option( Query::HAS_RECURRING_OPTION, '0', true );
+
+		$this->assertNull(
+			$instance->select_display_for_series( array( $running ) ),
+			'Failed to assert a site with no recurring events never probes the occurrence table.'
+		);
+
+		update_option( Query::HAS_RECURRING_OPTION, '1', true );
+
+		// The memoized probe answer, forced to "absent" so the third guard arm
+		// is the only one that can act. A blog joined to a network after the
+		// table was created is the production shape of this.
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		Utility::set_and_get_hidden_property( $instance, 'table_exists', array( $table => false ) );
+
+		$absent = $instance->select_display_for_series( array( $running ) );
+
+		$instance->forget_table_exists();
+
+		$this->assertNull( $absent, 'Failed to assert a blog without the occurrence table resolves nothing.' );
+	}
+
+	/**
+	 * The display relation answers one row per post, carrying a paired start and end.
+	 *
+	 * This is the single definition every admin-list date decision reads, so
+	 * the properties asserted are the ones those consumers depend on: exactly
+	 * one row per post that owns scheduled rows, the earliest unfinished
+	 * occurrence where one exists, the latest finished one where none does,
+	 * and the *same* occurrence's start and end rather than two independent
+	 * aggregates.
+	 *
+	 * @covers ::display_occurrence_relation_sql
+	 *
+	 * @return void
+	 */
+	public function test_display_occurrence_relation_answers_one_paired_row_per_post(): void {
+		global $wpdb;
+
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$daily   = array(
+			'frequency' => 'daily',
+			'interval'  => 1,
+			'end_type'  => 'count',
+			'count'     => 5,
+		);
+		$running = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-2 days +5 hours' ),
+			$now->modify( '-2 days +6 hours' ),
+			'UTC'
+		);
+		$elapsed = $this->create_relative_recurring_event(
+			$daily,
+			$now->modify( '-30 days' ),
+			$now->modify( '-30 days +1 hour' ),
+			'UTC'
+		);
+
+		$relation = Occurrences::get_instance()->display_occurrence_relation_sql(
+			$now->format( 'Y-m-d H:i:s' )
+		);
+
+		$this->assertStringNotContainsString(
+			'%',
+			$relation,
+			'Failed to assert the relation is fully prepared, with no placeholder left to interpolate.'
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the relation arrives fully prepared.
+		$rows = $wpdb->get_results(
+			'SELECT * FROM ' . $relation . ' AS relation ORDER BY relation.series_post_id ASC',
+			ARRAY_A
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		$this->assertCount( 2, $rows, 'Failed to assert the relation answers exactly one row per post.' );
+
+		$keyed = array_column( $rows, null, 'series_post_id' );
+
+		$this->assertSame(
+			$now->modify( '+5 hours' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $running ]['datetime_start_gmt'],
+			'Failed to assert a running series is represented by its earliest unfinished occurrence.'
+		);
+		$this->assertSame(
+			$now->modify( '+6 hours' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $running ]['datetime_end_gmt'],
+			'Failed to assert the relation carries that same occurrence\'s own end, not a whole-post maximum.'
+		);
+		$this->assertSame(
+			$now->modify( '-26 days' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $elapsed ]['datetime_start_gmt'],
+			'Failed to assert an elapsed series falls back to its latest finished occurrence.'
+		);
+		$this->assertSame(
+			$now->modify( '-26 days +1 hour' )->format( 'Y-m-d H:i:s' ),
+			$keyed[ (string) $elapsed ]['datetime_end_gmt'],
+			'Failed to assert the elapsed fallback also carries its own paired end.'
+		);
+	}
+
+	/**
+	 * The display relation ignores canceled rows entirely.
+	 *
+	 * Cancellation is occurrence state, and a canceled occurrence must never
+	 * become the date a list sorts, buckets or reads by. With the series' only
+	 * unfinished occurrence canceled, the relation has to fall back to the
+	 * latest *finished* one rather than keep the canceled row.
+	 *
+	 * @covers ::display_occurrence_relation_sql
+	 *
+	 * @return void
+	 */
+	public function test_display_occurrence_relation_ignores_canceled_rows(): void {
+		global $wpdb;
+
+		$now     = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$post_id = $this->create_relative_recurring_event(
+			array(
+				'frequency' => 'daily',
+				'interval'  => 1,
+				'end_type'  => 'count',
+				'count'     => 2,
+			),
+			$now->modify( '-1 day +5 hours' ),
+			$now->modify( '-1 day +6 hours' ),
+			'UTC'
+		);
+
+		$instance = Occurrences::get_instance();
+		$cutoff   = $now->format( 'Y-m-d H:i:s' );
+		$upcoming = array_values(
+			array_filter(
+				$instance->select_for_series( array( $post_id ) ),
+				static function ( array $row ) use ( $cutoff ): bool {
+					return $row['datetime_end_gmt'] >= $cutoff;
+				}
+			)
+		);
+
+		$this->assertCount( 1, $upcoming, 'Failed to arrange exactly one unfinished occurrence.' );
+
+		$instance->set_status( $post_id, $upcoming[0]['recurrence_id'], Occurrences::STATUS_CANCELED );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the relation arrives fully prepared.
+		$rows = $wpdb->get_results(
+			'SELECT * FROM ' . $instance->display_occurrence_relation_sql( $now->format( 'Y-m-d H:i:s' ) )
+			. ' AS relation',
+			ARRAY_A
+		);
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+
+		$this->assertCount( 1, $rows, 'Failed to assert the post is still represented once.' );
+		$this->assertSame(
+			$now->modify( '-1 day +5 hours' )->format( 'Y-m-d H:i:s' ),
+			$rows[0]['datetime_start_gmt'],
+			'Failed to assert the canceled occurrence is skipped in favor of the latest finished one.'
+		);
+	}
+
+	/**
+	 * A sibling tie is broken by the post ID, which is the only column that can.
+	 *
+	 * `select_bounded_occurrence()` is `LIMIT 1`, and the tie it has to break
+	 * is between two posts of a split series contributing rows that share a
+	 * start. `recurrence_id` cannot break it: it is the occurrence's own local
+	 * start rendered `Ymd\THis`, so two rows sharing a start share it too.
+	 *
+	 * The emitted statement is pinned, not merely the row it returns. InnoDB
+	 * hands back tied rows in clustered-key order today, so the lowest post ID
+	 * comes back first with or without a tie-breaker, and a row-order
+	 * assertion would measure the current plan rather than the guarantee. Both
+	 * directions are pinned, because the bound flips the sort direction and
+	 * only the post ID stays ascending.
+	 *
+	 * @covers ::select_bounded_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_select_bounded_occurrence_breaks_a_sibling_tie_on_the_post_id(): void {
+		global $wpdb;
+
+		$now  = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+		$rule = array(
+			'frequency' => 'daily',
+			'interval'  => 1,
+			'end_type'  => 'count',
+			'count'     => 3,
+		);
+
+		$first  = $this->create_relative_recurring_event(
+			$rule,
+			$now->modify( '+5 hours' ),
+			$now->modify( '+6 hours' ),
+			'UTC'
+		);
+		$second = $this->create_relative_recurring_event(
+			$rule,
+			$now->modify( '+5 hours' ),
+			$now->modify( '+6 hours' ),
+			'UTC'
+		);
+
+		$lower    = min( $first, $second );
+		$higher   = max( $first, $second );
+		$instance = Occurrences::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$directions = array(
+			'ASC'  => true,
+			'DESC' => false,
+		);
+
+		foreach ( $directions as $direction => $upcoming ) {
+			$query_count_before = count( $wpdb->queries );
+
+			$row = $instance->select_bounded_occurrence( array( $higher, $lower ), $upcoming );
+
+			$statements = array_values(
+				array_filter(
+					array_slice( $wpdb->queries, $query_count_before ),
+					static function ( $query ) use ( $table ): bool {
+						return str_contains( $query[0], $table )
+							&& str_contains( $query[0], 'ORDER BY datetime_start_gmt' );
+					}
+				)
+			);
+
+			$this->assertCount(
+				1,
+				$statements,
+				sprintf( 'Failed to capture exactly one %s bounded statement.', $direction )
+			);
+			$this->assertStringContainsString(
+				sprintf(
+					'ORDER BY datetime_start_gmt %1$s, series_post_id ASC, recurrence_id %1$s',
+					$direction
+				),
+				$statements[0][0],
+				sprintf(
+					'Failed to assert the %s bounded read breaks a sibling tie on the post ID.',
+					$direction
+				)
+			);
+
+			if ( $upcoming ) {
+				$this->assertSame(
+					$lower,
+					(int) $row['series_post_id'],
+					'Failed to assert the earliest unfinished pick resolves to the lowest sibling post ID.'
+				);
+				$this->assertSame(
+					$lower,
+					(int) $instance->select_bounded_occurrence( array( $lower, $higher ), true )['series_post_id'],
+					'Failed to assert the pick is independent of the order the post IDs are passed in.'
+				);
+			}
+		}
+	}
+
+	/**
+	 * Collect the statements this request issued against the occurrence table.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int $offset Index into `$wpdb->queries` to start reading from.
+	 *
+	 * @return array<int, string> The matching statements, in the order they ran.
+	 */
+	protected function occurrence_statements_since( int $offset ): array {
+		global $wpdb;
+
+		$table = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		return array_values(
+			array_map(
+				static fn( array $query ): string => (string) $query[0],
+				array_filter(
+					array_slice( $wpdb->queries, $offset ),
+					static fn( array $query ): bool => str_contains( (string) $query[0], $table )
+				)
+			)
+		);
+	}
+
+	/**
+	 * Count the statements of one kind among a set of collected statements.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array<int, string> $statements Statements to count within.
+	 * @param string             $keyword    Leading SQL keyword to count.
+	 *
+	 * @return int How many statements start with the keyword.
+	 */
+	protected function count_statements( array $statements, string $keyword ): int {
+		return count(
+			array_filter(
+				$statements,
+				static fn( string $sql ): bool => str_starts_with( ltrim( $sql ), $keyword )
+			)
+		);
+	}
+
+	/**
+	 * A request that rewrites both the datetime blob and the recurrence blob
+	 * projects the series once, not twice.
+	 *
+	 * The datetime write queues `Recurrence\Meta::resolve_pending_revalidation()`
+	 * at `shutdown` priority 15, which re-validates the rule and then calls
+	 * `project()`. The blob write independently queues
+	 * `resolve_pending_projection()` at priority 20 for the same post. The
+	 * priority gap orders the two passes; on its own it does not stop the
+	 * second from repeating the first, which is a full expand plus an upsert
+	 * chunk plus a stale-row delete for every series an organizer retimes.
+	 * `project()` consuming the queue entry is what makes the request issue
+	 * one projection.
+	 *
+	 * @covers ::project
+	 * @covers ::maybe_queue_projection
+	 * @covers ::resolve_pending_projection
+	 *
+	 * @return void
+	 */
+	public function test_revalidated_series_projects_once_in_one_request(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+		$offset  = count( $wpdb->queries );
+
+		// A timezone edit, then a rule edit, both through the real meta
+		// hooks that queue the two shutdown passes.
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => 'America/Chicago',
+				)
+			)
+		);
+		update_post_meta(
+			$post_id,
+			Meta::META_KEY,
+			wp_json_encode( array_merge( self::WEEKLY_RULE, array( 'count' => 4 ) ) )
+		);
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
+
+		$statements = $this->occurrence_statements_since( $offset );
+
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'INSERT' ),
+			'Failed to assert that the re-validated series was upserted exactly once.'
+		);
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'DELETE' ),
+			'Failed to assert that the re-validated series pruned its stale rows exactly once.'
+		);
+		$this->assertCount(
+			4,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that the single projection wrote the edited rule.'
+		);
+	}
+
+	/**
+	 * Consuming the queue entry must not consume the cleanup it carries.
+	 *
+	 * `resolve_pending_projection()` hands `run_projection()` the
+	 * `$was_recurring` flag captured at queue time, and that flag is what
+	 * drives the removal-cleanup arm for a blob deleted by a writer that never
+	 * fires the save hook. Dropping the entry would lose that signal if the
+	 * pass that drops it did less. It does not: `project()` runs with
+	 * `$cleanup_when_not_recurring` hard-coded to `true`, the strongest value
+	 * the queue can hold, so the rows of a series whose blob is deleted in the
+	 * same request as a datetime write are still cleared, in one delete rather
+	 * than two.
+	 *
+	 * @covers ::project
+	 * @covers ::maybe_queue_projection
+	 * @covers ::resolve_pending_projection
+	 *
+	 * @return void
+	 */
+	public function test_blob_deleted_beside_a_datetime_write_still_clears_its_rows(): void {
+		global $wpdb;
+
+		$post_id = $this->create_and_project();
+
+		$this->assertCount( 5, Occurrences::get_instance()->select_for_series( array( $post_id ) ) );
+
+		$offset = count( $wpdb->queries );
+
+		update_post_meta(
+			$post_id,
+			'gatherpress_datetime',
+			wp_json_encode(
+				array(
+					'dateTimeStart' => $this->reference_anchor_start,
+					'dateTimeEnd'   => $this->reference_anchor_end,
+					'timezone'      => 'America/Chicago',
+				)
+			)
+		);
+		delete_post_meta( $post_id, Meta::META_KEY );
+
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Testing WordPress core hook.
+		do_action( 'shutdown' );
+
+		$statements = $this->occurrence_statements_since( $offset );
+
+		$this->assertCount(
+			0,
+			Occurrences::get_instance()->select_for_series( array( $post_id ) ),
+			'Failed to assert that the removed rule left no orphaned occurrence rows.'
+		);
+		$this->assertSame(
+			1,
+			$this->count_statements( $statements, 'DELETE' ),
+			'Failed to assert that the cleanup ran once rather than once per shutdown pass.'
+		);
+		$this->assertSame(
+			0,
+			$this->count_statements( $statements, 'INSERT' ),
+			'Failed to assert that a series with no rule wrote no occurrence rows.'
+		);
+	}
+	/**
+	 * Coverage for the bounded read's refusal arm.
+	 *
+	 * The read carries the same schema probe its sibling single-row reads do,
+	 * and it refuses on two inputs: an empty post ID list, and a blog whose
+	 * table is not there. The second is the one that matters, because a bare
+	 * series URL reaches this read on the front end, so an unprobed statement
+	 * would surface a database error to a visitor rather than an empty answer.
+	 *
+	 * The absent table is simulated by seeding the probe's own memo rather than
+	 * by dropping the table. Dropping it is DDL, which commits implicitly and
+	 * so escapes the test transaction: an earlier draft did exactly that and
+	 * left a later admin-list assertion querying a table that was gone.
+	 * Seeding the memo exercises the same branch and leaves nothing behind.
+	 *
+	 * @covers ::select_bounded_occurrence
+	 *
+	 * @return void
+	 */
+	public function test_select_bounded_occurrence_refuses_without_a_table_or_post_ids(): void {
+		global $wpdb;
+
+		$instance = Occurrences::get_instance();
+		$table    = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		$this->assertNull(
+			$instance->select_bounded_occurrence( array(), true ),
+			'Failed to assert the bounded read refuses an empty post ID list.'
+		);
+
+		$restore = Utility::get_hidden_property( $instance, 'table_exists' );
+
+		Utility::set_and_get_hidden_property( $instance, 'table_exists', array( $table => false ) );
+
+		$last_error = $wpdb->last_error;
+
+		$this->assertNull(
+			$instance->select_bounded_occurrence( array( 1 ), true ),
+			'Failed to assert the bounded read refuses a blog whose occurrence table is absent.'
+		);
+
+		$this->assertSame(
+			$last_error,
+			$wpdb->last_error,
+			'Failed to assert the refusal issued no statement and recorded no database error.'
+		);
+
+		Utility::set_and_get_hidden_property( $instance, 'table_exists', $restore );
 	}
 }
