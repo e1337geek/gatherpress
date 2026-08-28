@@ -203,9 +203,11 @@ final class Occurrences {
 	 * hook at all: WP-CLI, an importer updating an existing post, or a direct
 	 * `update_post_meta()` call. Rather than guess, the post is noted here
 	 * and decided again on `shutdown`, once every write this request is going
-	 * to make has already happened. A save-path projection that runs after
-	 * the queuing write removes the entry again, so the ordinary editor save
-	 * projects once, not twice.
+	 * to make has already happened. Any `project()` call that runs after the
+	 * queuing write removes the entry again, so the ordinary editor save
+	 * projects once, not twice, and so does a series that
+	 * `Recurrence\Meta::resolve_pending_revalidation()` re-projects at
+	 * `shutdown` priority 15.
 	 *
 	 * Each value is whether the post already had valid recurrence mirrors at
 	 * the moment it was deferred. It is captured before `Meta`'s own deferred
@@ -316,14 +318,13 @@ final class Occurrences {
 		$data = get_post_meta( $post_id, Meta::META_KEY, true );
 
 		if ( ! empty( $data ) ) {
-			$this->project( $post_id );
-
-			// This projection consumed the blob as it stands right now, so a
+			// This projection consumes the blob as it stands right now, so a
 			// reconciliation queued by an earlier write this request (a blob
 			// landed before the save hook fired, or a creation-time deferral
-			// followed by a second save) is already satisfied. A blob write
-			// after this point re-queues the post.
-			unset( $this->pending_projection[ $post_id ] );
+			// followed by a second save) is already satisfied. `project()`
+			// drops the queue entry itself, for every caller rather than only
+			// this one. A blob write after this point re-queues the post.
+			$this->project( $post_id );
 
 			return;
 		}
@@ -794,6 +795,12 @@ final class Occurrences {
 	 * classic RSVP form's scope requirement on the same presence test, so the
 	 * renderer and the submission handler cannot drift from what the lazy
 	 * repair treats as a series.
+	 *
+	 * Public because the admin events list marks a row as recurring off the
+	 * rule rather than off the occurrence rows. A series whose rows are all
+	 * canceled, or whose projection has not run yet, still repeats, and a list
+	 * that dropped the marker in either case would be telling the reader the
+	 * event is a one-off.
 	 *
 	 * @since 0.36.0
 	 *
@@ -1266,6 +1273,20 @@ final class Occurrences {
 	 * and this method is the only thing that ever deletes the occurrence rows
 	 * mirrors used to imply.
 	 *
+	 * Completing that pass also consumes any queued reconciliation for the
+	 * same post, the way `maybe_project()` consumes it on the save path. The
+	 * queue's whole job is to decide, at shutdown, whether the rows still
+	 * match the blob, and this call has just decided it against the blob as it
+	 * stands. The cleanup signal survives the unqueue because it is
+	 * `$cleanup_when_not_recurring = true` here, which is the strongest value
+	 * the queue can carry: a post queued as `true` gets its cleanup, and one
+	 * queued as `false` gets more than it asked for rather than less. Without
+	 * this, `Recurrence\Meta::resolve_pending_revalidation()` calling
+	 * `project()` at `shutdown` priority 15 leaves the priority-20 pass to
+	 * project the same post a second time in one request. A blob write after
+	 * this point re-queues the post, exactly as it does after
+	 * `maybe_project()`.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int $post_id Series post ID.
@@ -1274,7 +1295,11 @@ final class Occurrences {
 	 *                      `WP_Error` when a database write failed.
 	 */
 	public function project( int $post_id ): int|WP_Error {
-		return $this->run_projection( $post_id, true );
+		$result = $this->run_projection( $post_id, true );
+
+		unset( $this->pending_projection[ $post_id ] );
+
+		return $result;
 	}
 
 	/**
@@ -2062,6 +2087,184 @@ final class Occurrences {
 	}
 
 	/**
+	 * Read the one occurrence a per-series list row should represent.
+	 *
+	 * The admin events list renders one row per post, so it has to pick a
+	 * single occurrence out of a series that may hold fifty of them. The rule
+	 * is "the next one that has not finished yet, and failing that the most
+	 * recent one that has", which is what a reader of a list of events expects
+	 * a date column to mean.
+	 *
+	 * Takes an array of post IDs from `Series::resolve_post_ids()` rather than
+	 * one ID, so a series a forward split has spread across several posts still
+	 * resolves to the earliest upcoming occurrence anywhere in it.
+	 *
+	 * The elapsed fallback is deliberate rather than a null return. A series
+	 * whose occurrences have all happened is still a real event that the list
+	 * has to date, and dating it from the series anchor would show the *first*
+	 * occurrence, which for a long-running weekly series is years off.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[] $post_ids Post IDs from `Series::resolve_post_ids()`.
+	 *
+	 * @return array|null The chosen occurrence row, or null when the series has no scheduled rows.
+	 */
+	public function select_display_for_series( array $post_ids ): ?array {
+		if ( array() === $post_ids || ! Query::site_has_recurring_events() || ! $this->table_exists() ) {
+			return null;
+		}
+
+		$upcoming = $this->select_bounded_occurrence( $post_ids, true );
+
+		return ( null !== $upcoming ) ? $upcoming : $this->select_bounded_occurrence( $post_ids, false );
+	}
+
+	/**
+	 * Read the first scheduled occurrence of a series on one side of "now".
+	 *
+	 * Bounds on `datetime_end_gmt` rather than on the start, matching
+	 * `Event\Query::get_datetime_comparison_column()`'s inclusive-upcoming
+	 * semantics: an occurrence that has started but not finished is still the
+	 * one a list should be showing.
+	 *
+	 * The tie this ordering has to break is between *sibling posts* of a split
+	 * series contributing rows that share a start, and `recurrence_id` cannot
+	 * break it: `recurrence_id` is the occurrence's own local start rendered
+	 * `Ymd\THis`, so two rows sharing a start share it too. `series_post_id` is
+	 * the column that makes the order total, and lowest post ID wins, matching
+	 * `find_in_series()`. `recurrence_id` stays as the last resort for the one
+	 * case it can still separate: a DST fold, where two distinct local times
+	 * under one post map to a single GMT start.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int[] $post_ids Post IDs from `Series::resolve_post_ids()`.
+	 * @param bool  $upcoming True for the earliest unfinished occurrence, false for the latest finished one.
+	 *
+	 * @return array|null The matching occurrence row, or null when the bound matches nothing.
+	 */
+	public function select_bounded_occurrence( array $post_ids, bool $upcoming ): ?array {
+		global $wpdb;
+
+		// Same probe the other single-row reads carry. A blog whose flag is on
+		// but whose table was never installed would otherwise take a database
+		// error here, and this read is reachable from a front-end URL rather
+		// than only from an admin screen.
+		if ( array() === $post_ids || ! $this->table_exists() ) {
+			return null;
+		}
+
+		$table        = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+		$placeholders = implode( ', ', array_fill( 0, count( $post_ids ), '%d' ) );
+		$comparison   = $upcoming ? '>=' : '<';
+		$order        = $upcoming ? 'ASC' : 'DESC';
+
+		$sql = "SELECT * FROM %i WHERE series_post_id IN ( {$placeholders} )"
+			. ' AND status = %s'
+			. " AND datetime_end_gmt {$comparison} %s"
+			. " ORDER BY datetime_start_gmt {$order}, series_post_id ASC, recurrence_id {$order}"
+			. ' LIMIT 1';
+
+		$values = array_merge(
+			array( $table ),
+			$post_ids,
+			array( self::STATUS_SCHEDULED, current_time( 'mysql', true ) )
+		);
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- placeholders only.
+		$row = $wpdb->get_row( $wpdb->prepare( $sql, $values ), ARRAY_A );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+		// `get_row()` answers null both for no match and for a failed query,
+		// and this method has nothing different to do in the two cases.
+		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * Build the derived one-row-per-post relation of each post's display occurrence.
+	 *
+	 * The SQL twin of `select_display_for_series()`'s choice: for every post
+	 * that owns scheduled occurrence rows, the earliest occurrence that has
+	 * not finished, falling back to the latest one that has, carrying that
+	 * occurrence's own paired `datetime_start_gmt` and `datetime_end_gmt`
+	 * rather than two independent aggregates. The two SQL consumers are
+	 * `Recurrence\Query::adjust_admin_occurrence_sorting()`, which joins it to
+	 * supply both the admin list's date ordering and its Upcoming/Past bucket
+	 * predicate, and `Admin_List::get_event_counts()`, which joins it so the
+	 * view-link counts describe those same rows. The third decision, the date
+	 * the column prints, is the PHP twin `select_display_for_series()` making
+	 * the identical choice for one post. No row can therefore display a date
+	 * that contradicts the view that selected it or the position it was given.
+	 *
+	 * The paired end is what the bucket predicate needs and what two
+	 * independent aggregates cannot supply: bucketing compares the chosen
+	 * occurrence's *end* against now while the ordering compares that same
+	 * occurrence's *start*, and a `MAX( datetime_end_gmt )` taken across the
+	 * whole post would answer for a different occurrence than the one shown.
+	 *
+	 * The relation is deliberately per-post, not per-series: it groups on
+	 * `series_post_id`, the post owning each row, and never consults
+	 * `Series::resolve_post_ids()`. The admin list's unit is the post (its
+	 * row actions, bulk actions and statuses are all per post), a per-series
+	 * date would render every sibling row of a split series identical and
+	 * indistinguishable, and the sibling set is defined by a PHP filter that
+	 * SQL cannot consult. Series-wide reads remain the job of the selector
+	 * methods that take a resolved post ID list.
+	 *
+	 * The inner pick chooses each post's occurrence start; the outer join
+	 * retrieves that occurrence's own row so its start and end stay paired,
+	 * and the `MAX()` on the end collapses the theoretical duplicate of two
+	 * local starts sharing one GMT instant across a DST fold, keeping the
+	 * relation at one row per post.
+	 *
+	 * One engine caveat, because it does not read off the SQL. Measured on
+	 * MariaDB 12 and MySQL 8 over a 10,000-row occurrence table across 200
+	 * series, the optimizer splits this derived table and drives it per post
+	 * through the primary key, so an `edit.php` load does not aggregate every
+	 * occurrence row; forcing `condition_pushdown_for_derived=off` did not
+	 * change that plan. MySQL 5.7 has neither lateral derived tables nor
+	 * derived condition pushdown and is expected to materialize the whole
+	 * grouped aggregate instead. That half is reasoned rather than measured,
+	 * and WordPress still lists 5.7 as supported.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $now_gmt GMT `Y-m-d H:i:s` instant separating unfinished from finished.
+	 *
+	 * @return string A parenthesized, fully prepared derived-table expression.
+	 */
+	public function display_occurrence_relation_sql( string $now_gmt ): string {
+		global $wpdb;
+
+		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
+
+		// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- built from %i/%s placeholders only.
+		return (string) $wpdb->prepare(
+			'( SELECT chosen.series_post_id, chosen.datetime_start_gmt,'
+			. ' MAX( chosen.datetime_end_gmt ) AS datetime_end_gmt'
+			. ' FROM %i AS chosen'
+			. ' INNER JOIN ( SELECT series_post_id,'
+			. ' MIN( CASE WHEN datetime_end_gmt >= %s THEN datetime_start_gmt END ) AS next_start_gmt,'
+			. ' MAX( CASE WHEN datetime_end_gmt < %s THEN datetime_start_gmt END ) AS last_start_gmt'
+			. ' FROM %i WHERE status = %s GROUP BY series_post_id ) AS pick'
+			. ' ON pick.series_post_id = chosen.series_post_id'
+			. ' AND chosen.datetime_start_gmt = COALESCE( pick.next_start_gmt, pick.last_start_gmt )'
+			. ' WHERE chosen.status = %s'
+			. ' GROUP BY chosen.series_post_id, chosen.datetime_start_gmt )',
+			$table,
+			$now_gmt,
+			$now_gmt,
+			$table,
+			self::STATUS_SCHEDULED,
+			self::STATUS_SCHEDULED
+		);
+		// phpcs:enable WordPress.DB.PreparedSQL.NotPrepared
+	}
+
+	/**
 	 * Set the status of one occurrence.
 	 *
 	 * Scopes its update by both `series_post_id` and `recurrence_id`. Keying on
@@ -2070,14 +2273,22 @@ final class Occurrences {
 	 * `status = 'scheduled'` exactly, so a row holding any other string would
 	 * vanish from every listing without having been canceled.
 	 *
+	 * The update runs first and the affected-row count decides, rather than a
+	 * check-then-update. A concurrent rule save reprojecting the series can
+	 * delete the row between any two statements here, and a preliminary
+	 * existence check would report that vanished row as updated. Zero
+	 * affected rows is still ambiguous in MySQL, since a same-value write
+	 * also reports zero, so only that case pays a follow-up existence read:
+	 * row present means a no-op success, row gone means gone.
+	 *
 	 * @since 0.36.0
 	 *
 	 * @param int    $post_id       Series post ID.
 	 * @param string $recurrence_id Occurrence identifier in `Ymd\THis` form.
 	 * @param string $status        One of the `STATUS_*` constants.
 	 *
-	 * @return bool True when a row was updated, false when the composite key
-	 *              matched nothing or the status is not one of the constants.
+	 * @return bool True when the row holds the status; false when the composite
+	 *              key matched nothing or the status is not one of the constants.
 	 */
 	public function set_status( int $post_id, string $recurrence_id, string $status ): bool {
 		global $wpdb;
@@ -2088,6 +2299,35 @@ final class Occurrences {
 
 		$table = sprintf( self::TABLE_FORMAT, $wpdb->prefix );
 
+		// `execute_write()` rather than a bare query: it reports what the
+		// database did instead of that a statement was issued, and it carries
+		// the missing-table self-heal the other writes in this class have.
+		$updated = $this->execute_write(
+			$wpdb->prepare(
+				'UPDATE %i SET status = %s WHERE series_post_id = %d AND recurrence_id = %s',
+				$table,
+				$status,
+				$post_id,
+				$recurrence_id
+			)
+		);
+
+		// A refused statement is not a vanished row, and the probe below cannot
+		// tell them apart: a deadlock or a read-only replica leaves the row
+		// sitting there, so probing would answer `true` for a write that never
+		// landed and show an occurrence canceled that is still scheduled.
+		if ( false === $updated ) {
+			return false;
+		}
+
+		if ( $updated > 0 ) {
+			return true;
+		}
+
+		// Zero affected rows is the ambiguous case: the row may already carry
+		// this status, or it may be gone. Only a probe separates them, and the
+		// caller needs them separated, since one is a success and the other is
+		// an occurrence that no longer exists.
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$exists = (bool) $wpdb->get_var(
 			$wpdb->prepare(
@@ -2099,27 +2339,7 @@ final class Occurrences {
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-		if ( ! $exists ) {
-			return false;
-		}
-
-		// Reports what the database did rather than that a statement was
-		// issued. The row existing a moment ago is not evidence the update
-		// landed: a deadlock, a read-only replica, or the table being dropped
-		// between the probe above and this write all return false, and a
-		// caller told `true` would show an occurrence canceled that is still
-		// scheduled and still in every listing. Routing through
-		// `execute_write()` also gets the missing-table self-heal the other
-		// writes have.
-		return false !== $this->execute_write(
-			$wpdb->prepare(
-				'UPDATE %i SET status = %s WHERE series_post_id = %d AND recurrence_id = %s',
-				$table,
-				$status,
-				$post_id,
-				$recurrence_id
-			)
-		);
+		return $exists;
 	}
 
 	/**

@@ -115,6 +115,32 @@ final class Query {
 	const OCCURRENCE_ALIAS = 'gatherpress_occurrence';
 
 	/**
+	 * SQL alias of the per-series sort table joined onto admin event lists.
+	 *
+	 * Distinct from `OCCURRENCE_ALIAS`: that one names the occurrence table
+	 * itself, joined row-for-row to expand a list. This one names a derived
+	 * table holding exactly one aggregate row per series, which is why it can
+	 * be joined onto the admin list without multiplying its rows.
+	 *
+	 * @since 0.36.0
+	 * @var string
+	 */
+	const ADMIN_SORT_ALIAS = 'gatherpress_admin_occurrence_sort';
+
+	/**
+	 * Anchor datetime columns a clause filter may have to rewrite.
+	 *
+	 * The two columns `Event\Query` reads off the events table: the start it
+	 * orders on and the end it buckets Upcoming and Past on. Both are the
+	 * series anchor's, and both are rewritten to the occurrence's own value
+	 * wherever an occurrence relation is joined.
+	 *
+	 * @since 0.36.0
+	 * @var string[]
+	 */
+	const ANCHOR_DATETIME_COLUMNS = array( 'datetime_start_gmt', 'datetime_end_gmt' );
+
+	/**
 	 * Prefix every occurrence column is aliased under in an expanded SELECT.
 	 *
 	 * @since 0.36.0
@@ -212,6 +238,12 @@ final class Query {
 		// filters, so the events table is already joined and its ordering and
 		// range predicates are there to be rewritten.
 		add_filter( 'posts_clauses', array( $this, 'expand_event_clauses' ), 11, 2 );
+		// Also priority 11, and registered after `expand_event_clauses()` so it
+		// runs after it. `is_admin()` alone does not separate the two:
+		// expansion deliberately carves admin-ajax back in because those
+		// requests serve front-end reads, so this one excludes admin-ajax
+		// explicitly and expansion is the only filter that runs there.
+		add_filter( 'posts_clauses', array( $this, 'adjust_admin_occurrence_sorting' ), 11, 2 );
 		add_filter( 'the_posts', array( $this, 'attach_occurrences' ), 10, 2 );
 	}
 
@@ -424,7 +456,7 @@ final class Query {
 			Occurrences::STATUS_SCHEDULED
 		);
 
-		$pieces['orderby'] = $this->coalesce_event_columns( (string) $pieces['orderby'], $events_table );
+		$pieces['orderby'] = $this->coalesce_event_columns( (string) $pieces['orderby'], $events_table, $alias );
 
 		// Expansion turns a list of posts into a list of occurrences, and two
 		// occurrences of different series routinely share a start datetime,
@@ -453,7 +485,7 @@ final class Query {
 			$pieces['orderby'] .= $wpdb->prepare( ', %i.recurrence_id ASC', $alias );
 		}
 
-		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table )
+		$pieces['where'] = $this->coalesce_event_columns( (string) $pieces['where'], $events_table, $alias )
 			. $wpdb->prepare(
 				' AND ( %i.series_post_id IS NOT NULL OR NOT EXISTS ('
 				. ' SELECT 1 FROM %i AS %i WHERE %i.series_post_id = %i.ID ) )',
@@ -512,33 +544,181 @@ final class Query {
 	}
 
 	/**
-	 * Rewrite the anchor datetime columns of one clause as `COALESCE()` fallbacks.
+	 * Date, order and bucket an admin event list by each post's shown occurrence.
+	 *
+	 * `expand_event_clauses()` exempts the admin, so `edit.php` keeps one row
+	 * per post. That is the right row count and the wrong date: every clause
+	 * `Event\Query::adjust_event_sql()` writes reads the events table's own
+	 * `datetime_start_gmt` / `datetime_end_gmt`, which is the series **anchor**,
+	 * the date the series first ran. A weekly series anchored last January
+	 * therefore sinks to the bottom of a date-ordered list all year, and the
+	 * Upcoming and Past view links file it under Past while the column beside
+	 * it shows a date tomorrow.
+	 *
+	 * All three of the list's date decisions are rewritten here off **one**
+	 * relation, `Occurrences::display_occurrence_relation_sql()`, so none of
+	 * them can contradict another: the ordering (`orderby`), the Upcoming/Past
+	 * bucket predicate (`where`), and, through the same relation reached in
+	 * PHP by `Occurrences::select_display_for_series()`, the date the column
+	 * renders. `Admin_List::get_event_counts()` joins the same relation, so the
+	 * view-link counts agree with the rows the view returns.
+	 *
+	 * The relation is a derived table of exactly one row per post, not the
+	 * occurrence table itself, so it cannot multiply the list's rows the way a
+	 * plain occurrence join would. It carries the chosen occurrence's own
+	 * paired start and end rather than two independent aggregates, which is
+	 * what lets the bucket predicate compare an end against now while the
+	 * ordering compares that same occurrence's start.
+	 *
+	 * The relation is **per post, not per series**, and the date column is
+	 * scoped the same way (`Admin_List::render_datetime_column()` passes the
+	 * row's own post ID). The two agree by construction. Resolving a series
+	 * across its sibling posts here would render every row of a split series
+	 * with an identical date, and the sibling set comes from the
+	 * `gatherpress_series_post_ids` PHP filter, which SQL cannot consult.
+	 *
+	 * Every aggregate is taken over the same `status = scheduled` set, so a
+	 * canceled occurrence never becomes the date a series sorts, buckets or
+	 * reads by. A post with no scheduled rows joins to nothing, and every
+	 * rewritten clause falls back through `COALESCE()` to the anchor, which is
+	 * the only date such a post has.
+	 *
+	 * The guards, in the order they are cheapest: this is admin-only and never
+	 * admin-ajax, because front-end lists, including the ones admin-ajax
+	 * serves, get real expansion instead; a site with no recurring events runs
+	 * byte-identical SQL; the query has to be for an event post type; the
+	 * clauses have to actually carry an anchor datetime column, which is false
+	 * on an All view sorted by title, author or RSVP count and makes this free
+	 * on those screens; the relation must not already be joined, since a
+	 * second copy under the same alias is `ERROR 1066 Not unique table/alias`;
+	 * and the occurrence table has to exist on this blog, which is the
+	 * multisite contract `expand_event_clauses()` states at length.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array    $pieces Query clauses keyed as `WP_Query` supplies them.
+	 * @param WP_Query $query  Query being filtered.
+	 *
+	 * @return array The clauses, modified only for admin event lists that read an anchor datetime.
+	 */
+	public function adjust_admin_occurrence_sorting( array $pieces, WP_Query $query ): array {
+		global $wpdb;
+
+		$events_table = sprintf( Event::TABLE_FORMAT, $wpdb->prefix );
+		$alias        = self::ADMIN_SORT_ALIAS;
+
+		if (
+			! is_admin()
+			|| wp_doing_ajax() // Admin-ajax serves front-end reads; those get real expansion.
+			|| ! self::site_has_recurring_events()
+			|| ! $this->is_event_query( $query )
+			|| ! $this->carries_anchor_datetime( $pieces, $events_table )
+			|| str_contains( (string) ( $pieces['join'] ?? '' ), $alias )
+			|| ! Occurrences::get_instance()->table_exists()
+		) {
+			return $pieces;
+		}
+
+		$pieces['join'] .= ' LEFT JOIN '
+			. Occurrences::get_instance()->display_occurrence_relation_sql( current_time( 'mysql', true ) )
+			. $wpdb->prepare( ' AS %i ON %i.ID = %i.series_post_id', $alias, $wpdb->posts, $alias );
+
+		foreach ( array( 'orderby', 'where' ) as $clause ) {
+			$pieces[ $clause ] = $this->coalesce_event_columns(
+				(string) ( $pieces[ $clause ] ?? '' ),
+				$events_table,
+				$alias
+			);
+		}
+
+		return $pieces;
+	}
+
+	/**
+	 * Report whether either rewritable clause reads an anchor datetime column.
+	 *
+	 * The admin list only needs the occurrence relation when something in the
+	 * query actually compares or orders on the events table's own datetimes:
+	 * the `orderby` does on a date-sorted list, and the `where` does on the
+	 * Upcoming and Past views. An All view sorted by title reads neither, and
+	 * pays nothing.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array  $pieces       Query clauses keyed as `WP_Query` supplies them.
+	 * @param string $events_table Unprefixed-format events table name.
+	 *
+	 * @return bool True when at least one anchor datetime column is present.
+	 */
+	private function carries_anchor_datetime( array $pieces, string $events_table ): bool {
+		$clauses = (string) ( $pieces['orderby'] ?? '' ) . ' ' . (string) ( $pieces['where'] ?? '' );
+
+		foreach ( self::ANCHOR_DATETIME_COLUMNS as $column ) {
+			foreach ( $this->anchor_column_renderings( $events_table, $column ) as $rendering ) {
+				if ( str_contains( $clauses, $rendering ) ) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * List both renderings one anchor datetime column can appear under.
 	 *
 	 * `Event\Query` writes the ORDER BY column unquoted and the WHERE column
 	 * back-quoted, because the latter goes through `$wpdb->prepare()`'s `%i`
-	 * placeholder, so both renderings have to be rewritten. Comparing on
-	 * `COALESCE( occurrence, anchor )` is what keeps
-	 * `Event\Query::get_datetime_comparison_column()`'s "is a running event
-	 * still upcoming" semantics intact for occurrences.
+	 * placeholder. Both have to be recognized, and both have to be rewritten.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param string $events_table Unprefixed-format events table name.
+	 * @param string $column       One anchor datetime column name.
+	 *
+	 * @return string[] The unquoted and back-quoted renderings, in that order.
+	 */
+	private function anchor_column_renderings( string $events_table, string $column ): array {
+		return array(
+			sprintf( '%s.%s', $events_table, $column ),
+			sprintf( '`%s`.`%s`', $events_table, $column ),
+		);
+	}
+
+	/**
+	 * Rewrite the anchor datetime columns of one clause as `COALESCE()` fallbacks.
+	 *
+	 * Both renderings of each column are rewritten, per
+	 * `anchor_column_renderings()`. Comparing on `COALESCE( occurrence, anchor )`
+	 * is what keeps `Event\Query::get_datetime_comparison_column()`'s "is a
+	 * running event still upcoming" semantics intact for occurrences.
+	 *
+	 * The alias is a parameter because two callers rewrite the same clauses
+	 * against two different relations: `expand_event_clauses()` against the
+	 * occurrence table joined row-for-row, and
+	 * `adjust_admin_occurrence_sorting()` against the one-row-per-post display
+	 * relation. Both name a start and an end column, which is the whole
+	 * requirement.
 	 *
 	 * @since 0.36.0
 	 *
 	 * @param string $clause       One SQL clause, either `orderby` or `where`.
 	 * @param string $events_table Unprefixed-format events table name.
+	 * @param string $alias        Alias of the joined relation supplying the occurrence datetimes.
 	 *
 	 * @return string The clause with both anchor columns wrapped.
 	 */
-	private function coalesce_event_columns( string $clause, string $events_table ): string {
-		$alias   = self::OCCURRENCE_ALIAS;
+	private function coalesce_event_columns( string $clause, string $events_table, string $alias ): string {
 		$search  = array();
 		$replace = array();
 
-		foreach ( array( 'datetime_start_gmt', 'datetime_end_gmt' ) as $column ) {
-			$coalesce  = sprintf( 'COALESCE( %s.%s, %s.%s )', $alias, $column, $events_table, $column );
-			$search[]  = sprintf( '%s.%s', $events_table, $column );
-			$replace[] = $coalesce;
-			$search[]  = sprintf( '`%s`.`%s`', $events_table, $column );
-			$replace[] = $coalesce;
+		foreach ( self::ANCHOR_DATETIME_COLUMNS as $column ) {
+			$coalesce = sprintf( 'COALESCE( %s.%s, %s.%s )', $alias, $column, $events_table, $column );
+
+			foreach ( $this->anchor_column_renderings( $events_table, $column ) as $rendering ) {
+				$search[]  = $rendering;
+				$replace[] = $coalesce;
+			}
 		}
 
 		return str_replace( $search, $replace, $clause );

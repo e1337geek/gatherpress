@@ -94,6 +94,19 @@ final class Meta {
 	protected array $pending_recurrence = array();
 
 	/**
+	 * Posts whose datetime blob was rewritten while a recurrence blob existed.
+	 *
+	 * Distinct from `$pending_recurrence`, which answers "the rule has not
+	 * landed yet." This one answers "the *timezone* the rule was validated
+	 * against has since changed," which is the opposite race and cannot be
+	 * detected from the recurrence blob at all.
+	 *
+	 * @since 0.36.0
+	 * @var array<int, bool>
+	 */
+	protected array $pending_revalidation = array();
+
+	/**
 	 * Class constructor.
 	 *
 	 * @since 0.36.0
@@ -122,6 +135,9 @@ final class Meta {
 		add_action( 'added_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
 		add_action( 'updated_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
 		add_action( 'deleted_post_meta', array( $this, 'maybe_queue_reconciliation' ), 10, 3 );
+		add_action( 'added_post_meta', array( $this, 'maybe_revalidate_for_datetime' ), 10, 3 );
+		add_action( 'updated_post_meta', array( $this, 'maybe_revalidate_for_datetime' ), 10, 3 );
+		add_action( 'deleted_post_meta', array( $this, 'maybe_revalidate_for_datetime' ), 10, 3 );
 	}
 
 	/**
@@ -321,7 +337,7 @@ final class Meta {
 				continue;
 			}
 
-			$this->write_recurrence( $post_id, (string) $data );
+			$this->write_recurrence( $post_id, (string) $data, true );
 		}
 	}
 
@@ -335,14 +351,27 @@ final class Meta {
 	 * timezone must reject the rule, not fatal the post save. A REST write
 	 * can carry one just as easily as the editor can.
 	 *
+	 * An empty timezone read is ambiguous on a non-final pass: it can mean
+	 * "fixed offset" just as easily as "the `gatherpress_datetime` blob has
+	 * not been written yet this request". `wp_insert_post()` with
+	 * `meta_input`, a WXR import, or a duplication plugin can all write the
+	 * recurrence blob before the datetime blob lands. Treating an empty read
+	 * as unnamed on the first pass would drop the rule on exactly the same
+	 * race `set_recurrence()` already defends against in the other
+	 * direction, so it is deferred to `shutdown` instead, and only clears the
+	 * mirrors if the timezone is still unknown once every write this request
+	 * is going to make has already happened.
+	 *
 	 * @since 0.36.0
 	 *
-	 * @param int    $post_id Post the blob belongs to.
-	 * @param string $data    Raw `gatherpress_recurrence` JSON blob.
+	 * @param int    $post_id  Post the blob belongs to.
+	 * @param string $data     Raw `gatherpress_recurrence` JSON blob.
+	 * @param bool   $is_final Whether this is the final, `shutdown` pass, on which an
+	 *                         empty timezone read is cleared rather than deferred again.
 	 *
 	 * @return void
 	 */
-	protected function write_recurrence( int $post_id, string $data ): void {
+	protected function write_recurrence( int $post_id, string $data, bool $is_final = false ): void {
 		$values = json_decode( $data, true );
 		$rule   = is_array( $values ) ? Rule::from_array( $values ) : null;
 
@@ -352,15 +381,25 @@ final class Meta {
 			return;
 		}
 
+		// Read from the same `gatherpress_datetime` blob `Event\Setup::set_datetimes()`
+		// reads, rather than the `gatherpress_timezone` mirror it derives.
+		// Depending on that mirror would make this depend on that class
+		// having already run on this pass.
+		$timezone = $this->read_timezone( $post_id );
+
+		if ( '' === $timezone && ! $is_final ) {
+			$this->pending_recurrence[ $post_id ] = true;
+
+			add_action( 'shutdown', array( $this, 'resolve_pending_recurrence' ) );
+
+			return;
+		}
+
 		try {
 			// A named tz-database identifier is asserted before any recurrence
 			// value could reach the expander. A fixed UTC offset carries no
-			// DST rules and would silently drift a recurring series. Read from
-			// the same `gatherpress_datetime` blob `Event\Setup::set_datetimes()`
-			// reads, rather than the `gatherpress_timezone` mirror it derives.
-			// Depending on that mirror would make this depend on that class
-			// having already run on this pass.
-			Timezone_Guard::assert_named( $this->read_timezone( $post_id ) );
+			// DST rules and would silently drift a recurring series.
+			Timezone_Guard::assert_named( $timezone );
 		} catch ( InvalidArgumentException $e ) {
 			// A fixed-offset timezone (`UTC+5:30`) rejects the rule rather
 			// than fataling the save: a REST write can carry one just as
@@ -377,6 +416,111 @@ final class Meta {
 		$this->write_mirrors( $post_id, $rule );
 
 		Query::refresh_has_recurring_events();
+	}
+
+	/**
+	 * Re-validate a recurring series after its datetime blob is rewritten.
+	 *
+	 * `set_recurrence()` runs on `wp_after_insert_post`, which fires from
+	 * inside `wp_insert_post()`, before the request's meta writes land. When
+	 * the recurrence blob is already stored, `write_recurrence()` validates
+	 * immediately, and the timezone it reads is the one the post had *before*
+	 * this save. An organizer who changes an existing recurring event's
+	 * timezone to a fixed offset therefore passes `Timezone_Guard` against the
+	 * old named zone, and nothing revisits the decision: the mirrors and the
+	 * projected rows stay active in a state `Timezone_Guard` refuses, while the editor
+	 * disables the Repeat control. The same staleness silently misprojects a
+	 * plain named-to-named timezone change.
+	 *
+	 * Hooking the datetime meta write is what makes the trigger exact. It
+	 * fires only when `gatherpress_datetime` actually changes, and it costs a
+	 * cached `get_post_meta()` on posts that carry no recurrence blob at all,
+	 * so an ordinary event save never queues anything.
+	 *
+	 * The recurrence blob itself is deliberately left alone: it is the
+	 * organizer's authored rule, and keeping it means switching the timezone
+	 * back to a named identifier re-derives the mirrors and re-projects,
+	 * rather than losing the rule to a timezone edit.
+	 *
+	 * Deletion queues the same pass: removing the blob leaves the series'
+	 * timezone unknowable, which the final validation reads as a rejection
+	 * and clears. `deleted_post_meta` passes an array of meta IDs as its
+	 * first argument where the write hooks pass one ID, which is why the
+	 * parameter is untyped and unread.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param int|int[] $meta_id  ID (or, from `deleted_post_meta`, IDs) of the metadata row(s) affected.
+	 * @param int       $post_id  Post the metadata belongs to.
+	 * @param string    $meta_key Meta key that was written or deleted.
+	 *
+	 * @return void
+	 *
+	 * @SuppressWarnings(PHPMD.UnusedFormalParameter) `$meta_id` is required by the
+	 *                                                shared `added_post_meta`, `updated_post_meta`
+	 *                                                and `deleted_post_meta` signature.
+	 */
+	public function maybe_revalidate_for_datetime( $meta_id, $post_id, $meta_key = '' ): void {
+		$post_id = (int) $post_id;
+
+		// Only a datetime rewrite on a supported post that already holds a
+		// recurrence blob can invalidate a previously-validated rule.
+		if (
+			'gatherpress_datetime' !== $meta_key
+			|| ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' )
+			|| empty( get_post_meta( $post_id, self::META_KEY, true ) )
+		) {
+			return;
+		}
+
+		$this->pending_revalidation[ $post_id ] = true;
+
+		// Priority 15: after `resolve_pending_recurrence()` at the default 10,
+		// and before `Occurrences::resolve_pending_projection()` at 20, so a
+		// post caught by more than one deferral resolves in one order. The
+		// ordering alone does not stop the same post projecting twice, since
+		// both passes project; what does is `Occurrences::project()` dropping
+		// the post's queue entry as this pass calls it.
+		add_action( 'shutdown', array( $this, 'resolve_pending_revalidation' ), 15 );
+	}
+
+	/**
+	 * Re-decide every queued series once the request's writes are all in.
+	 *
+	 * Runs the final validation pass and then reprojects, because clearing the
+	 * mirrors is only half of disabling a series. `Occurrences::project()`
+	 * is the only thing that deletes the rows those mirrors implied, and it
+	 * already ran this request against the pre-change timezone.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return void
+	 */
+	public function resolve_pending_revalidation(): void {
+		$pending                    = $this->pending_revalidation;
+		$this->pending_revalidation = array();
+
+		foreach ( array_keys( $pending ) as $post_id ) {
+			// The post can be gone by shutdown, after a duplicate that failed
+			// or an insert rolled back once this hook had run.
+			if ( ! post_type_supports( (string) get_post_type( $post_id ), 'gatherpress-event-date' ) ) {
+				continue;
+			}
+
+			$data = get_post_meta( $post_id, self::META_KEY, true );
+
+			if ( empty( $data ) ) {
+				$this->clear_mirrors( $post_id );
+			} else {
+				$this->write_recurrence( $post_id, (string) $data, true );
+			}
+
+			// `project()` cleans up when it finds no rule, which is exactly
+			// what a rejected timezone must leave behind, and it consumes any
+			// projection queued for this post so the priority-20 pass does not
+			// project the same series a second time in one request.
+			Occurrences::get_instance()->project( $post_id );
+		}
 	}
 
 	/**

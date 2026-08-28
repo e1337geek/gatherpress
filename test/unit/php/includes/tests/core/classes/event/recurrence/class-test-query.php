@@ -1469,6 +1469,7 @@ class Test_Query extends Base {
 				'wp_gatherpress_events.datetime_start_gmt ASC'
 				. " AND `wp_gatherpress_events`.`datetime_end_gmt` >= '2026-01-01 00:00:00'",
 				'wp_gatherpress_events',
+				Query::OCCURRENCE_ALIAS,
 			)
 		);
 
@@ -1494,12 +1495,635 @@ class Test_Query extends Base {
 			Utility::invoke_hidden_method(
 				Query::get_instance(),
 				'coalesce_event_columns',
-				array( 'wp_posts.post_title ASC', 'wp_gatherpress_events' )
+				array( 'wp_posts.post_title ASC', 'wp_gatherpress_events', Query::OCCURRENCE_ALIAS )
 			),
 			'Failed to assert a clause with no anchor columns is returned unchanged.'
 		);
 	}
 
+	/**
+	 * Coverage for `coalesce_event_columns` naming whichever relation it is given.
+	 *
+	 * The alias is a parameter because two callers rewrite the same clauses
+	 * against two different relations: the row-for-row occurrence join and the
+	 * one-row-per-post admin display relation. A hard-coded alias would send
+	 * the admin list's ordering and bucketing at a table that is not joined
+	 * there.
+	 *
+	 * @covers ::coalesce_event_columns
+	 *
+	 * @return void
+	 */
+	public function test_coalesce_event_columns_uses_the_alias_it_is_given(): void {
+		$this->assertSame(
+			sprintf(
+				'COALESCE( %1$s.datetime_start_gmt, wp_gatherpress_events.datetime_start_gmt ) ASC',
+				Query::ADMIN_SORT_ALIAS
+			),
+			Utility::invoke_hidden_method(
+				Query::get_instance(),
+				'coalesce_event_columns',
+				array(
+					'wp_gatherpress_events.datetime_start_gmt ASC',
+					'wp_gatherpress_events',
+					Query::ADMIN_SORT_ALIAS,
+				)
+			),
+			'Failed to assert the rewrite names the relation alias the caller supplied.'
+		);
+	}
+
+	/**
+	 * Coverage for both answers of `carries_anchor_datetime`.
+	 *
+	 * The admin list only needs the occurrence relation when a clause actually
+	 * reads an anchor datetime column. The `where` arm is the one B3 turns on:
+	 * an Upcoming or Past view sorted by title carries no anchor `orderby` at
+	 * all, and bucketing it on the anchor is exactly the defect.
+	 *
+	 * @covers ::carries_anchor_datetime
+	 *
+	 * @return void
+	 */
+	public function test_carries_anchor_datetime_reads_both_clauses(): void {
+		$instance = Query::get_instance();
+
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'carries_anchor_datetime',
+				array(
+					array( 'orderby' => 'wp_gatherpress_events.datetime_start_gmt ASC' ),
+					'wp_gatherpress_events',
+				)
+			),
+			'Failed to assert a date-ordered clause is recognized.'
+		);
+		$this->assertTrue(
+			Utility::invoke_hidden_method(
+				$instance,
+				'carries_anchor_datetime',
+				array(
+					array( 'where' => " AND `wp_gatherpress_events`.`datetime_end_gmt` >= '2026-01-01 00:00:00'" ),
+					'wp_gatherpress_events',
+				)
+			),
+			'Failed to assert a bucket predicate is recognized on its own.'
+		);
+		$this->assertFalse(
+			Utility::invoke_hidden_method(
+				$instance,
+				'carries_anchor_datetime',
+				array(
+					array(
+						'orderby' => 'wp_posts.post_title ASC',
+						'where'   => " AND wp_posts.post_status = 'publish'",
+					),
+					'wp_gatherpress_events',
+				)
+			),
+			'Failed to assert clauses reading no anchor datetime are left alone.'
+		);
+	}
+
+	/**
+	 * Build the fixture the admin sorting tests share.
+	 *
+	 * Every entry is placed so that ordering by the series **anchor** and
+	 * ordering by the occurrence the list is showing disagree, in two
+	 * independent ways. Without that separation the test would pass against the
+	 * untouched code and prove nothing.
+	 *
+	 * `running` is anchored ten days ago and still going, so its anchor sorts
+	 * it near the bottom of the past while its next occurrence, five hours from
+	 * now, belongs between two upcoming one-off events.
+	 *
+	 * `elapsed` and `way_past` swap places between the two orderings on their
+	 * own: the series anchor is thirty days ago, earlier than `way_past`, while
+	 * its last occurrence is twenty-six days ago, later than `way_past`.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @return array<string, int> Post IDs keyed by role.
+	 */
+	protected function build_admin_sort_fixture(): array {
+		$now = $this->now();
+
+		return array(
+			'elapsed'  => $this->create_series_at(
+				$now->modify( '-30 days' ),
+				$now->modify( '-30 days +1 hour' ),
+				self::DAILY_RULE
+			),
+			'way_past' => $this->create_event_at(
+				$now->modify( '-28 days' ),
+				$now->modify( '-28 days +1 hour' )
+			),
+			'running'  => $this->create_series_at(
+				$now->modify( '-10 days +5 hours' ),
+				$now->modify( '-10 days +6 hours' ),
+				array(
+					'frequency' => 'daily',
+					'interval'  => 1,
+					'end_type'  => 'count',
+					'count'     => 20,
+				)
+			),
+			'before'   => $this->create_event_at(
+				$now->modify( '+1 hour' ),
+				$now->modify( '+2 hours' )
+			),
+			'after'    => $this->create_event_at(
+				$now->modify( '+1 day' ),
+				$now->modify( '+1 day +1 hour' )
+			),
+		);
+	}
+
+	/**
+	 * Run a date-ordered admin event list over a fixed set of posts.
+	 *
+	 * Drives a real `WP_Query` on a real `edit.php` screen, so the production
+	 * `posts_clauses` chain runs in the order production runs it.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array<string, int> $fixture Post IDs keyed by role.
+	 * @param string             $orderby Value of the `orderby` query argument.
+	 *
+	 * @return int[] The result IDs, in query order.
+	 */
+	protected function run_admin_list_query( array $fixture, string $orderby = 'datetime' ): array {
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query(
+			array(
+				'post_type'      => Event::POST_TYPE,
+				'post_status'    => 'publish',
+				'post__in'       => array_values( $fixture ),
+				'orderby'        => $orderby,
+				'order'          => 'ASC',
+				'posts_per_page' => -1,
+				'fields'         => 'ids',
+				'no_found_rows'  => true,
+			)
+		);
+
+		set_current_screen( 'front' );
+
+		return array_map( 'intval', $query->posts );
+	}
+
+	/**
+	 * Run a bucketed, date-ordered admin event list over a fixed set of posts.
+	 *
+	 * The same production wiring as `run_admin_list_query()`, plus the
+	 * Upcoming/Past view parameter the admin view links carry, so the bucket
+	 * predicate `Event\Query::adjust_admin_event_sorting()` appends is part of
+	 * the exercised path.
+	 *
+	 * @since 0.36.0
+	 *
+	 * @param array<string, int> $fixture Post IDs keyed by role.
+	 * @param string             $bucket  Either `upcoming` or `past`.
+	 * @param string             $orderby Value of the `orderby` query argument.
+	 *
+	 * @return int[] The result IDs, in query order.
+	 */
+	protected function run_admin_bucket_query( array $fixture, string $bucket, string $orderby = 'datetime' ): array {
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query(
+			array(
+				'post_type'                    => Event::POST_TYPE,
+				'post_status'                  => 'publish',
+				'post__in'                     => array_values( $fixture ),
+				Event_Query::EVENT_QUERY_PARAM => $bucket,
+				'orderby'                      => $orderby,
+				'order'                        => 'upcoming' === $bucket ? 'ASC' : 'DESC',
+				'posts_per_page'               => -1,
+				'fields'                       => 'ids',
+				'no_found_rows'                => true,
+			)
+		);
+
+		set_current_screen( 'front' );
+
+		return array_map( 'intval', $query->posts );
+	}
+
+	/**
+	 * The Upcoming and Past views classify a series by its shown occurrence.
+	 *
+	 * The date column and the sort already use the chosen occurrence, so a
+	 * bucket predicate still reading the series anchor files a running series
+	 * under Past while its row displays a date hours away: the row's displayed
+	 * date would contradict the filter that selected it. The `running` series'
+	 * anchor elapsed ten days ago while its next occurrence is five hours out,
+	 * so anchor bucketing and occurrence bucketing provably disagree on it,
+	 * and `elapsed` proves the finished fallback stays in Past.
+	 *
+	 * The full orderings are asserted rather than membership alone, so the
+	 * bucket predicate and the sort are proven to read the same chosen
+	 * occurrence.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_admin_buckets_classify_series_by_their_shown_occurrence(): void {
+		$fixture = $this->build_admin_sort_fixture();
+
+		$this->assertSame(
+			array( $fixture['before'], $fixture['running'], $fixture['after'] ),
+			$this->run_admin_bucket_query( $fixture, 'upcoming' ),
+			'Failed to assert the Upcoming view lists a running series at its next occurrence.'
+		);
+		$this->assertSame(
+			array( $fixture['elapsed'], $fixture['way_past'] ),
+			$this->run_admin_bucket_query( $fixture, 'past' ),
+			'Failed to assert the Past view lists an elapsed series at its latest finished occurrence, and nothing'
+				. ' else.'
+		);
+	}
+
+	/**
+	 * Recurring and non-recurring rows interleave by the date the list shows.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_orders_by_shown_occurrence(): void {
+		$fixture = $this->build_admin_sort_fixture();
+
+		$this->assertSame(
+			array(
+				$fixture['way_past'],
+				$fixture['elapsed'],
+				$fixture['before'],
+				$fixture['running'],
+				$fixture['after'],
+			),
+			$this->run_admin_list_query( $fixture ),
+			'Failed to assert that the admin list orders series by the occurrence it shows.'
+		);
+	}
+
+	/**
+	 * The join is added only when the clause actually carries the anchor ordering.
+	 *
+	 * Sorting the list by title has nothing for this filter to rewrite, and the
+	 * derived table would be paid for on every such screen.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_skips_non_datetime_ordering(): void {
+		$fixture  = $this->build_admin_sort_fixture();
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		$this->run_admin_list_query( $fixture, 'title' );
+		remove_filter( 'posts_request', $capture );
+
+		$this->assertStringNotContainsString(
+			Query::ADMIN_SORT_ALIAS,
+			$captured,
+			'Failed to assert that a title-ordered admin list pays for no occurrence join.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op outside the admin.
+	 *
+	 * Front-end lists get real occurrence expansion instead, and rewriting
+	 * their ordering here on top of that would sort an expanded list by a
+	 * per-series aggregate.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_outside_the_admin(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'front' );
+
+		// Every other guard is deliberately satisfied, so `is_admin()` is the
+		// only thing left that can return these clauses unchanged. A bare
+		// `WP_Query` would pass this test with the admin check deleted, because
+		// the event-post-type guard would stop it instead.
+		$query = new WP_Query();
+		$query->set( 'post_type', Event::POST_TYPE );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'join'    => '',
+		);
+
+		$this->assertSame(
+			$pieces,
+			Query::get_instance()->adjust_admin_occurrence_sorting( $pieces, $query ),
+			'Failed to assert that the admin sorting filter does nothing on the front end.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op on a site with no recurring events.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_without_recurring_events(): void {
+		$fixture = array(
+			'early' => $this->create_event_at( $this->now()->modify( '+1 hour' ), $this->now()->modify( '+2 hours' ) ),
+			'late'  => $this->create_event_at( $this->now()->modify( '+1 day' ), $this->now()->modify( '+2 days' ) ),
+		);
+
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		$results = $this->run_admin_list_query( $fixture );
+		remove_filter( 'posts_request', $capture );
+
+		$this->assertStringNotContainsString(
+			Query::ADMIN_SORT_ALIAS,
+			$captured,
+			'Failed to assert that a site with no recurring events runs unchanged admin SQL.'
+		);
+		$this->assertSame(
+			array( $fixture['early'], $fixture['late'] ),
+			$results,
+			'Failed to assert that plain events still sort by their own datetime.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op during admin-ajax, where expansion already runs.
+	 *
+	 * `expand_event_clauses()` deliberately carves admin-ajax back in, because
+	 * those requests serve front-end reads, so `is_admin()` alone does not
+	 * separate the two filters: on `admin-ajax.php` both guards hold, and the
+	 * per-series sort join would ride along as a redundant grouped aggregate
+	 * on top of the real expansion, on an unauthenticated endpoint.
+	 *
+	 * Every other guard is deliberately satisfied: the screen is an event
+	 * `edit.php` screen so `is_admin()` holds, the fixture stores a projected
+	 * series so the flag is on and the table exists, the query is a bucketed
+	 * date-ordered event query so the events join and the anchor ordering are
+	 * both present, and the expansion assertion below proves the request took
+	 * the expanded path. The admin-ajax arm is the only guard left that can
+	 * return these clauses unchanged.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_during_admin_ajax(): void {
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+		add_filter( 'wp_doing_ajax', '__return_true' );
+
+		$captured = '';
+		$capture  = static function ( string $request ) use ( &$captured ): string {
+			$captured = $request;
+
+			return $request;
+		};
+
+		add_filter( 'posts_request', $capture );
+		new WP_Query( $this->event_query_args( 'upcoming' ) );
+		remove_filter( 'posts_request', $capture );
+
+		remove_filter( 'wp_doing_ajax', '__return_true' );
+		set_current_screen( 'front' );
+
+		$this->assertStringContainsString(
+			Query::OCCURRENCE_ALIAS,
+			$captured,
+			'Failed to assert that the admin-ajax request took the expanded front-end path.'
+		);
+		$this->assertStringNotContainsString(
+			Query::ADMIN_SORT_ALIAS,
+			$captured,
+			'Failed to assert that the per-series sort join stays off an expanded admin-ajax query.'
+		);
+	}
+
+	/**
+	 * The bucket predicate is rewritten even when nothing is sorted by date.
+	 *
+	 * The `orderby` and the `where` are two independent reasons to need the
+	 * occurrence relation, and only the `where` is present here: an Upcoming
+	 * view the reader has re-sorted by title carries no anchor ordering at
+	 * all, yet it is still a view asserting the events it lists have not
+	 * finished. Bucketing it on the anchor is the same defect under a
+	 * different sort, so membership rather than order is what this asserts.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 * @covers ::carries_anchor_datetime
+	 *
+	 * @return void
+	 */
+	public function test_admin_bucket_predicate_applies_to_a_title_sorted_view(): void {
+		$fixture = $this->build_admin_sort_fixture();
+
+		$upcoming = $this->run_admin_bucket_query( $fixture, 'upcoming', 'title' );
+
+		$this->assertContains(
+			$fixture['running'],
+			$upcoming,
+			'Failed to assert a running series is listed by a title-sorted Upcoming view.'
+		);
+		$this->assertNotContains(
+			$fixture['elapsed'],
+			$upcoming,
+			'Failed to assert a fully elapsed series stays out of the Upcoming view.'
+		);
+		$this->assertNotContains(
+			$fixture['running'],
+			$this->run_admin_bucket_query( $fixture, 'past', 'title' ),
+			'Failed to assert a running series stays out of a title-sorted Past view.'
+		);
+	}
+
+	/**
+	 * Applying the filter twice joins the relation once.
+	 *
+	 * The rewrite leaves the anchor column inside the `COALESCE()` it builds,
+	 * so a second pass recognizes its own output and would append the derived
+	 * table again under the same alias. MySQL answers that with
+	 * `ERROR 1066 Not unique table/alias`, which takes out the whole list
+	 * screen. Every other guard is satisfied here, so the re-entrancy check is
+	 * the only thing that can hold the second pass back.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_joins_the_relation_once(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query();
+		$query->set( 'post_type', Event::POST_TYPE );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'where'   => '',
+			'join'    => '',
+		);
+
+		$instance = Query::get_instance();
+		$once     = $instance->adjust_admin_occurrence_sorting( $pieces, $query );
+		$twice    = $instance->adjust_admin_occurrence_sorting( $once, $query );
+
+		set_current_screen( 'front' );
+
+		$this->assertSame(
+			1,
+			substr_count( $once['join'], Query::ADMIN_SORT_ALIAS . '` ON' ),
+			'Failed to assert the first pass joins the relation exactly once.'
+		);
+		$this->assertSame(
+			$once,
+			$twice,
+			'Failed to assert a second pass over already-rewritten clauses changes nothing.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op for a query that is not for an event post type.
+	 *
+	 * N9: the guard is one statement, so line coverage reports it as covered
+	 * with most of its arms never evaluated. Every other arm is deliberately
+	 * satisfied here, so the post-type check is the only thing that can return
+	 * these clauses unchanged: the screen is an event `edit.php` screen, the
+	 * fixture stores a projected series so the flag is on and the table
+	 * exists, the clause carries the anchor ordering, and nothing is joined.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_for_a_non_event_query(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query();
+		$query->set( 'post_type', 'post' );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'where'   => '',
+			'join'    => '',
+		);
+
+		$filtered = Query::get_instance()->adjust_admin_occurrence_sorting( $pieces, $query );
+
+		set_current_screen( 'front' );
+
+		$this->assertSame(
+			$pieces,
+			$filtered,
+			'Failed to assert a query for an unsupported post type is left alone.'
+		);
+	}
+
+	/**
+	 * The filter is a no-op on a blog that does not carry the occurrence table.
+	 *
+	 * N9, and the multisite contract `expand_event_clauses()` states at
+	 * length: a blog joined to a network after the table was created has the
+	 * flag but not the table, and joining a relation over a table that does
+	 * not exist would empty the list. The memoized probe answer is forced, so
+	 * this arm is the only one that can act.
+	 *
+	 * @covers ::adjust_admin_occurrence_sorting
+	 *
+	 * @return void
+	 */
+	public function test_adjust_admin_occurrence_sorting_is_a_no_op_without_the_occurrence_table(): void {
+		global $wpdb;
+
+		$this->build_admin_sort_fixture();
+
+		set_current_screen( 'edit-' . Event::POST_TYPE );
+
+		$query = new WP_Query();
+		$query->set( 'post_type', Event::POST_TYPE );
+
+		$pieces = array(
+			'orderby' => sprintf( '%sgatherpress_events.datetime_start_gmt ASC', $wpdb->prefix ),
+			'where'   => '',
+			'join'    => '',
+		);
+
+		$occurrences = Occurrences::get_instance();
+		$table       = sprintf( Occurrences::TABLE_FORMAT, $wpdb->prefix );
+
+		Utility::set_and_get_hidden_property( $occurrences, 'table_exists', array( $table => false ) );
+
+		$filtered = Query::get_instance()->adjust_admin_occurrence_sorting( $pieces, $query );
+
+		$occurrences->forget_table_exists();
+		set_current_screen( 'front' );
+
+		$this->assertSame(
+			$pieces,
+			$filtered,
+			'Failed to assert a blog without the occurrence table joins no relation.'
+		);
+	}
+
+	/**
+	 * Coverage for both renderings one anchor column can appear under.
+	 *
+	 * `Event\Query` writes the ORDER BY column unquoted and the WHERE column
+	 * back-quoted through `$wpdb->prepare()`'s `%i` placeholder. Both have to
+	 * be recognized and both have to be rewritten, so both are named here
+	 * rather than inferred from whichever one a caller happened to exercise.
+	 *
+	 * @covers ::anchor_column_renderings
+	 *
+	 * @return void
+	 */
+	public function test_anchor_column_renderings_names_both_forms(): void {
+		$this->assertSame(
+			array(
+				'wp_gatherpress_events.datetime_end_gmt',
+				'`wp_gatherpress_events`.`datetime_end_gmt`',
+			),
+			Utility::invoke_hidden_method(
+				Query::get_instance(),
+				'anchor_column_renderings',
+				array( 'wp_gatherpress_events', 'datetime_end_gmt' )
+			),
+			'Failed to assert both the unquoted and back-quoted renderings are produced.'
+		);
+	}
 	/**
 	 * Coverage for both return paths of `orderby_has_post_id`.
 	 *
